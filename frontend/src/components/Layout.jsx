@@ -32,35 +32,49 @@ const SIDEBAR_STORAGE_KEY = "procurex-sidebar-collapsed";
 // Fixed ERP roles only (see backend auth/models.py ERP_ROLES) - an unknown
 // value falls back to the raw role string rather than a blank label.
 const ROLE_LABELS = {
-  admin: "مدير النظام",
-  procurement_responsible: "مسؤول المشتريات",
-  procurement_engineer: "مهندس المشتريات",
-  commercial_manager: "المدير التجاري",
+  admin: ["مدير النظام", "System Administrator"],
+  procurement_responsible: ["مسؤول المشتريات", "Procurement Lead"],
+  procurement_engineer: ["مهندس المشتريات", "Procurement Engineer"],
+  commercial_manager: ["المدير التجاري", "Commercial Manager"],
 };
 
-const NAV = [
+const NAV_GROUPS = [
+  { key: "operations", label: ["التشغيل", "Operations"], items: [
   { to: "/", key: "dashboard", icon: LayoutDashboard },
   { to: "/incoming-requests", key: "incoming", icon: Inbox },
   { to: "/supplier-price-comparison", key: "comparison", icon: Scale },
   { to: "/approvals", key: "approvals", icon: FileCheck2 },
   { to: "/purchase-orders", key: "purchaseOrders", icon: ShoppingCart },
   { to: "/payments", key: "payments", icon: Wallet },
+  ] },
+  { key: "masterData", label: ["البيانات الأساسية", "Master Data"], items: [
   { to: "/suppliers", key: "suppliers", icon: Truck },
   { to: "/items", key: "items", icon: Package },
   { to: "/projects", key: "projects", icon: FolderKanban },
+  ] },
+  { key: "administration", label: ["الإدارة", "Administration"], items: [
+  { to: "/admin/users", key: "adminUsers", icon: UserCog, adminOnly: true },
+  { to: "/settings", key: "settings", icon: Settings, adminOnly: true },
+  ] },
+];
+
+const LEGACY_NAV = [
   { to: "/purchases", key: "purchases", icon: ShoppingCart, hidden: true },
   { to: "/register", key: "register", icon: BookOpenText, hidden: true },
   { to: "/price-history", key: "history", icon: LineChart, hidden: true },
   { to: "/customers", key: "customers", icon: Users, hidden: true },
   { to: "/approved-items-draft", key: "approvedDraft", icon: BookOpenText, hidden: true },
-  { to: "/admin/users", key: "adminUsers", icon: UserCog, adminOnly: true },
-  { to: "/settings", key: "settings", icon: Settings, adminOnly: true },
 ];
+
+const NAV = [...NAV_GROUPS.flatMap((group) => group.items), ...LEGACY_NAV];
 
 export default function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { t, direction } = usePreferences();
+  const preferences = usePreferences();
+  const t = preferences.t;
+  const tr = preferences.tr || ((arabic) => arabic);
+  const direction = preferences.direction || "rtl";
   const { user, logout } = useAuth();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true",
@@ -78,7 +92,10 @@ export default function Layout() {
       return nextValue;
     });
   };
-  const visibleNav = NAV.filter((item) => !item.hidden && (!item.adminOnly || isAdmin));
+  const visibleGroups = NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.adminOnly || isAdmin),
+  })).filter((group) => group.items.length);
   const current =
     NAV.find((n) => n.to === location.pathname) ||
     (location.pathname.startsWith("/purchases/")
@@ -104,7 +121,7 @@ export default function Layout() {
         data-collapsed={sidebarCollapsed}
       >
         <div
-          className={`py-5 border-b border-slate-200 flex items-center ${
+          className={`flex items-center border-b py-4 ${
             sidebarCollapsed ? "justify-center px-2" : "gap-3 px-4"
           }`}
         >
@@ -113,29 +130,29 @@ export default function Layout() {
           </div>
           {!sidebarCollapsed && <div>
             <div
-              className="font-bold text-sm text-slate-900 leading-tight"
+              className="text-sm font-bold leading-tight text-foreground"
               style={{ fontFamily: "Cairo" }}
             >
               RE DECOR & MORE
             </div>
-            <div className="text-xs text-muted-foreground">{t("appName")}</div>
+            <div className="text-[11px] text-muted-foreground">{t("appName")}</div>
           </div>}
         </div>
         {isErpUser && (
           <div
-            className={`${sidebarCollapsed ? "px-2" : "px-4"} py-3 border-b border-slate-200`}
+            className={`${sidebarCollapsed ? "px-2" : "px-4"} border-b py-3`}
             data-testid="sidebar-user"
           >
             <div className={`flex items-center min-w-0 ${sidebarCollapsed ? "justify-center" : "gap-2"}`}>
-              <div className="h-8 w-8 shrink-0 rounded-full bg-slate-100 flex items-center justify-center">
-                <UserRound className="h-4 w-4 text-slate-500" />
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                <UserRound className="h-4 w-4 text-muted-foreground" />
               </div>
               {!sidebarCollapsed && <div className="min-w-0">
-                <div className="truncate text-sm font-bold text-slate-900" data-testid="sidebar-user-name">
+                <div className="truncate text-sm font-bold text-foreground" data-testid="sidebar-user-name">
                   {user.display_name || user.username}
                 </div>
-                <div className="truncate text-xs text-slate-500" data-testid="sidebar-user-role">
-                  {ROLE_LABELS[user.role] || user.role}
+                <div className="truncate text-xs text-muted-foreground" data-testid="sidebar-user-role">
+                  {ROLE_LABELS[user.role] ? tr(...ROLE_LABELS[user.role]) : user.role}
                 </div>
               </div>}
             </div>
@@ -143,19 +160,21 @@ export default function Layout() {
               type="button"
               onClick={handleLogout}
               data-testid="sidebar-logout"
-              title={sidebarCollapsed ? "تسجيل الخروج" : undefined}
-              aria-label="تسجيل الخروج"
-              className={`mt-2 flex w-full items-center justify-center rounded-md border border-slate-200 py-1.5 text-xs font-bold text-slate-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 ${
+              title={sidebarCollapsed ? tr("تسجيل الخروج", "Sign out") : undefined}
+              aria-label={tr("تسجيل الخروج", "Sign out")}
+              className={`mt-2 flex w-full items-center justify-center rounded-md border py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive ${
                 sidebarCollapsed ? "px-1" : "gap-1.5"
               }`}
             >
               <LogOut className="h-3.5 w-3.5" />
-              {!sidebarCollapsed && "تسجيل الخروج"}
+              {!sidebarCollapsed && tr("تسجيل الخروج", "Sign out")}
             </button>
           </div>
         )}
-        <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto scrollbar-thin">
-          {visibleNav.map(({ to, key, icon: Icon }) => (
+        <nav className="flex-1 overflow-y-auto px-2 py-2 scrollbar-thin">
+          {visibleGroups.map((group, groupIndex) => <div key={group.key} className={groupIndex ? "mt-3" : ""}>
+            {!sidebarCollapsed && <div className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{tr(...group.label)}</div>}
+            <div className="space-y-0.5">{group.items.map(({ to, key, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
@@ -168,17 +187,17 @@ export default function Layout() {
                 } ${
                   isActive
                     ? "bg-primary/10 text-primary font-semibold ring-1 ring-inset ring-primary/15"
-                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`
               }
             >
               <Icon className="h-4 w-4 shrink-0" />
               {!sidebarCollapsed && t(`nav.${key}`)}
             </NavLink>
-          ))}
+          ))}</div></div>)}
         </nav>
         {!sidebarCollapsed && (
-          <div className="px-4 py-3 border-t border-slate-200 text-xs text-slate-400">
+          <div className="border-t px-4 py-2.5 text-[11px] text-muted-foreground">
             © RE DECOR & MORE
           </div>
         )}
@@ -188,12 +207,12 @@ export default function Layout() {
           sidebarCollapsed ? "ms-16" : "ms-60"
         }`}
       >
-        <header className="sticky top-0 z-20 bg-card border-b px-6 py-3 flex items-center justify-between">
+        <header className="sticky top-0 z-20 flex items-center justify-between border-b bg-card/95 px-4 py-2.5 backdrop-blur md:px-5">
           <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
               onClick={toggleSidebar}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-controls="main-sidebar"
               aria-expanded={!sidebarCollapsed}
               aria-label={sidebarCollapsed ? t("expandMenu") : t("collapseMenu")}
@@ -209,7 +228,7 @@ export default function Layout() {
               )}
             </button>
             <h1
-              className="truncate text-lg font-bold text-slate-900"
+              className="truncate text-base font-bold text-foreground"
               data-testid="page-title"
             >
               {current ? t(`nav.${current.key}`) : ""}
@@ -222,7 +241,7 @@ export default function Layout() {
             <PreferenceControls compact />
           </div>
         </header>
-        <main className="flex-1 px-6 py-6 max-w-[1600px] w-full mx-auto">
+        <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-4 md:px-5 md:py-5">
           <Outlet />
         </main>
       </div>

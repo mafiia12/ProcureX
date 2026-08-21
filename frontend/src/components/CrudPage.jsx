@@ -20,6 +20,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ActionMenu, EmptyState, PageHeader, SearchInput } from "@/components/procurement-ui";
+import { usePreferences } from "@/contexts/PreferencesContext";
 
 export default function CrudPage({
   title,
@@ -36,6 +37,10 @@ export default function CrudPage({
   emptyTitle = "لا توجد سجلات حتى الآن",
   emptyDescription = "ابدأ بإضافة أول سجل؛ ستظهر البيانات هنا تلقائيًا.",
 }) {
+  const preferences = usePreferences();
+  const language = preferences.language || "ar";
+  const tr = preferences.tr || ((ar, en) => (language === "en" ? en : ar));
+  const direction = preferences.direction || (language === "en" ? "ltr" : "rtl");
   const [rows, setRows] = useState([]);
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
@@ -82,7 +87,8 @@ export default function CrudPage({
     setOpen(true);
   };
 
-  const requiredMessage = (field) => `${field.label} مطلوب`;
+  const fieldLabel = (field) => tr(field.label, field.labelEn || field.label);
+  const requiredMessage = (field) => tr(`${field.label} مطلوب`, `${field.labelEn || field.label} is required`);
   const validateField = (field, value) => (
     field.required && !String(value || "").trim() ? requiredMessage(field) : ""
   );
@@ -110,7 +116,7 @@ export default function CrudPage({
   const save = async () => {
     if (!validate()) {
       const field = fields.find((item) => validateField(item, form[item.key]));
-      toast.error(field ? requiredMessage(field) : "يرجى مراجعة الحقول المطلوبة");
+      toast.error(field ? requiredMessage(field) : tr("يرجى مراجعة الحقول المطلوبة", "Review the required fields"));
       return;
     }
     setSaving(true);
@@ -119,10 +125,10 @@ export default function CrudPage({
       delete payload.code;
       if (editing) {
         await api.put(`/${endpoint}/${editing.id}`, payload);
-        toast.success("تم تحديث السجل بنجاح");
+        toast.success(tr("تم تحديث السجل بنجاح", "Record updated successfully"));
       } else {
         await api.post(`/${endpoint}`, payload);
-        toast.success("تم إضافة السجل بنجاح");
+        toast.success(tr("تم إضافة السجل بنجاح", "Record added successfully"));
       }
       setOpen(false);
       load();
@@ -141,7 +147,7 @@ export default function CrudPage({
   const doDelete = async () => {
     try {
       await api.delete(`/${endpoint}/${deleting.id}`);
-      toast.success("تم حذف السجل");
+      toast.success(tr("تم حذف السجل", "Record deleted"));
       setDeleting(null);
       load();
     } catch (e) {
@@ -154,30 +160,30 @@ export default function CrudPage({
       <PageHeader
         title={heading || title}
         description={description}
-        actions={<Button data-testid={`${testPrefix}-add-button`} onClick={openNew} className="gap-2"><Plus className="h-4 w-4" /> إضافة {title}</Button>}
+        actions={<Button data-testid={`${testPrefix}-add-button`} onClick={openNew} className="gap-2"><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>}
       />
       <SearchInput data-testid={`${testPrefix}-search-input`} className="w-full sm:w-80" placeholder={searchPlaceholder} value={search} onChange={(e) => setSearch(e.target.value)} />
 
-      <div className="max-h-[calc(100vh-240px)] overflow-auto rounded-lg border border-slate-200 bg-white">
+      <div className="max-h-[calc(100vh-240px)] overflow-auto rounded-lg border bg-card">
         <Table>
           <TableHeader className="sticky top-0 z-10">
-            <TableRow className="bg-slate-50">
+            <TableRow className="bg-muted/90">
               {columns.map((c) => (
-                <TableHead key={c.key} className="text-start text-xs font-bold text-slate-600 whitespace-nowrap">
+                <TableHead key={c.key} className="whitespace-nowrap text-start text-xs font-bold text-muted-foreground">
                   {c.label}
                 </TableHead>
               ))}
-              <TableHead className="text-start text-xs font-bold text-slate-600 w-24">إجراءات</TableHead>
+              <TableHead className="w-24 text-start text-xs font-bold text-muted-foreground">{tr("إجراءات", "Actions")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={columns.length + 1} className="p-0"><EmptyState title={emptyTitle} description={emptyDescription} action={<Button size="sm" onClick={openNew}><Plus className="h-4 w-4" /> إضافة {title}</Button>} /></TableCell>
+                <TableCell colSpan={columns.length + 1} className="p-0"><EmptyState title={emptyTitle} description={emptyDescription} action={<Button size="sm" onClick={openNew}><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>} /></TableCell>
               </TableRow>
             ) : (
               filtered.map((row) => (
-                <TableRow key={row.id} className="hover:bg-slate-50" data-testid={`${testPrefix}-row`}>
+                <TableRow key={row.id} className="hover:bg-muted/50" data-testid={`${testPrefix}-row`}>
                   {columns.map((c) => (
                     <TableCell key={c.key} className="py-2 text-sm whitespace-nowrap">
                       {c.render ? c.render(row) : (row[c.key] ?? "-") || "-"}
@@ -188,8 +194,8 @@ export default function CrudPage({
                       testId={`${testPrefix}-actions`}
                       actions={[
                         rowAction && { label: rowAction.label, onSelect: () => rowAction.onClick(row), testId: `${testPrefix}-row-action` },
-                        { label: "تعديل", icon: <Pencil className="me-2 h-3.5 w-3.5" />, onSelect: () => openEdit(row), testId: `${testPrefix}-edit-button` },
-                        { label: "حذف", icon: <Trash2 className="me-2 h-3.5 w-3.5" />, destructive: true, onSelect: () => setDeleting(row), testId: `${testPrefix}-delete-button` },
+                        { label: tr("تعديل", "Edit"), icon: <Pencil className="me-2 h-3.5 w-3.5" />, onSelect: () => openEdit(row), testId: `${testPrefix}-edit-button` },
+                        { label: tr("حذف", "Delete"), icon: <Trash2 className="me-2 h-3.5 w-3.5" />, destructive: true, onSelect: () => setDeleting(row), testId: `${testPrefix}-delete-button` },
                       ]}
                     />
                   </TableCell>
@@ -199,11 +205,11 @@ export default function CrudPage({
           </TableBody>
         </Table>
       </div>
-      <div className="text-xs text-slate-500">إجمالي السجلات: {filtered.length}</div>
+      <div className="text-xs text-muted-foreground">{tr("إجمالي السجلات", "Total records")}: {filtered.length}</div>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          dir="rtl"
+          dir={direction}
           className="max-w-2xl max-h-[85vh] overflow-y-auto"
           onOpenAutoFocus={(event) => {
             event.preventDefault();
@@ -212,29 +218,29 @@ export default function CrudPage({
           }}
         >
           <DialogHeader>
-            <DialogTitle className="text-start">{editing ? `تعديل ${title}` : `إضافة ${title}`}</DialogTitle>
+            <DialogTitle className="text-start">{editing ? `${tr("تعديل", "Edit")} ${title}` : `${tr("إضافة", "Add")} ${title}`}</DialogTitle>
             <DialogDescription className="sr-only">
-              أدخل البيانات المطلوبة ثم احفظ السجل
+              {tr("أدخل البيانات المطلوبة ثم احفظ السجل", "Enter the required information, then save the record")}
             </DialogDescription>
           </DialogHeader>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {editing?.code && (
               <div className="space-y-1.5">
-                <Label htmlFor={`${testPrefix}-form-code`} className="text-xs">الكود</Label>
+                <Label htmlFor={`${testPrefix}-form-code`} className="text-xs">{tr("الكود", "Code")}</Label>
                 <Input
                   id={`${testPrefix}-form-code`}
                   data-testid={`${testPrefix}-form-code`}
                   value={form.code || ""}
                   readOnly
                   tabIndex={-1}
-                  className="bg-slate-50 text-slate-500"
+                  className="bg-muted text-muted-foreground"
                 />
               </div>
             )}
             {fields.map((f) => (
               <div key={f.key} className={f.type === "textarea" ? "md:col-span-2 space-y-1.5" : "space-y-1.5"}>
                 <Label htmlFor={`${testPrefix}-form-${f.key}`} className="text-xs">
-                  {f.label}{f.required ? " *" : ""}
+                  {fieldLabel(f)}{f.required ? " *" : ""}
                 </Label>
                 {f.type === "select" ? (
                   <Select value={String(form[f.key] || "")} onValueChange={(value) => updateField(f, value)}>
@@ -251,9 +257,9 @@ export default function CrudPage({
                         if (message) setErrors((current) => ({ ...current, [f.key]: message }));
                       }}
                     >
-                      <SelectValue placeholder={f.label} />
+                      <SelectValue placeholder={fieldLabel(f)} />
                     </SelectTrigger>
-                    <SelectContent dir="rtl">
+                    <SelectContent dir={direction}>
                       {(f.options || []).map((o) => (
                         <SelectItem key={o} value={String(o)}>{o}</SelectItem>
                       ))}
@@ -289,7 +295,7 @@ export default function CrudPage({
                     aria-invalid={!!errors[f.key]}
                     aria-describedby={errors[f.key] ? `${testPrefix}-form-${f.key}-error` : undefined}
                     className={f.readOnly
-                      ? "bg-slate-50 text-slate-500"
+                      ? "bg-muted text-muted-foreground"
                       : errors[f.key] ? "border-red-500 focus-visible:ring-red-500" : undefined}
                     onChange={(event) => updateField(f, event.target.value)}
                     onBlur={() => {
@@ -311,26 +317,26 @@ export default function CrudPage({
             ))}
           </div>
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setOpen(false)}>{tr("إلغاء", "Cancel")}</Button>
             <Button data-testid={`${testPrefix}-save-button`} onClick={save} disabled={saving}>
-              {saving ? "جارٍ الحفظ..." : "حفظ"}
+              {saving ? tr("جارٍ الحفظ...", "Saving...") : tr("حفظ", "Save")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       <AlertDialog open={!!deleting} onOpenChange={(v) => !v && setDeleting(null)}>
-        <AlertDialogContent dir="rtl">
+        <AlertDialogContent dir={direction}>
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-start">تأكيد الحذف</AlertDialogTitle>
+            <AlertDialogTitle className="text-start">{tr("تأكيد الحذف", "Confirm deletion")}</AlertDialogTitle>
             <AlertDialogDescription className="text-start">
-              هل أنت متأكد من حذف "{deleting?.name}"؟ لا يمكن التراجع عن هذا الإجراء.
+              {tr(`هل أنت متأكد من حذف "${deleting?.name}"؟ لا يمكن التراجع عن هذا الإجراء.`, `Delete "${deleting?.name}"? This action cannot be undone.`)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="gap-2">
-            <AlertDialogCancel>إلغاء</AlertDialogCancel>
+            <AlertDialogCancel>{tr("إلغاء", "Cancel")}</AlertDialogCancel>
             <AlertDialogAction data-testid={`${testPrefix}-confirm-delete`} onClick={doDelete}
-              className="bg-red-600 hover:bg-red-700">حذف</AlertDialogAction>
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{tr("حذف", "Delete")}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

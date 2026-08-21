@@ -22,23 +22,25 @@ import api, { errMsg } from "@/lib/api";
 import ProcurementProgress from "@/components/ProcurementProgress";
 import { EmptyState, PageHeader } from "@/components/procurement-ui";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePreferences } from "@/contexts/PreferencesContext";
 
 export const REQUEST_STATUSES = [
-  ["new", "جديد"],
-  ["under_review", "قيد المراجعة"],
-  ["need_clarification", "يحتاج توضيح"],
-  ["hold", "معلّق"],
-  ["pricing", "التسعير"],
-  ["waiting_for_approval", "بانتظار الموافقة"],
-  ["approved", "معتمد"],
-  ["rejected", "مرفوض"],
-  ["converted_to_purchase", "محوّل إلى شراء"],
-  ["completed", "مكتمل"],
-  ["cancelled", "ملغي"],
+  ["new", "جديد", "New"],
+  ["under_review", "قيد المراجعة", "Under review"],
+  ["need_clarification", "يحتاج توضيح", "Needs clarification"],
+  ["hold", "معلّق", "On hold"],
+  ["pricing", "التسعير", "Pricing"],
+  ["waiting_for_approval", "بانتظار الموافقة", "Pending approval"],
+  ["approved", "معتمد", "Approved"],
+  ["rejected", "مرفوض", "Rejected"],
+  ["converted_to_purchase", "محوّل إلى شراء", "Converted to purchase"],
+  ["completed", "مكتمل", "Completed"],
+  ["cancelled", "ملغي", "Cancelled"],
 ];
 
-const statusLabel = (value) => REQUEST_STATUSES.find(([code]) => code === value)?.[1] || value;
-const priorityLabel = (value) => PRIORITY_OPTIONS.find((option) => option.value === value)?.label || value;
+const statusLabel = (value, language = "ar") => REQUEST_STATUSES.find(([code]) => code === value)?.[language === "en" ? 2 : 1] || value;
+const priorityEnglish = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent" };
+const priorityLabel = (value, language = "ar") => language === "en" ? (priorityEnglish[value] || value) : (PRIORITY_OPTIONS.find((option) => option.value === value)?.label || value);
 const statusStyle = (status) => ({
   new: "bg-blue-100 text-blue-800",
   under_review: "bg-cyan-100 text-cyan-800",
@@ -59,22 +61,24 @@ const workflowStage = (status) => ({
   converted_to_purchase: 6, completed: 9,
 }[status] ?? 0);
 
-const nextActionLabel = (status) => ({
-  new: "بدء المراجعة الفنية",
-  under_review: "اتخاذ قرار المراجعة الفنية",
-  need_clarification: "استلام التوضيح المطلوب ومراجعته",
-  hold: "معالجة سبب التعليق",
-  pricing: "استكمال عروض الموردين والمقارنة",
-  waiting_for_approval: "قرار جهة الاعتماد",
-  approved: "استكمال الاعتماد التجاري والصرف",
-  converted_to_purchase: "متابعة التوريد والاستلام",
+const nextActionLabel = (status, tr) => tr(({
+  new: "بدء المراجعة الفنية", under_review: "اتخاذ قرار المراجعة الفنية",
+  need_clarification: "استلام التوضيح المطلوب ومراجعته", hold: "معالجة سبب التعليق",
+  pricing: "استكمال عروض الموردين والمقارنة", waiting_for_approval: "قرار جهة الاعتماد",
+  approved: "استكمال الاعتماد التجاري والصرف", converted_to_purchase: "متابعة التوريد والاستلام",
   completed: "لا يوجد إجراء تالٍ",
-}[status] || "مراجعة حالة الطلب");
+}[status] || "مراجعة حالة الطلب"), ({
+  new: "Start technical review", under_review: "Record the technical review decision",
+  need_clarification: "Review the submitted clarification", hold: "Resolve the hold reason",
+  pricing: "Complete supplier quotations and comparison", waiting_for_approval: "Approval decision",
+  approved: "Complete commercial approval and funds release", converted_to_purchase: "Track delivery and receiving",
+  completed: "No next action",
+}[status] || "Review request status"));
 
 const Info = ({ label, value }) => (
-  <div className="min-w-0 rounded-md bg-slate-50 px-3 py-2">
-    <div className="text-[11px] text-slate-500">{label}</div>
-    <div className="mt-0.5 break-words text-sm font-medium text-slate-800">{value || "-"}</div>
+  <div className="min-w-0 rounded-md bg-muted/50 px-3 py-2">
+    <div className="text-[11px] text-muted-foreground">{label}</div>
+    <div className="mt-0.5 break-words text-sm font-medium text-foreground">{value || "-"}</div>
   </div>
 );
 
@@ -82,6 +86,7 @@ export default function IncomingPurchaseRequests() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
+  const { tr, language, direction, locale } = usePreferences();
   const role = user?.role || "";
   const canReviewTechnical = role === "admin" || role === "procurement_engineer";
   const canConvertManualItem = role === "admin" || role === "procurement_responsible";
@@ -204,12 +209,16 @@ export default function IncomingPurchaseRequests() {
   };
 
   const technicalDecision = async (decision) => {
+    if (decision === "revision_required" && !statusNote.trim()) {
+      toast.error(tr("اكتب سبب طلب التوضيح أولًا", "Enter the clarification reason first"));
+      return;
+    }
     try {
       await api.post(`/workflow/incoming-purchase-requests/${selected.id}/technical-decision`, {
         decision, actor: author, note: statusNote,
       });
       setStatusNote("");
-      toast.success("تم تسجيل قرار المراجعة الفنية");
+      toast.success(tr("تم تسجيل قرار المراجعة الفنية", "Technical review decision recorded"));
       await Promise.all([loadDetail(selected.id), loadList()]);
     } catch (error) { toast.error(errMsg(error)); }
   };
@@ -373,12 +382,12 @@ export default function IncomingPurchaseRequests() {
 
   if (locked) {
     return (
-      <div className="mx-auto max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-sm" data-testid="incoming-requests-access">
-        <h2 className="text-lg font-bold text-slate-900">دخول الطلبات الواردة</h2>
-        <p className="mt-1 text-sm text-slate-500">أدخل رمز الوصول الداخلي المخصص لهذه البيئة.</p>
+      <div className="mx-auto max-w-md rounded-lg border bg-card p-6 shadow-sm" data-testid="incoming-requests-access">
+        <h2 className="text-lg font-bold text-foreground">{tr("دخول الطلبات الواردة", "Incoming requests access")}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{tr("أدخل رمز الوصول الداخلي المخصص لهذه البيئة.", "Enter the internal access token for this environment.")}</p>
         <form onSubmit={unlock} className="mt-4 space-y-3">
           <Input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="current-password" />
-          <Button type="submit" className="w-full">دخول</Button>
+          <Button type="submit" className="w-full">{tr("دخول", "Continue")}</Button>
         </form>
       </div>
     );
@@ -392,115 +401,115 @@ export default function IncomingPurchaseRequests() {
   return (
     <div className="space-y-4" data-testid="incoming-purchase-requests-page">
       <PageHeader
-        title="طلبات الشراء الواردة"
-        description="راجع الطلبات، حدّد الإجراء التالي، وحافظ على وضوح المسار من الطلب حتى أمر الشراء."
+        title={tr("طلبات الشراء الواردة", "Incoming Purchase Requests")}
+        description={tr("راجع الطلب وحدد الإجراء التالي بأقل تمرير ممكن.", "Review each request and identify its next action with minimal scrolling.")}
         actions={<div className="flex items-center gap-2">
-          <Badge className="gap-1 bg-red-100 text-red-700 hover:bg-red-100"><Bell className="h-3.5 w-3.5" /> {unreadCount} جديد</Badge>
-          <Button variant="outline" size="sm" onClick={() => loadList()}><RefreshCw className="ms-1 h-4 w-4" /> تحديث</Button>
+          <Badge className="gap-1 bg-destructive/10 text-destructive hover:bg-destructive/10"><Bell className="h-3.5 w-3.5" /> {tr(`${unreadCount} جديد`, `${unreadCount} new`)}</Badge>
+          <Button variant="outline" size="sm" onClick={() => loadList()}><RefreshCw className="ms-1 h-4 w-4" />{tr("تحديث", "Refresh")}</Button>
         </div>}
       />
 
-      <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <div className="rounded-lg border bg-card p-3">
         <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(220px,1fr)_180px_160px_auto]">
           <div className="relative">
-            <Search className="absolute start-3 top-2.5 h-4 w-4 text-slate-400" />
-            <Input className="ps-9" placeholder="بحث بالرقم أو الاسم أو الهاتف أو المشروع" value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} />
+            <Search className="absolute start-3 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input className="ps-9" placeholder={tr("بحث بالرقم أو الاسم أو الهاتف أو المشروع", "Search number, requester, phone, or project")} value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} />
           </div>
-          <select className="h-9 rounded-md border border-input bg-white px-3 text-sm" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
-            <option value="">كل الحالات</option>
-            {REQUEST_STATUSES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          <select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
+            <option value="">{tr("كل الحالات", "All statuses")}</option>
+            {REQUEST_STATUSES.map(([value, ar, en]) => <option key={value} value={value}>{language === "en" ? en : ar}</option>)}
           </select>
-          <select className="h-9 rounded-md border border-input bg-white px-3 text-sm" value={filters.priority} onChange={(event) => setFilters((current) => ({ ...current, priority: event.target.value }))}>
-            <option value="">كل الأولويات</option>
-            {PRIORITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          <select className="h-9 rounded-md border border-input bg-background px-3 text-sm" value={filters.priority} onChange={(event) => setFilters((current) => ({ ...current, priority: event.target.value }))}>
+            <option value="">{tr("كل الأولويات", "All priorities")}</option>
+            {PRIORITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{priorityLabel(option.value, language)}</option>)}
           </select>
-          <Button size="sm" className="h-9" onClick={() => loadList(filters)}><Filter className="ms-1 h-4 w-4" /> تطبيق</Button>
+          <Button size="sm" className="h-9" onClick={() => loadList(filters)}><Filter className="ms-1 h-4 w-4" />{tr("تطبيق", "Apply")}</Button>
         </div>
       </div>
 
       <div className="grid min-h-[560px] grid-cols-1 gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(520px,1.5fr)]">
-        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 px-4 py-3 text-sm font-bold text-slate-700">الطلبات ({requests.length})</div>
-          <div className="max-h-[690px] divide-y divide-slate-100 overflow-y-auto">
-            {loading && <div className="p-8 text-center text-sm text-slate-500">جارٍ التحميل...</div>}
-            {!loading && !requests.length && <EmptyState icon={ClipboardList} title="لا توجد طلبات مطابقة" description="غيّر عوامل البحث أو انتظر وصول طلب شراء جديد من الموقع." className="border-0 py-12" />}
+        <section className="overflow-hidden rounded-lg border bg-card">
+          <div className="border-b px-4 py-3 text-sm font-bold text-foreground">{tr(`الطلبات (${requests.length})`, `Requests (${requests.length})`)}</div>
+          <div className="max-h-[690px] divide-y divide-border overflow-y-auto">
+            {loading && <div className="p-8 text-center text-sm text-muted-foreground">{tr("جارٍ التحميل...", "Loading...")}</div>}
+            {!loading && !requests.length && <EmptyState icon={ClipboardList} title={tr("لا توجد طلبات مطابقة", "No matching requests")} description={tr("غيّر عوامل البحث أو انتظر وصول طلب شراء جديد من الموقع.", "Adjust the filters or wait for a new site request.")} className="border-0 py-8" />}
             {requests.map((request) => (
-              <button key={request.id} type="button" onClick={() => loadDetail(request.id)} className={`block w-full px-4 py-3 text-start transition-colors hover:bg-slate-50 ${selected?.id === request.id ? "bg-blue-50" : ""}`}>
+              <button key={request.id} type="button" onClick={() => loadDetail(request.id)} className={`block w-full px-4 py-3 text-start transition-colors hover:bg-muted/50 ${selected?.id === request.id ? "bg-primary/5" : ""}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-bold text-slate-900">{request.request_number}</div>
-                    <div className="mt-1 truncate text-sm text-slate-700">{request.requester_name} — {request.project_name}</div>
+                    <div className="truncate text-sm font-bold text-foreground" dir="ltr">{request.request_number}</div>
+                    <div className="mt-1 truncate text-sm text-foreground">{request.requester_name} — {request.project_name}</div>
                   </div>
-                  <Badge className={`${statusStyle(request.status)} hover:opacity-90`}>{statusLabel(request.status)}</Badge>
+                  <Badge className={`${statusStyle(request.status)} hover:opacity-90`}>{statusLabel(request.status, language)}</Badge>
                 </div>
-                <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-500">
-                  <span>{request.item_count} صنف</span>
-                  <span className="text-center">{priorityLabel(request.priority)}</span>
-                  <span className="text-end">{request.required_delivery_date || new Date(request.created_at).toLocaleDateString("ar-EG")}</span>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                  <span>{tr(`${request.item_count} صنف`, `${request.item_count} items`)}</span>
+                  <span className="text-center">{priorityLabel(request.priority, language)}</span>
+                  <span className="text-end">{request.required_delivery_date || new Date(request.created_at).toLocaleDateString(locale)}</span>
                 </div>
               </button>
             ))}
           </div>
         </section>
 
-        <section className="rounded-lg border border-slate-200 bg-white p-4">
+        <section className="rounded-lg border bg-card p-4">
           {!selected ? (
-            <div className="flex min-h-[520px] flex-col items-center justify-center text-center text-slate-400">
+            <div className="flex min-h-[520px] flex-col items-center justify-center text-center text-muted-foreground">
               <ClipboardList className="h-12 w-12" />
-              <p className="mt-3 text-sm">اختر طلباً لعرض التفاصيل والإجراءات.</p>
+              <p className="mt-3 text-sm">{tr("اختر طلباً لعرض التفاصيل والإجراءات.", "Select a request to view details and actions.")}</p>
             </div>
           ) : (
             <div className="space-y-5" data-testid="incoming-request-detail">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
                 <div>
-                  <div className="text-lg font-bold text-slate-900">{selected.request_number}</div>
-                  <div className="text-xs text-slate-500">تم الاستلام {new Date(selected.created_at).toLocaleString("ar-EG")}</div>
+                  <div className="text-lg font-bold text-foreground" dir="ltr">{selected.request_number}</div>
+                  <div className="text-xs text-muted-foreground">{tr("تم الاستلام", "Received")} {new Date(selected.created_at).toLocaleString(locale)}</div>
                 </div>
-                <Badge className={statusStyle(selected.status)}>{statusLabel(selected.status)}</Badge>
+                <Badge className={statusStyle(selected.status)}>{statusLabel(selected.status, language)}</Badge>
               </div>
 
               <ProcurementProgress currentStage={workflowStage(selected.status)} />
 
               <div className="grid gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:grid-cols-2">
-                <div><div className="text-[11px] text-muted-foreground">المرحلة الحالية</div><div className="mt-1 text-sm font-semibold text-foreground">{statusLabel(selected.status)}</div></div>
-                <div><div className="text-[11px] text-muted-foreground">الإجراء التالي المطلوب</div><div className="mt-1 text-sm font-semibold text-primary">{nextActionLabel(selected.status)}</div></div>
+                <div><div className="text-[11px] text-muted-foreground">{tr("المرحلة الحالية", "Current stage")}</div><div className="mt-1 text-sm font-semibold text-foreground">{statusLabel(selected.status, language)}</div></div>
+                <div><div className="text-[11px] text-muted-foreground">{tr("الإجراء التالي المطلوب", "Next required action")}</div><div className="mt-1 text-sm font-semibold text-primary">{nextActionLabel(selected.status, tr)}</div></div>
               </div>
 
               {selected.status === "need_clarification" && (
-                <div className="rounded-lg border border-amber-300 bg-amber-50 p-4" data-testid="clarification-summary">
-                  <div className="font-semibold text-amber-950">الطلب يحتاج توضيحًا</div>
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4" data-testid="clarification-summary">
+                  <div className="font-semibold text-amber-950">{tr("الطلب يحتاج توضيحًا", "Request needs clarification")}</div>
                   <div className="mt-2 grid gap-2 text-sm text-amber-900 sm:grid-cols-3">
-                    <div><span className="text-xs text-amber-700">السبب</span><div>{latestClarification?.note || "لم يُسجّل سبب تفصيلي"}</div></div>
-                    <div><span className="text-xs text-amber-700">طلبه</span><div>{latestClarification?.changed_by || "غير محدد"}</div></div>
-                    <div><span className="text-xs text-amber-700">التاريخ / الاستجابة</span><div>{latestClarification?.created_at ? new Date(latestClarification.created_at).toLocaleString("ar-EG") : "-"} · بانتظار الرد</div></div>
+                    <div><span className="text-xs text-amber-700">{tr("السبب", "Reason")}</span><div>{latestClarification?.note || tr("لم يُسجّل سبب تفصيلي", "No detailed reason recorded")}</div></div>
+                    <div><span className="text-xs text-amber-700">{tr("طلبه", "Requested by")}</span><div>{latestClarification?.changed_by || tr("غير محدد", "Not specified")}</div></div>
+                    <div><span className="text-xs text-amber-700">{tr("التاريخ / الاستجابة", "Date / response")}</span><div>{latestClarification?.created_at ? new Date(latestClarification.created_at).toLocaleString(locale) : "-"} · {tr("بانتظار الرد", "Awaiting response")}</div></div>
                   </div>
                 </div>
               )}
 
               <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
-                <Info label="مقدم الطلب" value={selected.requester_name} />
-                <Info label="الشركة" value={selected.company_name} />
-                <Info label="الهاتف" value={selected.phone_number} />
-                <Info label="المشروع" value={selected.project_name} />
-                <Info label="موقع المشروع" value={selected.project_location} />
-                <Info label="مكان التسليم" value={selected.delivery_location} />
-                <Info label="التسليم المطلوب" value={selected.required_delivery_date} />
-                <Info label="الأولوية" value={priorityLabel(selected.priority)} />
-                <Info label="الموظف المسؤول" value={selected.assigned_employee} />
+                <Info label={tr("مقدم الطلب", "Requester")} value={selected.requester_name} />
+                <Info label={tr("الشركة", "Company")} value={selected.company_name} />
+                <Info label={tr("الهاتف", "Phone")} value={selected.phone_number} />
+                <Info label={tr("المشروع", "Project")} value={selected.project_name} />
+                <Info label={tr("موقع المشروع", "Project location")} value={selected.project_location} />
+                <Info label={tr("مكان التسليم", "Delivery location")} value={selected.delivery_location} />
+                <Info label={tr("التسليم المطلوب", "Required date")} value={selected.required_delivery_date} />
+                <Info label={tr("الأولوية", "Priority")} value={priorityLabel(selected.priority, language)} />
+                <Info label={tr("الموظف المسؤول", "Assigned employee")} value={selected.assigned_employee} />
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button asChild variant="outline" size="sm"><a href={`tel:${selected.phone_number}`}><Phone className="ms-1 h-4 w-4" /> اتصال</a></Button>
-                {selected.whatsapp_number && <Button asChild variant="outline" size="sm"><a href={`https://wa.me/${selected.whatsapp_number.replace(/\D/g, "")}`} target="_blank" rel="noreferrer"><MessageCircle className="ms-1 h-4 w-4" /> واتساب</a></Button>}
-                {selected.email && <Button asChild variant="outline" size="sm"><a href={`mailto:${selected.email}`}><Mail className="ms-1 h-4 w-4" /> بريد إلكتروني</a></Button>}
+                <Button asChild variant="outline" size="sm"><a href={`tel:${selected.phone_number}`}><Phone className="ms-1 h-4 w-4" />{tr("اتصال", "Call")}</a></Button>
+                {selected.whatsapp_number && <Button asChild variant="outline" size="sm"><a href={`https://wa.me/${selected.whatsapp_number.replace(/\D/g, "")}`} target="_blank" rel="noreferrer"><MessageCircle className="ms-1 h-4 w-4" />WhatsApp</a></Button>}
+                {selected.email && <Button asChild variant="outline" size="sm"><a href={`mailto:${selected.email}`}><Mail className="ms-1 h-4 w-4" />{tr("بريد إلكتروني", "Email")}</a></Button>}
               </div>
 
-              {selected.project_id ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><div className="rounded-lg bg-emerald-600 p-2 text-white"><FolderKanban className="h-5 w-5" /></div><div><div className="text-xs font-bold text-emerald-700">المشروع مربوط</div><div className="font-bold text-emerald-950">{selected.project_name}</div></div></div><Button type="button" onClick={() => navigate(`/projects/${selected.project_id}/purchases`)}>فتح مركز المشروع</Button></div></div> : <div className="rounded-xl border-2 border-amber-300 bg-amber-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-lg font-black text-amber-950">المشروع غير مربوط</div><p className="mt-1 text-sm text-amber-800">اربط الطلب قبل متابعة المقارنة حتى تنتقل البيانات تلقائيًا.</p></div><div className="flex gap-2"><Button type="button" variant="outline" onClick={() => openProjectFlow("link")}><FolderKanban className="h-4 w-4" /> ربط بمشروع موجود</Button><Button type="button" onClick={() => openProjectFlow("create")}><PlusCircle className="h-4 w-4" /> إضافة مشروع جديد</Button></div></div></div>}
+              {selected.project_id ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><div className="rounded-lg bg-emerald-700 p-2 text-white"><FolderKanban className="h-5 w-5" /></div><div><div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">{tr("المشروع مربوط", "Project linked")}</div><div className="font-bold text-foreground">{selected.project_name}</div></div></div><Button type="button" onClick={() => navigate(`/projects/${selected.project_id}/purchases`)}>{tr("فتح مركز المشروع", "Open project center")}</Button></div></div> : <div className="rounded-xl border-2 border-amber-500/40 bg-amber-500/10 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-lg font-bold text-foreground">{tr("المشروع غير مربوط", "Project not linked")}</div><p className="mt-1 text-sm text-amber-800 dark:text-amber-300">{tr("اربط الطلب قبل متابعة المقارنة حتى تنتقل البيانات تلقائيًا.", "Link the request before comparison so workflow data carries forward correctly.")}</p></div><div className="flex gap-2"><Button type="button" variant="outline" onClick={() => openProjectFlow("link")}><FolderKanban className="h-4 w-4" />{tr("ربط بمشروع موجود", "Link existing project")}</Button><Button type="button" onClick={() => openProjectFlow("create")}><PlusCircle className="h-4 w-4" />{tr("إضافة مشروع جديد", "Add new project")}</Button></div></div></div>}
 
-              {!!projectMode && <div className="rounded-xl border-2 border-blue-300 bg-white p-4 shadow-sm"><div className="flex items-center justify-between"><h3 className="font-bold">{projectMode === "link" ? "ربط بمشروع موجود" : projectMode === "similar" ? "وجدنا مشروعًا مشابهًا" : "إنشاء وربط المشروع"}</h3><Button variant="ghost" size="sm" onClick={() => setProjectMode("")}>إغلاق</Button></div>{projectSuggestions.length > 0 && <div className="mt-3 rounded-lg bg-blue-50 p-3"><div className="mb-2 text-sm font-bold">مشروعات مقترحة — لن يتم الربط تلقائيًا</div><div className="space-y-2">{projectSuggestions.map((project) => <div key={project.id} className="flex items-center justify-between rounded-lg bg-white p-3"><div><b>{project.name}</b><div className="text-xs text-slate-500">{project.customer_name || "-"} · {[project.governorate, project.city].filter(Boolean).join(" - ") || "بدون موقع"}</div></div><Button size="sm" variant="outline" onClick={() => linkProject(project.id)}>ربط بالموجود</Button></div>)}</div></div>}{projectMode === "link" && <div className="mt-3 flex gap-2"><select className="h-10 flex-1 rounded-md border px-3" value={projectChoice} onChange={(event) => setProjectChoice(event.target.value)}><option value="">اختر المشروع</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.code} — {project.name}</option>)}</select><Button onClick={() => linkProject()}>ربط بالموجود</Button></div>}{["create", "similar"].includes(projectMode) && <div className="mt-3 grid gap-2 md:grid-cols-2"><Input value={projectDraft.name} onChange={(e) => setProjectDraft((x) => ({ ...x, name: e.target.value }))} placeholder="اسم المشروع *" /><Input value={projectDraft.customer_name} onChange={(e) => setProjectDraft((x) => ({ ...x, customer_name: e.target.value }))} placeholder="العميل" /><Input value={projectDraft.governorate} onChange={(e) => setProjectDraft((x) => ({ ...x, governorate: e.target.value }))} placeholder="المحافظة" /><Input value={projectDraft.city} onChange={(e) => setProjectDraft((x) => ({ ...x, city: e.target.value }))} placeholder="المدينة / الموقع" /><Input value={projectDraft.address} onChange={(e) => setProjectDraft((x) => ({ ...x, address: e.target.value }))} placeholder="العنوان" /><Input value={projectDraft.engineer} onChange={(e) => setProjectDraft((x) => ({ ...x, engineer: e.target.value }))} placeholder="المهندس / المسؤول" /><Textarea className="md:col-span-2" value={projectDraft.notes} onChange={(e) => setProjectDraft((x) => ({ ...x, notes: e.target.value }))} placeholder="ملاحظات" /><div className="md:col-span-2 flex justify-end"><Button onClick={() => createAndLinkProject(projectMode === "similar")}>إنشاء وربط المشروع</Button></div></div>}</div>}
+              {!!projectMode && <div className="rounded-xl border-2 border-blue-500/30 bg-card p-4 shadow-sm"><div className="flex items-center justify-between"><h3 className="font-bold">{projectMode === "link" ? tr("ربط بمشروع موجود", "Link existing project") : projectMode === "similar" ? tr("وجدنا مشروعًا مشابهًا", "A similar project was found") : tr("إنشاء وربط المشروع", "Create and link project")}</h3><Button variant="ghost" size="sm" onClick={() => setProjectMode("")}>{tr("إغلاق", "Close")}</Button></div>{projectSuggestions.length > 0 && <div className="mt-3 rounded-lg bg-blue-500/10 p-3"><div className="mb-2 text-sm font-bold">{tr("مشروعات مقترحة — لن يتم الربط تلقائيًا", "Suggested projects — nothing is linked automatically")}</div><div className="space-y-2">{projectSuggestions.map((project) => <div key={project.id} className="flex items-center justify-between rounded-lg bg-card p-3"><div><b>{project.name}</b><div className="text-xs text-muted-foreground">{project.customer_name || "-"} · {[project.governorate, project.city].filter(Boolean).join(" - ") || tr("بدون موقع", "No location")}</div></div><Button size="sm" variant="outline" onClick={() => linkProject(project.id)}>{tr("ربط بالموجود", "Link project")}</Button></div>)}</div></div>}{projectMode === "link" && <div className="mt-3 flex gap-2"><select className="h-10 flex-1 rounded-md border bg-background px-3" value={projectChoice} onChange={(event) => setProjectChoice(event.target.value)}><option value="">{tr("اختر المشروع", "Select project")}</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.code} — {project.name}</option>)}</select><Button onClick={() => linkProject()}>{tr("ربط بالموجود", "Link project")}</Button></div>}{["create", "similar"].includes(projectMode) && <div className="mt-3 grid gap-2 md:grid-cols-2"><Input value={projectDraft.name} onChange={(e) => setProjectDraft((x) => ({ ...x, name: e.target.value }))} placeholder={tr("اسم المشروع *", "Project name *")} /><Input value={projectDraft.customer_name} onChange={(e) => setProjectDraft((x) => ({ ...x, customer_name: e.target.value }))} placeholder={tr("العميل", "Client")} /><Input value={projectDraft.governorate} onChange={(e) => setProjectDraft((x) => ({ ...x, governorate: e.target.value }))} placeholder={tr("المحافظة", "Governorate")} /><Input value={projectDraft.city} onChange={(e) => setProjectDraft((x) => ({ ...x, city: e.target.value }))} placeholder={tr("المدينة / الموقع", "City / location")} /><Input value={projectDraft.address} onChange={(e) => setProjectDraft((x) => ({ ...x, address: e.target.value }))} placeholder={tr("العنوان", "Address")} /><Input value={projectDraft.engineer} onChange={(e) => setProjectDraft((x) => ({ ...x, engineer: e.target.value }))} placeholder={tr("المهندس / المسؤول", "Engineer / owner")} /><Textarea className="md:col-span-2" value={projectDraft.notes} onChange={(e) => setProjectDraft((x) => ({ ...x, notes: e.target.value }))} placeholder={tr("ملاحظات", "Notes")} /><div className="flex justify-end md:col-span-2"><Button onClick={() => createAndLinkProject(projectMode === "similar")}>{tr("إنشاء وربط المشروع", "Create and link project")}</Button></div></div>}</div>}
 
               <div>
-                <h3 className="mb-2 text-sm font-bold text-slate-800">الأصناف المطلوبة</h3>
+                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("الأصناف المطلوبة", "Requested items")}</h3>
                 <div className="space-y-2">
                   {selected.items.map((item) => (
                     <div key={item.id} className="rounded-lg border border-slate-200 p-3">
@@ -510,8 +519,8 @@ export default function IncomingPurchaseRequests() {
                             {item.position}. {item.product_name}
                             {!item.item_id && (
                               <>
-                                <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300 bg-amber-50">
-                                  صنف يدوي
+                                <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300">
+                                  {tr("صنف يدوي", "Manual item")}
                                 </Badge>
                                 {canConvertManualItem && (
                                   <Button
@@ -519,20 +528,20 @@ export default function IncomingPurchaseRequests() {
                                     data-testid="convert-manual-item-button"
                                     onClick={() => openConvert(item)}
                                   >
-                                    إضافة إلى الأصناف
+                                    {tr("إضافة إلى الأصناف", "Add to Item Master")}
                                   </Button>
                                 )}
                               </>
                             )}
                           </div>
-                          <div className="mt-1 text-xs text-slate-500">{[item.main_category, item.subcategory, item.preferred_brand].filter(Boolean).join(" / ") || "بدون تصنيف أو علامة مفضلة"}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">{[item.main_category, item.subcategory, item.preferred_brand].filter(Boolean).join(" / ") || tr("بدون تصنيف أو علامة مفضلة", "No category or preferred brand")}</div>
                         </div>
                         <div className="whitespace-nowrap rounded-md bg-blue-50 px-2 py-1 text-sm font-bold text-primary">{item.quantity} {item.unit}</div>
                       </div>
-                      {item.specifications && <p className="mt-2 text-sm leading-6 text-slate-600">{item.specifications}</p>}
-                                            <div className="mt-3 grid gap-2 rounded-md bg-slate-50 p-3 md:grid-cols-[180px_1fr_auto]">
+                      {item.specifications && <p className="mt-2 text-sm leading-5 text-muted-foreground">{item.specifications}</p>}
+                      <div className="mt-3 grid gap-2 rounded-md bg-muted/50 p-3 md:grid-cols-[180px_1fr_auto]">
                         <select
-                          className="h-9 rounded-md border border-input bg-white px-3 text-sm"
+                          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
                           value={
                             itemReviewDrafts[item.id]?.status
                             ?? item.review_status
@@ -551,11 +560,11 @@ export default function IncomingPurchaseRequests() {
                             }))
                           }
                         >
-                          <option value="pending">قيد المراجعة</option>
-                          <option value="approved">معتمد</option>
-                          <option value="rejected">مرفوض</option>
-                          <option value="need_clarification">يحتاج استكمال</option>
-                          <option value="hold">معلّق</option>
+                          <option value="pending">{tr("قيد المراجعة", "Under review")}</option>
+                          <option value="approved">{tr("معتمد", "Approved")}</option>
+                          <option value="rejected">{tr("مرفوض", "Rejected")}</option>
+                          <option value="need_clarification">{tr("يحتاج استكمال", "Needs clarification")}</option>
+                          <option value="hold">{tr("معلّق", "On hold")}</option>
                         </select>
 
                         <Input
@@ -576,7 +585,7 @@ export default function IncomingPurchaseRequests() {
                               },
                             }))
                           }
-                          placeholder="سبب الرفض أو طلب الاستكمال"
+                          placeholder={tr("سبب الرفض أو طلب الاستكمال", "Reason for rejection or clarification")}
                         />
 
                         <Button
@@ -584,7 +593,7 @@ export default function IncomingPurchaseRequests() {
                           size="sm"
                           onClick={() => saveItemReview(item)}
                         >
-                          حفظ حالة الصنف
+                          {tr("حفظ حالة الصنف", "Save item review")}
                         </Button>
                       </div>
                       {item.attachment && <Button variant="ghost" size="sm" className="mt-2 h-7 gap-1 px-2 text-primary" onClick={() => openAttachment(item)}><Download className="h-3.5 w-3.5" /> {item.attachment.original_filename}</Button>}
@@ -594,35 +603,35 @@ export default function IncomingPurchaseRequests() {
               </div>
 
               {!!documents.length && <div>
-                <h3 className="mb-2 text-sm font-bold text-slate-800">المستندات المرفوعة للمراجعة</h3>
-                <div className="space-y-2">{documents.map((document) => <div key={document.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3"><div><div className="text-sm font-bold">{document.document_type}</div><div className="mt-1 text-xs text-slate-500">{document.status} · {document.page_count || 0} صفحة</div></div><Button asChild size="sm" variant="outline"><Link to={`/incoming-requests/${selected.id}/documents/${document.id}/review`}><ScanText className="ms-1 h-4 w-4" /> مراجعة الاستخراج</Link></Button></div>)}</div>
+                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("المستندات المرفوعة للمراجعة", "Documents submitted for review")}</h3>
+                <div className="space-y-2">{documents.map((document) => <div key={document.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"><div><div className="text-sm font-bold">{document.document_type}</div><div className="mt-1 text-xs text-muted-foreground">{document.status} · {document.page_count || 0} {tr("صفحة", "pages")}</div></div><Button asChild size="sm" variant="outline"><Link to={`/incoming-requests/${selected.id}/documents/${document.id}/review`}><ScanText className="ms-1 h-4 w-4" /> {tr("مراجعة الاستخراج", "Review extraction")}</Link></Button></div>)}</div>
               </div>}
 
-              {selected.notes && <div><h3 className="mb-1 text-sm font-bold text-slate-800">ملاحظات مقدم الطلب</h3><p className="rounded-md bg-slate-50 p-3 text-sm leading-6 text-slate-600">{selected.notes}</p></div>}
+              {selected.notes && <div><h3 className="mb-1 text-sm font-bold text-foreground">{tr("ملاحظات مقدم الطلب", "Requester notes")}</h3><p className="rounded-md bg-muted/60 p-3 text-sm leading-6 text-muted-foreground">{selected.notes}</p></div>}
 
               <div className="grid grid-cols-1 gap-3 border-t border-slate-200 pt-4 lg:grid-cols-2">
                 <div className="space-y-2">
-                  <Label className="text-xs">الموظف المسؤول</Label>
-                  <div className="flex gap-2"><Input value={assignment} onChange={(event) => setAssignment(event.target.value)} placeholder="اسم الموظف" /><Button variant="outline" onClick={saveAssignment}>حفظ</Button></div>
+                  <Label className="text-xs">{tr("الموظف المسؤول", "Assigned employee")}</Label>
+                  <div className="flex gap-2"><Input value={assignment} onChange={(event) => setAssignment(event.target.value)} placeholder={tr("اسم الموظف", "Employee name")} /><Button variant="outline" onClick={saveAssignment}>{tr("حفظ", "Save")}</Button></div>
                 </div>
                 <div className="space-y-2">
-                  <Label className="text-xs">اسم منفذ الإجراء</Label>
-                  <Input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="اسم الموظف" />
+                  <Label className="text-xs">{tr("اسم منفذ الإجراء", "Action owner")}</Label>
+                  <Input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder={tr("اسم الموظف", "Employee name")} />
                 </div>
-                {selected.status === "pricing" ? <div className="rounded-xl border-2 border-emerald-300 bg-emerald-50 p-4 lg:col-span-2" data-testid="technical-review-complete"><div className="flex items-center gap-3"><CheckCircle2 className="h-8 w-8 text-emerald-700" /><div><h3 className="font-black text-emerald-950">تمت المراجعة الفنية</h3><p className="text-sm text-emerald-800">جاهز للتسعير والمقارنة</p></div></div></div> : ["rejected", "completed", "cancelled"].includes(selected.status) ? <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800 lg:col-span-2">انتهت المراجعة بحالة: {statusLabel(selected.status)}</div> : canReviewTechnical ? <div className="space-y-3 rounded-xl border-2 border-blue-200 bg-blue-50 p-4 lg:col-span-2" data-testid="technical-review-actions">
-                  <div><div className="text-xs font-bold text-blue-700">الإجراء المسؤول: مهندس المشتريات</div><h3 className="font-black text-blue-950">قرار المراجعة الفنية لطلب الشراء</h3></div>
-                  <Input value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder="ملاحظة القرار (مطلوبة عند الحاجة للتوضيح)" />
+                {selected.status === "pricing" ? <div className="rounded-lg border bg-emerald-500/10 p-4 lg:col-span-2" data-testid="technical-review-complete"><div className="flex items-center gap-3"><CheckCircle2 className="h-8 w-8 text-emerald-700" /><div><h3 className="font-bold text-emerald-950">{tr("تمت المراجعة الفنية", "Technical review completed")}</h3><p className="text-sm text-emerald-800">{tr("جاهز للتسعير والمقارنة", "Ready for pricing and comparison")}</p></div></div></div> : ["rejected", "completed", "cancelled"].includes(selected.status) ? <div className="rounded-lg border bg-destructive/10 p-4 text-sm font-bold text-destructive lg:col-span-2">{tr("انتهت المراجعة بحالة", "Review ended with status")}: {statusLabel(selected.status, language)}</div> : canReviewTechnical ? <div className="space-y-3 rounded-lg border bg-blue-500/10 p-4 lg:col-span-2" data-testid="technical-review-actions">
+                  <div><div className="text-xs font-bold text-blue-700">{tr("الإجراء المسؤول: مهندس المشتريات", "Action owner: Procurement Engineer")}</div><h3 className="font-bold text-blue-950">{tr("قرار المراجعة الفنية لطلب الشراء", "Purchase request technical decision")}</h3></div>
+                  <Input value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder={tr("سبب طلب التوضيح (مطلوب عند الإرجاع)", "Clarification reason (required when returning)")} />
                   <div className="flex flex-wrap gap-2">
-                    <Button onClick={() => technicalDecision("approved_for_pricing")} className="bg-emerald-700 hover:bg-emerald-800">✅ اعتماد للتسعير</Button>
-                    <Button variant="outline" onClick={() => technicalDecision("revision_required")}>✏️ تعديل مطلوب</Button>
-                    <Button variant="outline" onClick={() => technicalDecision("hold")}>⏸ تعليق</Button>
-                    <Button variant="destructive" onClick={() => technicalDecision("rejected")}>❌ رفض</Button>
+                    <Button onClick={() => technicalDecision("approved_for_pricing")} className="bg-emerald-700 text-white hover:bg-emerald-800">{tr("اعتماد للتسعير", "Approve for pricing")}</Button>
+                    <Button variant="outline" onClick={() => technicalDecision("revision_required")}>{tr("يحتاج توضيح", "Needs clarification")}</Button>
+                    <Button variant="outline" onClick={() => technicalDecision("hold")}>{tr("تعليق", "Place on hold")}</Button>
+                    <Button variant="destructive" onClick={() => technicalDecision("rejected")}>{tr("رفض", "Reject")}</Button>
                   </div>
                 </div> : null}
                 <div className="space-y-2 lg:col-span-2">
-                  <Label className="text-xs">إضافة ملاحظة داخلية</Label>
-                  <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="هذه الملاحظة داخلية ولا تظهر لمقدم الطلب" rows={2} />
-                  <Button variant="outline" size="sm" onClick={addNote}>إضافة الملاحظة</Button>
+                  <Label className="text-xs">{tr("إضافة ملاحظة داخلية", "Add internal note")}</Label>
+                  <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("هذه الملاحظة داخلية ولا تظهر لمقدم الطلب", "This note is internal and is not shown to the requester")} rows={2} />
+                  <Button variant="outline" size="sm" onClick={addNote}>{tr("إضافة الملاحظة", "Add note")}</Button>
                 </div>
               </div>
 
@@ -631,22 +640,22 @@ export default function IncomingPurchaseRequests() {
                   {rfq ? (
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <div className="text-xs font-bold text-violet-700">طلب تسعير (RFQ)</div>
+                        <div className="text-xs font-bold text-violet-700">{tr("طلب تسعير (RFQ)", "Request for Quotation (RFQ)")}</div>
                         <div className="font-bold text-violet-950">{rfq.rfq_number}</div>
                         <div className="mt-1 text-xs text-violet-800">
-                          {rfq.supplier_count} مورد · {rfq.received_quotation_count} عرض مستلم
-                          {rfq.deadline && <> · الموعد النهائي: {rfq.deadline}</>}
+                          {tr(`${rfq.supplier_count} مورد`, `${rfq.supplier_count} suppliers`)} · {tr(`${rfq.received_quotation_count} عرض مستلم`, `${rfq.received_quotation_count} quotations received`)}
+                          {rfq.deadline && <> · {tr("الموعد النهائي", "Deadline")}: {rfq.deadline}</>}
                         </div>
                       </div>
                       <Button size="sm" onClick={() => navigate(`/rfq/${rfq.id}`)} data-testid="open-rfq-button">
-                        فتح RFQ
+                        {tr("فتح RFQ", "Open RFQ")}
                       </Button>
                     </div>
                   ) : (
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="text-sm text-violet-900">لم يُنشأ طلب تسعير لهذا الطلب بعد.</div>
+                      <div className="text-sm text-violet-900">{tr("لم يُنشأ طلب تسعير لهذا الطلب بعد.", "No RFQ has been created for this request yet.")}</div>
                       <Button size="sm" onClick={createOrOpenRfq} disabled={creatingRfq} data-testid="create-rfq-button">
-                        إنشاء RFQ
+                        {tr("إنشاء RFQ", "Create RFQ")}
                       </Button>
                     </div>
                   )}
@@ -654,7 +663,7 @@ export default function IncomingPurchaseRequests() {
               )}
 
               <div className="border-t border-slate-200 pt-4">
-                <h3 className="mb-2 text-sm font-bold text-slate-800">التحويلات الآمنة</h3>
+                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("الإجراءات التالية", "Next actions")}</h3>
                 <div className="flex flex-wrap gap-2">
 
                   <Button
@@ -663,26 +672,26 @@ export default function IncomingPurchaseRequests() {
                     onClick={sendToComparison}
                     disabled={selected.status !== "pricing" || !selected.project_id}
                   >
-                    بدء مقارنة الأسعار
+                    {tr("بدء مقارنة الأسعار", "Start supplier comparison")}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={convertCustomer} disabled={Boolean(selected.converted_customer_id)}><UserPlus className="ms-1 h-4 w-4" /> {selected.converted_customer_id ? "تم ربط العميل" : "تحويل إلى عميل"}</Button>
-                  <Button variant="outline" size="sm" onClick={() => convertDocument("internal_request")} disabled={Boolean(selected.converted_document)}><FileText className="ms-1 h-4 w-4" /> طلب شراء داخلي</Button>
-                  <Button variant="outline" size="sm" onClick={() => convertDocument("purchase_draft")} disabled={Boolean(selected.converted_document)}><ClipboardList className="ms-1 h-4 w-4" /> مسودة شراء</Button>
+                  <Button variant="outline" size="sm" onClick={convertCustomer} disabled={Boolean(selected.converted_customer_id)}><UserPlus className="ms-1 h-4 w-4" /> {selected.converted_customer_id ? tr("تم ربط العميل", "Client linked") : tr("تحويل إلى عميل", "Convert to client")}</Button>
+                  <Button variant="outline" size="sm" onClick={() => convertDocument("internal_request")} disabled={Boolean(selected.converted_document)}><FileText className="ms-1 h-4 w-4" /> {tr("طلب شراء داخلي", "Internal purchase request")}</Button>
+                  <Button variant="outline" size="sm" onClick={() => convertDocument("purchase_draft")} disabled={Boolean(selected.converted_document)}><ClipboardList className="ms-1 h-4 w-4" /> {tr("مسودة شراء", "Purchase draft")}</Button>
                 </div>
-                {(selected.status !== "pricing" || !selected.project_id) && <p className="mt-2 text-xs text-amber-700">يتاح بدء المقارنة بعد الاعتماد الفني وربط الطلب بالمشروع.</p>}
-                {selected.converted_document && <div className="mt-2 flex items-center gap-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800"><CheckCircle2 className="h-4 w-4" /> تم إنشاء {selected.converted_document.document_number} كمسودة داخلية، وليس عملية شراء مكتملة.</div>}
+                {(selected.status !== "pricing" || !selected.project_id) && <p className="mt-2 text-xs text-amber-700">{tr("يتاح بدء المقارنة بعد الاعتماد الفني وربط الطلب بالمشروع.", "Supplier comparison becomes available after technical approval and project linking.")}</p>}
+                {selected.converted_document && <div className="mt-2 flex items-center gap-2 rounded-md bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" /> {tr(`تم إنشاء ${selected.converted_document.document_number} كمسودة داخلية، وليس عملية شراء مكتملة.`, `${selected.converted_document.document_number} was created as an internal draft, not a completed purchase.`)}</div>}
               </div>
 
               <div className="border-t border-slate-200 pt-4">
-                <h3 className="mb-2 text-sm font-bold text-slate-800">سجل الحالة</h3>
+                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("سجل الحالة", "Status history")}</h3>
                 <div className="space-y-2">
-                  {[...selected.status_history].reverse().map((entry) => <div key={entry.id} className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600"><b>{statusLabel(entry.to_status)}</b> — {new Date(entry.created_at).toLocaleString("ar-EG")} {entry.changed_by && `— ${entry.changed_by}`} {entry.note && <div className="mt-1">{entry.note}</div>}</div>)}
+                  {[...selected.status_history].reverse().map((entry) => <div key={entry.id} className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground"><b>{statusLabel(entry.to_status, language)}</b> — {new Date(entry.created_at).toLocaleString(locale)} {entry.changed_by && `— ${entry.changed_by}`} {entry.note && <div className="mt-1">{entry.note}</div>}</div>)}
                 </div>
               </div>
 
               <div>
-                <h3 className="mb-2 text-sm font-bold text-slate-800">الملاحظات الداخلية</h3>
-                <div className="space-y-2">{selected.internal_notes.length ? selected.internal_notes.map((entry) => <div key={entry.id} className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-slate-700">{entry.note}<div className="mt-1 text-[11px] text-slate-500">{entry.author || "بدون اسم"} — {new Date(entry.created_at).toLocaleString("ar-EG")}</div></div>) : <div className="text-xs text-slate-400">لا توجد ملاحظات داخلية.</div>}</div>
+                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("الملاحظات الداخلية", "Internal notes")}</h3>
+                <div className="space-y-2">{selected.internal_notes.length ? selected.internal_notes.map((entry) => <div key={entry.id} className="rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-foreground">{entry.note}<div className="mt-1 text-[11px] text-muted-foreground">{entry.author || tr("بدون اسم", "No name")} — {new Date(entry.created_at).toLocaleString(locale)}</div></div>) : <div className="text-xs text-muted-foreground">{tr("لا توجد ملاحظات داخلية.", "No internal notes.")}</div>}</div>
               </div>
             </div>
           )}
@@ -690,16 +699,16 @@ export default function IncomingPurchaseRequests() {
       </div>
 
       <Dialog open={!!convertTarget} onOpenChange={(open) => !open && setConvertTarget(null)}>
-        <DialogContent dir="rtl" className="max-w-lg" data-testid="convert-manual-item-dialog">
+        <DialogContent dir={direction} className="max-w-lg" data-testid="convert-manual-item-dialog">
           <DialogHeader>
-            <DialogTitle className="text-start">تحويل إلى صنف معتمد</DialogTitle>
+            <DialogTitle className="text-start">{tr("إضافة إلى الأصناف", "Add to Item Master")}</DialogTitle>
             <DialogDescription className="text-start">
-              راجع بيانات الصنف اليدوي قبل إضافته إلى دليل الأصناف. النص الأصلي للطلب يبقى محفوظًا كما هو.
+              {tr("راجع بيانات الصنف اليدوي قبل إضافته إلى دليل الأصناف. النص الأصلي للطلب يبقى محفوظًا كما هو.", "Review the manual item before adding it to the Item Master. The original request text remains unchanged.")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label className="text-xs">اسم الصنف</Label>
+              <Label className="text-xs">{tr("اسم الصنف", "Item name")}</Label>
               <Input
                 data-testid="convert-form-name"
                 value={convertForm.name}
@@ -708,7 +717,7 @@ export default function IncomingPurchaseRequests() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label className="text-xs">الوحدة</Label>
+                <Label className="text-xs">{tr("الوحدة", "Unit")}</Label>
                 <Input
                   data-testid="convert-form-unit"
                   value={convertForm.unit}
@@ -716,21 +725,21 @@ export default function IncomingPurchaseRequests() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">العلامة التجارية</Label>
+                <Label className="text-xs">{tr("العلامة التجارية", "Brand")}</Label>
                 <Input
                   value={convertForm.brand}
                   onChange={(e) => setConvertForm({ ...convertForm, brand: e.target.value })}
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">التصنيف الرئيسي</Label>
+                <Label className="text-xs">{tr("التصنيف الرئيسي", "Main category")}</Label>
                 <Input
                   value={convertForm.main_category}
                   onChange={(e) => setConvertForm({ ...convertForm, main_category: e.target.value })}
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">التصنيف الفرعي</Label>
+                <Label className="text-xs">{tr("التصنيف الفرعي", "Subcategory")}</Label>
                 <Input
                   value={convertForm.subcategory}
                   onChange={(e) => setConvertForm({ ...convertForm, subcategory: e.target.value })}
@@ -738,7 +747,7 @@ export default function IncomingPurchaseRequests() {
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs">المواصفات / الوصف</Label>
+              <Label className="text-xs">{tr("المواصفات / الوصف", "Specifications / description")}</Label>
               <Textarea
                 rows={3}
                 value={convertForm.specifications}
@@ -747,9 +756,9 @@ export default function IncomingPurchaseRequests() {
             </div>
           </div>
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setConvertTarget(null)}>إلغاء</Button>
+            <Button variant="outline" onClick={() => setConvertTarget(null)}>{tr("إلغاء", "Cancel")}</Button>
             <Button data-testid="convert-form-submit" onClick={submitConvert} disabled={converting}>
-              {converting ? "جارٍ التحويل..." : "تحويل إلى صنف معتمد"}
+              {converting ? tr("جارٍ الإضافة...", "Adding...") : tr("إضافة إلى الأصناف", "Add to Item Master")}
             </Button>
           </DialogFooter>
         </DialogContent>

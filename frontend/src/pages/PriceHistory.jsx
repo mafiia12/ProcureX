@@ -10,10 +10,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import api, { errMsg } from "@/lib/api";
+import { usePreferences } from "@/contexts/PreferencesContext";
 
 const EMPTY_FILTERS = { item: "", supplier: "", project: "", date_from: "", date_to: "" };
 
 export default function PriceHistory() {
+  const preferences = usePreferences();
+  const language = preferences.language || "ar";
+  const tr = preferences.tr || ((ar, en) => (language === "en" ? en : ar));
   const location = useLocation();
   const initialFilters = {
     ...EMPTY_FILTERS,
@@ -58,15 +62,15 @@ export default function PriceHistory() {
   };
 
   const columns = [
-    { key: "date", label: "التاريخ", className: "whitespace-nowrap" },
-    { key: "item", label: "الصنف", className: "min-w-48", render: (row) => <div><div className="font-semibold text-slate-900">{row.item_name}</div>{row.item_code && <div className="font-mono text-[11px] text-slate-400" dir="ltr">{row.item_code}</div>}</div> },
-    { key: "supplier", label: "المورد", className: "min-w-40" },
-    { key: "project", label: "المشروع", className: "min-w-40" },
-    { key: "quantity", label: "الكمية", className: "text-center tabular-nums" },
-    { key: "unit", label: "الوحدة" },
-    { key: "unit_price", label: "سعر الوحدة", className: "text-end", render: (row) => <MoneyDisplay value={row.unit_price} currency={row.currency === "EGP" ? "ج.م" : row.currency} /> },
-    { key: "adjusted_unit_price", label: "السعر المعدل", className: "text-end", render: (row) => <div><MoneyDisplay value={row.adjusted_unit_price} currency={row.currency === "EGP" ? "ج.م" : row.currency} className="font-semibold" />{(Number(row.discount_pct) > 0 || Number(row.tax_pct) > 0) && <div className="mt-0.5 text-[10px] text-slate-400">خصم {row.discount_pct || 0}% · ضريبة {row.tax_pct || 0}%</div>}</div> },
-    { key: "availability", label: "التوفر", render: (row) => row.availability === "available" ? <StatusBadge tone="success">متاح</StatusBadge> : <StatusBadge tone="danger">غير متاح</StatusBadge> },
+    { key: "date", label: tr("التاريخ", "Date"), className: "whitespace-nowrap" },
+    { key: "item", label: tr("الصنف", "Item"), className: "min-w-48", render: (row) => <div><div className="font-semibold text-foreground">{row.item_name}</div>{row.item_code && <div className="font-mono text-[11px] text-muted-foreground" dir="ltr">{row.item_code}</div>}</div> },
+    { key: "supplier", label: tr("المورد", "Supplier"), className: "min-w-40" },
+    { key: "project", label: tr("المشروع", "Project"), className: "min-w-40" },
+    { key: "quantity", label: tr("الكمية", "Qty"), className: "text-center tabular-nums" },
+    { key: "unit", label: tr("الوحدة", "Unit") },
+    { key: "unit_price", label: tr("سعر الوحدة", "Unit Price"), className: "text-end", render: (row) => <MoneyDisplay value={row.unit_price} currency={row.currency === "EGP" ? tr("ج.م", "EGP") : row.currency} /> },
+    { key: "adjusted_unit_price", label: tr("السعر المعدل", "Adjusted Price"), className: "text-end", render: (row) => <div><MoneyDisplay value={row.adjusted_unit_price} currency={row.currency === "EGP" ? tr("ج.م", "EGP") : row.currency} className="font-semibold" />{(Number(row.discount_pct) > 0 || Number(row.tax_pct) > 0) && <div className="mt-0.5 text-[10px] text-muted-foreground">{tr("خصم", "Discount")} {row.discount_pct || 0}% · {tr("ضريبة", "VAT")} {row.tax_pct || 0}%</div>}</div> },
+    { key: "availability", label: tr("التوفر", "Availability"), render: (row) => row.availability === "available" ? <StatusBadge tone="success">{tr("متاح", "Available")}</StatusBadge> : <StatusBadge tone="danger">{tr("غير متاح", "Unavailable")}</StatusBadge> },
     { key: "rfq_number", label: "RFQ", render: (row) => <span className="font-mono text-xs" dir="ltr">{row.rfq_number || "-"}</span> },
     { key: "comparison_number", label: "CMP", render: (row) => <span className="font-mono text-xs" dir="ltr">{row.comparison_number || "-"}</span> },
   ];
@@ -74,24 +78,24 @@ export default function PriceHistory() {
   return (
     <div className="space-y-5" data-testid="price-history-page">
       <PageHeader
-        title="تاريخ أسعار الموردين"
-        description="أسعار فعلية من عروض الموردين المستلمة عبر RFQ والمقارنة الرسمية فقط؛ بيانات الشراء المباشر القديمة غير مختلطة بهذا السجل."
+        title={tr("تاريخ أسعار الموردين", "Supplier Price History")}
+        description={tr("أسعار فعلية من عروض الموردين المستلمة عبر RFQ والمقارنة الرسمية فقط؛ بيانات الشراء المباشر القديمة غير مختلطة بهذا السجل.", "Formal prices received through RFQs and supplier comparisons only; legacy direct purchases are excluded.")}
       />
 
-      <FilterBar resultLabel={`${rows.length} عرض سعر · ${supplierCount} مورد`} onClear={clearFilters}>
-        <SearchInput className="w-full sm:w-64" placeholder="الصنف أو كوده..." value={filters.item} onChange={(event) => setFilters((current) => ({ ...current, item: event.target.value }))} data-testid="price-history-item-filter" />
-        <Input className="w-full sm:w-52" placeholder="المورد..." value={filters.supplier} onChange={(event) => setFilters((current) => ({ ...current, supplier: event.target.value }))} data-testid="price-history-supplier-filter" />
-        <Input className="w-full sm:w-52" placeholder="المشروع..." value={filters.project} onChange={(event) => setFilters((current) => ({ ...current, project: event.target.value }))} data-testid="price-history-project-filter" />
-        <label className="flex items-center gap-2 text-xs text-slate-500">من<Input type="date" className="w-40" value={filters.date_from} onChange={(event) => setFilters((current) => ({ ...current, date_from: event.target.value }))} /></label>
-        <label className="flex items-center gap-2 text-xs text-slate-500">إلى<Input type="date" className="w-40" value={filters.date_to} onChange={(event) => setFilters((current) => ({ ...current, date_to: event.target.value }))} /></label>
-        <Button type="button" size="sm" onClick={applyFilters} disabled={loading}>تطبيق</Button>
-        {Object.values(appliedFilters).some(Boolean) && <Button type="button" size="sm" variant="ghost" onClick={clearFilters}><RotateCcw className="h-4 w-4" /> الكل</Button>}
+      <FilterBar resultLabel={tr(`${rows.length} عرض سعر · ${supplierCount} مورد`, `${rows.length} quotations · ${supplierCount} suppliers`)} onClear={clearFilters}>
+        <SearchInput className="w-full sm:w-64" placeholder={tr("الصنف أو كوده...", "Item or code...")} value={filters.item} onChange={(event) => setFilters((current) => ({ ...current, item: event.target.value }))} data-testid="price-history-item-filter" />
+        <Input className="w-full sm:w-52" placeholder={tr("المورد...", "Supplier...")} value={filters.supplier} onChange={(event) => setFilters((current) => ({ ...current, supplier: event.target.value }))} data-testid="price-history-supplier-filter" />
+        <Input className="w-full sm:w-52" placeholder={tr("المشروع...", "Project...")} value={filters.project} onChange={(event) => setFilters((current) => ({ ...current, project: event.target.value }))} data-testid="price-history-project-filter" />
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">{tr("من", "From")}<Input type="date" className="w-40" value={filters.date_from} onChange={(event) => setFilters((current) => ({ ...current, date_from: event.target.value }))} /></label>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">{tr("إلى", "To")}<Input type="date" className="w-40" value={filters.date_to} onChange={(event) => setFilters((current) => ({ ...current, date_to: event.target.value }))} /></label>
+        <Button type="button" size="sm" onClick={applyFilters} disabled={loading}>{tr("تطبيق", "Apply")}</Button>
+        {Object.values(appliedFilters).some(Boolean) && <Button type="button" size="sm" variant="ghost" onClick={clearFilters}><RotateCcw className="h-4 w-4" /> {tr("الكل", "Reset")}</Button>}
       </FilterBar>
 
       {loading ? (
-        <div className="rounded-lg border bg-white p-10 text-center text-sm text-slate-400">جارٍ تحميل تاريخ الأسعار...</div>
+        <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">{tr("جارٍ تحميل تاريخ الأسعار...", "Loading price history...")}</div>
       ) : (
-        <DataTable columns={columns} rows={rows} rowTestId="price-history-row" tableClassName="min-w-[1180px]" empty={<EmptyState icon={FileSearch} title="لا يوجد تاريخ أسعار مطابق" description="يظهر السجل بعد استلام أول عرض مورد رسمي. غيّر الفلاتر أو افتح RFQ لتسجيل عرض سعر." />} />
+        <DataTable columns={columns} rows={rows} rowTestId="price-history-row" tableClassName="min-w-[1080px]" empty={<EmptyState icon={FileSearch} title={tr("لا يوجد تاريخ أسعار مطابق", "No matching price history")} description={tr("يظهر السجل بعد استلام أول عرض مورد رسمي. غيّر الفلاتر أو افتح RFQ لتسجيل عرض سعر.", "History appears after the first formal supplier quotation. Adjust the filters or open an RFQ to record one.")} />} />
       )}
     </div>
   );

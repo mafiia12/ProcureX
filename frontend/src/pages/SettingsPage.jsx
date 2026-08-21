@@ -10,14 +10,17 @@ import api, { errMsg } from "@/lib/api";
 import { usePreferences } from "@/contexts/PreferencesContext";
 
 const EDITABLE_REFERENCE_LISTS = new Set(["currencies", "units", "vat_rates"]);
-const REFERENCE_LABELS = {
-  currencies: "العملات المرجعية",
-  units: "وحدات القياس",
-  vat_rates: "نسب ضريبة القيمة المضافة",
-};
-
 export default function SettingsPage() {
-  const { t } = usePreferences();
+  const preferences = usePreferences();
+  const { t } = preferences;
+  const language = preferences.language || "ar";
+  const tr = preferences.tr || ((ar, en) => (language === "en" ? en : ar));
+  const locale = preferences.locale || (language === "en" ? "en-EG" : "ar-EG");
+  const referenceLabels = {
+    currencies: tr("العملات المرجعية", "Reference currencies"),
+    units: tr("وحدات القياس", "Units of measure"),
+    vat_rates: tr("نسب ضريبة القيمة المضافة", "VAT rates"),
+  };
   const [lists, setLists] = useState([]);
   const [inputs, setInputs] = useState({});
   const [diagnostics, setDiagnostics] = useState(null);
@@ -80,34 +83,34 @@ export default function SettingsPage() {
   return (
     <div className="space-y-5" data-testid="settings-page">
       <PageHeader
-        title="الإعدادات"
-        description="إعدادات تشغيلية آمنة فقط. حالات سير العمل والترقيم وقواعد الاعتماد ثابتة ولا يمكن تعديلها من هنا."
+        title={tr("الإعدادات", "Settings")}
+        description={tr("إعدادات تشغيلية آمنة فقط. حالات سير العمل والترقيم وقواعد الاعتماد ثابتة ولا يمكن تعديلها من هنا.", "Safe operational settings only. Workflow statuses, numbering, and approval rules are fixed and cannot be changed here.")}
       />
 
-      <section className="rounded-lg border border-slate-200 bg-white p-4">
-        <SectionHeader title="عام" description="تفضيلات العرض واللغة للمستخدم الحالي." />
+      <section className="rounded-lg border bg-card p-4">
+        <SectionHeader title={tr("عام", "General")} description={tr("تفضيلات العرض واللغة للمستخدم الحالي.", "Display and language preferences for the current user.")} />
         <PreferenceControls />
       </section>
 
       {!!visibleLists.length && (
-        <section className="rounded-lg border border-slate-200 bg-white p-4">
-          <SectionHeader title="المشتريات" description="قوائم مرجعية غير مرتبطة بحالات أو صلاحيات سير العمل." />
+        <section className="rounded-lg border bg-card p-4">
+          <SectionHeader title={tr("المشتريات", "Procurement")} description={tr("قوائم مرجعية غير مرتبطة بحالات أو صلاحيات سير العمل.", "Reference lists that do not control workflow stages or permissions.")} />
           <div className="grid gap-3 lg:grid-cols-3">
             {visibleLists.map((list) => (
-              <div key={list.key} className="rounded-lg border border-slate-200 bg-slate-50/60 p-3" data-testid={`settings-list-${list.key}`}>
-                <h3 className="text-sm font-bold text-slate-800">{REFERENCE_LABELS[list.key]}</h3>
+              <div key={list.key} className="rounded-lg border bg-muted/40 p-3" data-testid={`settings-list-${list.key}`}>
+                <h3 className="text-sm font-bold text-foreground">{referenceLabels[list.key]}</h3>
                 <div className="mt-3 flex min-h-8 flex-wrap gap-1.5">
                   {list.values.map((value, index) => (
-                    <span key={`${value}-${index}`} className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-xs text-slate-700 ring-1 ring-slate-200">
-                      {list.key === "vat_rates" ? `${Number(value).toLocaleString("ar-EG")}%` : value}
-                      <button type="button" data-testid={`settings-remove-${list.key}-${index}`} onClick={() => saveList(list.key, list.values.filter((_, itemIndex) => itemIndex !== index))} className="text-slate-400 hover:text-red-600" aria-label={`حذف ${value}`}><X className="h-3 w-3" /></button>
+                    <span key={`${value}-${index}`} className="inline-flex items-center gap-1 rounded-full bg-card px-2.5 py-1 text-xs text-foreground ring-1 ring-border">
+                      {list.key === "vat_rates" ? `${Number(value).toLocaleString(locale)}%` : value}
+                      <button type="button" data-testid={`settings-remove-${list.key}-${index}`} onClick={() => saveList(list.key, list.values.filter((_, itemIndex) => itemIndex !== index))} className="text-muted-foreground hover:text-destructive" aria-label={`${tr("حذف", "Remove")} ${value}`}><X className="h-3 w-3" /></button>
                     </span>
                   ))}
-                  {!list.values.length && <span className="text-xs text-slate-400">لا توجد قيم مرجعية.</span>}
+                  {!list.values.length && <span className="text-xs text-muted-foreground">{tr("لا توجد قيم مرجعية.", "No reference values.")}</span>}
                 </div>
                 <div className="mt-3 flex gap-2">
-                  <Input className="h-9 text-xs" placeholder="قيمة جديدة" value={inputs[list.key] || ""} onChange={(event) => setInputs((current) => ({ ...current, [list.key]: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && addValue(list)} data-testid={`settings-input-${list.key}`} />
-                  <Button type="button" size="sm" variant="outline" className="h-9 shrink-0" onClick={() => addValue(list)} data-testid={`settings-add-${list.key}`}><Plus className="h-3.5 w-3.5" /> إضافة</Button>
+                  <Input className="h-9 text-xs" placeholder={tr("قيمة جديدة", "New value")} value={inputs[list.key] || ""} onChange={(event) => setInputs((current) => ({ ...current, [list.key]: event.target.value }))} onKeyDown={(event) => event.key === "Enter" && addValue(list)} data-testid={`settings-input-${list.key}`} />
+                  <Button type="button" size="sm" variant="outline" className="h-9 shrink-0" onClick={() => addValue(list)} data-testid={`settings-add-${list.key}`}><Plus className="h-3.5 w-3.5" /> {tr("إضافة", "Add")}</Button>
                 </div>
               </div>
             ))}
@@ -116,13 +119,13 @@ export default function SettingsPage() {
       )}
 
       {diagnostics?.database && (
-        <section className="rounded-lg border border-slate-200 bg-white p-4" data-testid="system-diagnostics">
-          <SectionHeader title="النظام والنسخ الاحتياطي" description="معلومات تشخيصية للمدير؛ إعدادات الترقيم وسير العمل للقراءة فقط." />
+        <section className="rounded-lg border bg-card p-4" data-testid="system-diagnostics">
+          <SectionHeader title={tr("النظام والنسخ الاحتياطي", "System & Backup")} description={tr("معلومات تشخيصية للمدير؛ إعدادات الترقيم وسير العمل للقراءة فقط.", "Administrator diagnostics; numbering and workflow configuration remain read-only.")} />
           <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-            <div className="rounded-md bg-slate-50 p-3"><span className="block text-[11px] text-slate-500">الإصدار</span><strong>{diagnostics.version}</strong></div>
-            <div className="rounded-md bg-slate-50 p-3"><span className="block text-[11px] text-slate-500">وضع التشغيل</span><strong>{t(`settings.${diagnostics.mode}`)}</strong></div>
-            <div className="rounded-md bg-slate-50 p-3"><span className="block text-[11px] text-slate-500">قاعدة البيانات</span><strong className="inline-flex items-center gap-1 text-emerald-700"><ShieldCheck className="h-4 w-4" />{diagnostics.database.status === "healthy" ? t("settings.healthy") : diagnostics.database.status}</strong></div>
-            <div className="rounded-md bg-slate-50 p-3"><span className="block text-[11px] text-slate-500">آخر نسخة احتياطية</span><strong className="text-xs">{diagnostics.last_backup?.created_utc ? new Date(diagnostics.last_backup.created_utc).toLocaleString("ar-EG") : t("settings.noBackup")}</strong></div>
+            <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("الإصدار", "Version")}</span><strong>{diagnostics.version}</strong></div>
+            <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("وضع التشغيل", "Mode")}</span><strong>{t(`settings.${diagnostics.mode}`)}</strong></div>
+            <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("قاعدة البيانات", "Database")}</span><strong className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300"><ShieldCheck className="h-4 w-4" />{diagnostics.database.status === "healthy" ? t("settings.healthy") : diagnostics.database.status}</strong></div>
+            <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("آخر نسخة احتياطية", "Latest backup")}</span><strong className="text-xs">{diagnostics.last_backup?.created_utc ? new Date(diagnostics.last_backup.created_utc).toLocaleString(locale) : t("settings.noBackup")}</strong></div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button size="sm" onClick={createBackup} disabled={backingUp} data-testid="create-system-backup"><DatabaseBackup className="h-4 w-4" />{backingUp ? t("settings.creatingBackup") : t("settings.createBackup")}</Button>

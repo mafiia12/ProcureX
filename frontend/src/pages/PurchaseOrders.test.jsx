@@ -118,7 +118,7 @@ test("payment status filter narrows the register by the real PO payment ledger s
   // the approval-level "funds released" concept.
   expect(container.textContent).not.toContain("المبلغ متاح");
   expect(container.textContent).toContain("مدفوع بالكامل");
-  expect(container.textContent).toContain("لم يحن السداد");
+  expect(container.textContent).toContain("غير مدفوع");
 
   await act(async () => {
     const select = container.querySelector('[data-testid="purchase-order-payment-filter"]');

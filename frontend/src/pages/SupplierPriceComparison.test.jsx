@@ -211,6 +211,54 @@ test("reopens a multi-supplier comparison and renders core columns and highlight
   container.remove();
 });
 
+test("cheapest complete action selects every eligible row and excludes an incomplete supplier", async () => {
+  const twoItemDetail = {
+    ...detail,
+    rows: [
+      { ...detail.rows[0], id: "row-a1", item_id: "item-1", item_code: "ITM-1", product_name: "منتج أول", unit_price: 100 },
+      { ...detail.rows[0], id: "row-a2", item_id: "item-2", item_code: "ITM-2", product_name: "منتج ثان", unit_price: 120 },
+      { ...detail.rows[1], id: "row-b1", item_id: "item-1", item_code: "ITM-1", product_name: "منتج أول", availability: "available", unit_price: 80 },
+    ],
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => { root.render(<SupplierPriceComparison initialComparison={twoItemDetail} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
+
+  await act(async () => container.querySelector('[data-testid="select-cheapest-complete-offer"]').click());
+  const completeCard = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')]
+    .find((card) => card.textContent.includes("المورد الأخضر"));
+  const incompleteCard = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')]
+    .find((card) => card.textContent.includes("المورد غير المتاح"));
+  expect(completeCard.textContent).toContain("2 مختار");
+  expect(incompleteCard.textContent).not.toContain("مختار");
+  // Selection is a local comparison decision until the user explicitly saves;
+  // it never invokes approval or any other workflow mutation automatically.
+  expect(mockPost).not.toHaveBeenCalled();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("a withdrawn quotation cannot win cheapest complete selection", async () => {
+  const withdrawn = {
+    ...detail,
+    source_rfq_id: "rfq-1",
+    supplier_quotations: [{ id: "quotation-1", supplier_id: "supplier-1", supplier_name: "المورد الأخضر", status: "withdrawn", attachments: [] }],
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => { root.render(<SupplierPriceComparison initialComparison={withdrawn} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
+
+  await act(async () => container.querySelector('[data-testid="select-cheapest-complete-offer"]').click());
+  expect(container.textContent).not.toContain("1 مختار");
+  expect(mockPost).not.toHaveBeenCalled();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("shows source request attachments without extraction controls", async () => {
   const withAttachment = {
     ...detail,
@@ -230,6 +278,33 @@ test("shows source request attachments without extraction controls", async () =>
   expect(container.textContent).toContain("مرفقات طلب الشراء");
   expect(container.textContent).toContain("site-request.png");
   expect(container.textContent).not.toMatch(/OCR|استخراج تلقائي/);
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("renders supplier quotation attachments inside the matching supplier offer", async () => {
+  const withQuotationAttachment = {
+    ...detail,
+    source_rfq_id: "rfq-1",
+    supplier_quotations: [{
+      id: "quotation-1", supplier_id: "supplier-1", supplier_name: "المورد الأخضر",
+      status: "received", attachments: [{
+        id: "quote-file-1", original_filename: "supplier-offer.pdf",
+        download_url: "/workflow/rfqs/rfq-1/quotations/quotation-1/attachments/quote-file-1",
+      }],
+    }],
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => { root.render(<SupplierPriceComparison initialComparison={withQuotationAttachment} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
+
+  const supplierCard = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')]
+    .find((card) => card.textContent.includes("المورد الأخضر"));
+  expect(supplierCard.textContent).toContain("مرفق عرض المورد");
+  expect(supplierCard.textContent).toContain("supplier-offer.pdf");
+  expect(container.textContent).not.toContain("مرفق عام للمقارنة");
+
   await act(async () => root.unmount());
   container.remove();
 });

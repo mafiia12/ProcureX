@@ -68,8 +68,8 @@ const comparisonFingerprint = ({ projectName, customerName, comparisonDate, note
 
 function Metric({ label, value, accent = "text-slate-900" }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-2.5">
-      <div className="text-[11px] text-slate-500">{label}</div>
+    <div className="rounded-md border bg-card p-2.5">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className={`mt-1 truncate text-sm font-bold ${accent}`} title={value || undefined}>
         {value ?? "-"}
       </div>
@@ -96,7 +96,7 @@ function RequestAttachmentCard({ attachment, tr }) {
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
   }, [attachment.view_url]);
-  return <article className="rounded-lg border border-blue-200 bg-white p-3" data-testid="request-attachment">
+  return <article className="rounded-lg border border-blue-500/20 bg-card p-3" data-testid="request-attachment">
     {attachment.is_image && objectUrl && <img src={objectUrl} alt={attachment.original_filename} className="mb-3 max-h-64 w-full rounded-md bg-slate-50 object-contain" />}
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="min-w-0"><div className="truncate text-sm font-bold">{attachment.original_filename}</div><div className="mt-1 text-xs text-slate-500">{attachment.item_label || tr("مرفق طلب الشراء", "Purchase request attachment")}</div></div>
@@ -380,7 +380,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
       summary,
     ]));
     const groups = new Map();
-    filteredRows.forEach((row) => {
+    calculations.rows.forEach((row) => {
       const key = rowSupplierKey(row) || row.supplier_name || `unassigned-${row.key}`;
       if (!groups.has(key)) groups.set(key, {
         key,
@@ -394,7 +394,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
       groups.get(key).rowsByItem.set(rowItemKey(row), row);
     });
     return [...groups.values()];
-  }, [calculations.supplier_summaries, filteredRows]);
+  }, [calculations.rows, calculations.supplier_summaries]);
   const supplierPageCount = Math.max(1, Math.ceil(supplierOfferGroups.length / 3));
   const visibleSupplierGroups = supplierOfferGroups.slice(supplierPage * 3, supplierPage * 3 + 3);
   useEffect(() => {
@@ -733,23 +733,57 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   );
   };
 
-  const selectSupplierOffer = (group) => {
+  const selectSupplierOffer = (group, cheapestSelection = false) => {
     if (!group.summary?.is_complete) {
       toast.error(tr("لا يمكن اختيار عرض غير مكتمل", "An incomplete offer cannot be selected"));
       return;
     }
-    const selectedByItem = new Map(group.rows.filter((row) => row.eligible).map((row) => [rowItemKey(row), row.key]));
+    const quotation = supplierQuotations.find((item) => (
+      (item.supplier_id && item.supplier_id === group.key)
+      || item.supplier_name === group.supplierName
+    ));
+    if (quotation && quotation.status !== "received") {
+      toast.error(tr("لا يمكن اختيار عرض مسودة أو منسحب", "Draft or withdrawn quotations cannot be selected"));
+      return;
+    }
+    // Selection must always cover the supplier's full quotation, regardless
+    // of any UI filter currently hiding rows from the detailed table.
+    const fullSupplierRows = calculations.rows.filter((row) => rowSupplierKey(row) === group.key);
+    const selectedByItem = new Map(fullSupplierRows.filter((row) => row.eligible).map((row) => [rowItemKey(row), row.key]));
     setRows((current) => current.map((row) => {
       const selectedKey = selectedByItem.get(rowItemKey(row));
       if (!selectedKey) return row;
       return { ...row, selected_for_purchase: row.key === selectedKey ? 1 : 0 };
     }));
+    toast.success(cheapestSelection ? tr(
+      `تم اختيار أرخص عرض كامل — ${group.supplierName} — الإجمالي ${formatMoney(group.summary.final_offer_total)}`,
+      `Selected cheapest complete offer — ${group.supplierName} — total ${formatMoney(group.summary.final_offer_total)}`,
+    ) : tr(
+      `تم اختيار عرض ${group.supplierName} بإجمالي ${formatMoney(group.summary.final_offer_total)}`,
+      `Selected ${group.supplierName}'s offer at ${formatMoney(group.summary.final_offer_total)}`,
+    ));
   };
 
   const quotationForGroup = (group) => supplierQuotations.find((quotation) => (
     (quotation.supplier_id && quotation.supplier_id === group.key)
     || quotation.supplier_name === group.supplierName
   ));
+
+  const cheapestSelectableGroup = [...supplierOfferGroups]
+    .filter((group) => {
+      if (!group.summary?.is_complete) return false;
+      const quotation = quotationForGroup(group);
+      return !quotation || quotation.status === "received";
+    })
+    .sort((left, right) => Number(left.summary.final_offer_total) - Number(right.summary.final_offer_total))[0] || null;
+
+  const selectCheapestComplete = () => {
+    if (!cheapestSelectableGroup) {
+      toast.error(tr("لا يوجد عرض مورد كامل وصالح للاختيار", "No complete, valid supplier quotation is available"));
+      return;
+    }
+    selectSupplierOffer(cheapestSelectableGroup, true);
+  };
 
   const viewQuotationAttachment = async (attachment) => {
     try {
@@ -1091,7 +1125,7 @@ toast.error(errMsg(error));
   };
   return (
     <div className="space-y-4 supplier-comparison-page" data-testid="supplier-price-comparison-page">
-      <section className="rounded-lg border border-slate-200 bg-white p-4 print:border-0 print:p-0">
+      <section className="rounded-lg border bg-card p-4 print:border-0 print:p-0">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="mb-1 text-[11px] font-semibold text-slate-500">{tr("1 — بيانات المقارنة", "1 — Comparison details")}</div>
@@ -1133,7 +1167,7 @@ toast.error(errMsg(error));
       <ProcurementProgress currentStage={2} />
       {sourceRequestId && <section className="rounded-lg border-2 border-blue-200 bg-blue-50 p-4" data-testid="source-request-attachments">
         <div className="mb-3 flex items-center gap-2"><Paperclip className="h-5 w-5 text-blue-700" /><div><h3 className="font-bold text-slate-900">{tr("مرفقات طلب الشراء", "Purchase request attachments")}</h3><p className="text-xs text-slate-600">{tr("اعرض المستند أثناء إدخال الأصناف والأسعار يدويًا.", "Keep the document visible while entering items and prices manually.")}</p></div></div>
-        {sourceAttachments.length ? <div className="grid gap-3 lg:grid-cols-2">{sourceAttachments.map((attachment) => <RequestAttachmentCard key={attachment.id} attachment={attachment} tr={tr} />)}</div> : <div className="rounded-md border border-dashed border-blue-200 bg-white/70 p-4 text-center text-sm text-slate-500">{tr("لا توجد مرفقات محفوظة لهذا الطلب.", "No saved attachments for this request.")}</div>}
+        {sourceAttachments.length ? <div className="grid gap-3 lg:grid-cols-2">{sourceAttachments.map((attachment) => <RequestAttachmentCard key={attachment.id} attachment={attachment} tr={tr} />)}</div> : <div className="rounded-md border border-dashed bg-card/70 p-4 text-center text-sm text-muted-foreground">{tr("لا توجد مرفقات محفوظة لهذا الطلب.", "No saved attachments for this request.")}</div>}
       </section>}
       <section className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
   <div className="mb-3">
@@ -1205,7 +1239,7 @@ toast.error(errMsg(error));
       </div>
 
       <div className="flex items-center gap-2">
-  <div className="rounded-md bg-white px-3 py-2 text-xs font-bold text-blue-700">
+  <div className="rounded-md bg-card px-3 py-2 text-xs font-bold text-blue-700 dark:text-blue-300">
     {sourceRequest.items?.length || 0} صنف
   </div>
 
@@ -1290,7 +1324,7 @@ toast.error(errMsg(error));
     </div>
   </section>
 )}
-      <section className="rounded-lg border border-slate-200 bg-white p-4 comparison-print-hidden" data-testid="add-offer-section">
+      <section className="rounded-lg border bg-card p-4 comparison-print-hidden" data-testid="add-offer-section">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div><h3 className="text-sm font-bold">{tr("2 — إضافة عرض مورد", "2 — Add supplier offer")}</h3><p className="text-xs text-slate-500">{tr("أدخل عرضاً واحداً في نافذة مركزة وسريعة.", "Enter one offer in a focused form.")}</p></div>
           <div className="flex flex-wrap gap-2">
@@ -1301,7 +1335,7 @@ toast.error(errMsg(error));
         </div>
       </section>
 
-      <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-3" data-testid="added-offers-section">
+      <section className="space-y-3 rounded-lg border bg-card p-3" data-testid="added-offers-section">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-bold">{tr("3 — العروض المضافة", "3 — Added offers")} <span className="font-normal text-slate-500">({rows.length})</span></h3>
           <div className="flex flex-1 flex-wrap justify-end gap-2 comparison-print-hidden">
@@ -1329,14 +1363,14 @@ toast.error(errMsg(error));
           </div>
         </div>
         <div data-testid="vertical-offer-cards">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 p-3">
-            <div><div className="text-xs font-bold text-slate-700">{tr("مقارنة الموردين", "Supplier comparison")}</div><div className="mt-0.5 text-[11px] text-slate-500">{tr("ثلاثة عروض في كل صفحة مع محاذاة الأصناف رأسيًا.", "Three offers per page with vertically aligned items.")}</div></div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/50 p-3">
+            <div><div className="text-xs font-bold text-foreground">{tr("مقارنة الموردين", "Supplier comparison")}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{tr("ثلاثة عروض في كل صفحة مع محاذاة الأصناف رأسيًا.", "Three offers per page with vertically aligned items.")}</div></div>
             <div className="flex items-center gap-2">
-              {calculations.scenario_summary.cheapest_complete_supplier && <Button type="button" size="sm" className="bg-emerald-700 hover:bg-emerald-800" onClick={() => { const cheapest = supplierOfferGroups.find((group) => group.key === (calculations.scenario_summary.cheapest_complete_supplier.supplier_id || calculations.scenario_summary.cheapest_complete_supplier.supplier_code || calculations.scenario_summary.cheapest_complete_supplier.supplier_name)); if (cheapest) selectSupplierOffer(cheapest); }} data-testid="select-cheapest-complete-offer">{tr("اختيار أرخص عرض كامل", "Select cheapest complete offer")}</Button>}
-              {supplierOfferGroups.length > 3 && <div className="flex items-center gap-1 rounded-md border bg-white p-1"><Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={supplierPage === 0} onClick={() => setSupplierPage((page) => page - 1)} aria-label={tr("الموردون السابقون", "Previous suppliers")}><ChevronRight className="h-4 w-4" /></Button><span className="min-w-16 text-center text-xs text-slate-500" dir="ltr">{supplierPage + 1} / {supplierPageCount}</span><Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={supplierPage + 1 >= supplierPageCount} onClick={() => setSupplierPage((page) => page + 1)} aria-label={tr("الموردون التاليون", "Next suppliers")}><ChevronLeft className="h-4 w-4" /></Button></div>}
+              <Button type="button" size="sm" className="bg-emerald-700 text-white hover:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500" onClick={selectCheapestComplete} data-testid="select-cheapest-complete-offer">{tr("اختيار أرخص عرض كامل", "Select cheapest complete offer")}</Button>
+              {supplierOfferGroups.length > 3 && <div className="flex items-center gap-1 rounded-md border bg-card p-1"><Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={supplierPage === 0} onClick={() => setSupplierPage((page) => page - 1)} aria-label={tr("الموردون السابقون", "Previous suppliers")}>{direction === "rtl" ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}</Button><span className="min-w-24 text-center text-xs text-muted-foreground" dir="ltr">{supplierPage * 3 + 1}–{Math.min((supplierPage + 1) * 3, supplierOfferGroups.length)} / {supplierOfferGroups.length}</span><Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={supplierPage + 1 >= supplierPageCount} onClick={() => setSupplierPage((page) => page + 1)} aria-label={tr("الموردون التاليون", "Next suppliers")}>{direction === "rtl" ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</Button></div>}
             </div>
           </div>
-          {visibleSupplierGroups.length ? <div className="grid items-stretch gap-3 xl:grid-cols-3">{visibleSupplierGroups.map((group) => <SupplierOfferColumn key={group.key} group={group} itemOrder={itemOrder} tr={tr} formatMoney={formatMoney} onPrice={(keyValue, value) => updateRowField(keyValue, "unit_price", value)} onSelectRow={selectForPurchase} onSelectSupplier={selectSupplierOffer} onEdit={editRow} onDelete={deleteRow} quotation={quotationForGroup(group)} canUpload={canUploadQuotation} onUpload={uploadQuotationAttachments} onViewAttachment={viewQuotationAttachment} isCheapestComplete={group.key === (calculations.scenario_summary.cheapest_complete_supplier?.supplier_id || calculations.scenario_summary.cheapest_complete_supplier?.supplier_code || calculations.scenario_summary.cheapest_complete_supplier?.supplier_name)} />)}</div> : <EmptyState title={tr("لا توجد عروض موردين", "No supplier offers")} description={tr("أضف عرضًا أو استورد عروض RFQ لبدء المقارنة.", "Add an offer or import RFQ quotations to start comparing.")} />}
+          {visibleSupplierGroups.length ? <div className="grid items-stretch gap-3 xl:grid-cols-3">{visibleSupplierGroups.map((group) => <SupplierOfferColumn key={group.key} group={group} itemOrder={itemOrder} tr={tr} formatMoney={formatMoney} onPrice={(keyValue, value) => updateRowField(keyValue, "unit_price", value)} onSelectRow={selectForPurchase} onSelectSupplier={selectSupplierOffer} onEdit={editRow} onDelete={deleteRow} quotation={quotationForGroup(group)} canUpload={canUploadQuotation} onUpload={uploadQuotationAttachments} onViewAttachment={viewQuotationAttachment} isCheapestComplete={group.key === cheapestSelectableGroup?.key} />)}</div> : <EmptyState title={tr("لا توجد عروض موردين", "No supplier offers")} description={tr("أضف عرضًا أو استورد عروض RFQ لبدء المقارنة.", "Add an offer or import RFQ quotations to start comparing.")} />}
         </div>
         {showDetailedTable && <div className="mt-4 overflow-hidden rounded-md border border-slate-200" data-testid="detailed-offers-table">
           <table className="w-full table-fixed text-xs">

@@ -1648,10 +1648,10 @@ def _po_payment_status(po_total: Decimal, paid_amount: Decimal, due_date: str) -
     is_overdue = bool(due_date) and due_date < today
     if paid_amount > PAYMENT_TOLERANCE:
         status = "partially_paid"
-    elif due_date and due_date <= today:
-        status = "due"
     else:
-        status = "not_due"
+        # Due-date intelligence remains available through due_date/is_overdue,
+        # but the V1 payment register has one zero-paid state: unpaid.
+        status = "unpaid"
     return {"payment_status": status, "is_overdue": is_overdue, "outstanding_amount": float(money(outstanding))}
 
 
@@ -2342,6 +2342,7 @@ PO_STATUS_GROUPS = (
     ("completed", "مكتمل", {"completed"}),
 )
 PO_PAYMENT_STATUS_LABELS = {
+    "unpaid": "غير مدفوع",
     "not_due": "لم يحن السداد", "due": "مستحق السداد",
     "partially_paid": "مدفوع جزئيًا", "paid": "مدفوع بالكامل",
 }

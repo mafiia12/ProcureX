@@ -79,6 +79,7 @@ from incoming_requests import (
     IncomingPurchaseRequest,
     IncomingPurchaseRequestItem,
     IncomingRequestGeneralAttachment,
+    IncomingRequestStatusHistory,
 )  # noqa: E402
 from auth.models import User, UserProjectAccess  # noqa: E402
 from auth.security import hash_password  # noqa: E402
@@ -4163,6 +4164,103 @@ def test_portal_site_user_can_create_request(s):
         assert items[0].quantity == 3
 
 
+def test_req_clarification_requires_engineer_and_reason(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        project_id = _make_project_for_portal(session, suffix)
+        portal_username, _ = _make_portal_user(session, suffix, project_ids=[project_id])
+        item_id = _make_portal_item(session, suffix)
+        _make_user(session, username=f"clarify-engineer-{suffix}", role="procurement_engineer")
+        _make_user(session, username=f"clarify-responsible-{suffix}", role="procurement_responsible")
+    portal_headers = _login_headers(s, portal_username)
+    engineer_headers = _login_headers(s, f"clarify-engineer-{suffix}")
+    responsible_headers = _login_headers(s, f"clarify-responsible-{suffix}")
+    created = _submit_portal_request(s, portal_headers, _portal_payload(
+        items=[{"item_id": item_id, "quantity": 1, "note": ""}],
+    )).json()
+    endpoint = f"{API}/workflow/incoming-purchase-requests/{created['request_id']}/technical-decision"
+
+    missing_reason = s.post(endpoint, headers={**INTERNAL_HEADERS, **engineer_headers}, json={
+        "decision": "revision_required", "note": "",
+    })
+    assert missing_reason.status_code == 422
+    forbidden = s.post(endpoint, headers={**INTERNAL_HEADERS, **responsible_headers}, json={
+        "decision": "revision_required", "note": "وضح المقاس",
+    })
+    assert forbidden.status_code == 403
+    allowed = s.post(endpoint, headers={**INTERNAL_HEADERS, **engineer_headers}, json={
+        "decision": "revision_required", "note": "وضح المقاس المطلوب",
+    })
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["status"] == "need_clarification"
+
+
+def test_site_portal_clarification_resubmits_same_req_with_history_and_attachment(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        project_id = _make_project_for_portal(session, suffix)
+        portal_username, portal_user_id = _make_portal_user(session, suffix, project_ids=[project_id])
+        other_username, _ = _make_portal_user(session, f"{suffix}-other", project_ids=[project_id])
+        item_id = _make_portal_item(session, suffix)
+        _make_user(session, username=f"clarify-flow-engineer-{suffix}", role="procurement_engineer")
+    portal_headers = _login_headers(s, portal_username)
+    other_headers = _login_headers(s, other_username)
+    engineer_headers = _login_headers(s, f"clarify-flow-engineer-{suffix}")
+    created = _submit_portal_request(s, portal_headers, _portal_payload(
+        items=[{"item_id": item_id, "quantity": 1, "note": ""}],
+    )).json()
+    request_id = created["request_id"]
+    decision = s.post(
+        f"{API}/workflow/incoming-purchase-requests/{request_id}/technical-decision",
+        headers={**INTERNAL_HEADERS, **engineer_headers},
+        json={"decision": "revision_required", "note": "أرفق صورة للمقاس"},
+    )
+    assert decision.status_code == 200, decision.text
+
+    assert s.get(f"{PORTAL_API}/purchase-requests").status_code == 401
+    own_list = s.get(f"{PORTAL_API}/purchase-requests", headers=portal_headers)
+    assert own_list.status_code == 200
+    listed = next(row for row in own_list.json() if row["id"] == request_id)
+    assert listed["request_number"] == created["request_number"]
+    assert listed["clarification"]["reason"] == "أرفق صورة للمقاس"
+    assert listed["clarification"]["response_status"] == "awaiting_response"
+    assert all(row["id"] != request_id for row in s.get(
+        f"{PORTAL_API}/purchase-requests", headers=other_headers,
+    ).json())
+    assert s.post(
+        f"{PORTAL_API}/purchase-requests/{request_id}/clarification",
+        headers=other_headers, data={"response": "محاولة غير مسموحة"},
+    ).status_code == 404
+
+    resubmitted = s.post(
+        f"{PORTAL_API}/purchase-requests/{request_id}/clarification",
+        headers=portal_headers,
+        data={"response": "المقاس 60 × 60 سم"},
+        files=[("attachments", ("size.png", PNG_BYTES, "image/png"))],
+    )
+    assert resubmitted.status_code == 200, resubmitted.text
+    assert resubmitted.json()["request_id"] == request_id
+    assert resubmitted.json()["request_number"] == created["request_number"]
+    assert resubmitted.json()["status"] == "under_review"
+
+    with SessionLocal() as session:
+        row = session.get(IncomingPurchaseRequest, request_id)
+        assert row.requester_user_id == portal_user_id
+        assert row.status == "under_review"
+        history = session.scalars(select(IncomingRequestStatusHistory).where(
+            IncomingRequestStatusHistory.request_id == request_id,
+        ).order_by(IncomingRequestStatusHistory.created_at)).all()
+        assert [(entry.from_status, entry.to_status) for entry in history][-2:] == [
+            ("new", "need_clarification"),
+            ("need_clarification", "under_review"),
+        ]
+        assert history[-1].note == "المقاس 60 × 60 سم"
+        attachments = session.scalars(select(IncomingRequestGeneralAttachment).where(
+            IncomingRequestGeneralAttachment.request_id == request_id,
+        )).all()
+        assert any(item.original_filename == "size.png" for item in attachments)
+
+
 def test_portal_requester_identity_is_server_derived_and_cannot_be_spoofed(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
@@ -6227,7 +6325,7 @@ def test_po_payment_void_stops_counting_and_requires_reason(s, admin_headers):
     assert voided.status_code == 200, voided.text
     assert voided.json()["payment"]["status"] == "voided"
     assert voided.json()["payment_summary"]["paid_amount"] == 0
-    assert voided.json()["payment_summary"]["payment_status"] == "not_due"
+    assert voided.json()["payment_summary"]["payment_status"] == "unpaid"
 
     ledger = s.get(url, headers=manager_headers).json()
     assert len(ledger["payments"]) == 1  # never deleted, only voided
@@ -6352,7 +6450,7 @@ def test_po_payment_status_due_date_and_overdue_logic(s, admin_headers):
 
     po_not_due, *_rest = _make_payable_purchase_order(s, f"{suffix}-notdue", admin_headers)
     ledger = s.get(PO_PAYMENTS_API(po_not_due["id"]), headers=admin_headers).json()
-    assert ledger["payment_summary"]["payment_status"] == "not_due"
+    assert ledger["payment_summary"]["payment_status"] == "unpaid"
     assert ledger["payment_summary"]["is_overdue"] is False
 
     po_overdue, *_rest = _make_payable_purchase_order(s, f"{suffix}-overdue", admin_headers)
@@ -6360,7 +6458,7 @@ def test_po_payment_status_due_date_and_overdue_logic(s, admin_headers):
         row = session.get(PurchaseOrder, po_overdue["id"])
         row.extra_data = {**(row.extra_data or {}), "payment_due_date": "2020-01-01"}
     overdue_ledger = s.get(PO_PAYMENTS_API(po_overdue["id"]), headers=admin_headers).json()
-    assert overdue_ledger["payment_summary"]["payment_status"] == "due"
+    assert overdue_ledger["payment_summary"]["payment_status"] == "unpaid"
     assert overdue_ledger["payment_summary"]["is_overdue"] is True
 
     partial = s.post(PO_PAYMENTS_API(po_overdue["id"]), headers=manager_headers, json={
@@ -6377,7 +6475,7 @@ def test_po_payment_status_due_date_and_overdue_logic(s, admin_headers):
         row.extra_data = {**(row.extra_data or {}), "credit_days": 3650}
     credit_ledger = s.get(PO_PAYMENTS_API(po_credit["id"]), headers=admin_headers).json()
     assert credit_ledger["payment_summary"]["due_date"]
-    assert credit_ledger["payment_summary"]["payment_status"] == "not_due"
+    assert credit_ledger["payment_summary"]["payment_status"] == "unpaid"
     assert credit_ledger["payment_summary"]["is_overdue"] is False
 
 
