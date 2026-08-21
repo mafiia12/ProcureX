@@ -59,6 +59,7 @@ const getResponse = (url) => {
 };
 const mockGet = jest.fn(getResponse);
 const mockPost = jest.fn();
+const mockDelete = jest.fn();
 
 jest.mock("@/lib/api", () => ({
   __esModule: true,
@@ -68,6 +69,7 @@ jest.mock("@/lib/api", () => ({
     get: (...args) => mockGet(...args),
     post: (...args) => mockPost(...args),
     put: jest.fn(),
+    delete: (...args) => mockDelete(...args),
   },
 }));
 
@@ -99,6 +101,7 @@ beforeEach(() => {
   window.print = jest.fn();
   mockGet.mockImplementation(getResponse);
   mockPost.mockReset();
+  mockDelete.mockReset();
   mockPost.mockImplementation((url, body) => {
     if (url === "/suppliers") return Promise.resolve({
       data: { id: "saved-supplier", code: "SUP-9999", name: body.name },
@@ -110,7 +113,7 @@ beforeEach(() => {
   });
 });
 
-test("adds repeated request items as separate aligned supplier-card rows", async () => {
+test("adds each eligible request item once into one aligned supplier column", async () => {
   globalThis.mockComparisonLocationState = {
     sourceRequest: {
       request_id: "request-1",
@@ -143,12 +146,13 @@ test("adds repeated request items as separate aligned supplier-card rows", async
     container.querySelector('[data-testid="add-request-item-request-item-1"]').click();
     container.querySelector('[data-testid="add-request-item-request-item-1"]').click();
   });
-  expect(container.querySelectorAll('[data-testid="comparison-row"]')).toHaveLength(2);
-  expect(container.querySelectorAll('[data-testid="supplier-offer-card"]')).toHaveLength(2);
+  expect(container.querySelectorAll('[data-testid="comparison-row"]')).toHaveLength(1);
+  expect(container.querySelectorAll('[data-testid="supplier-offer-card"]')).toHaveLength(1);
+  expect(container.querySelector('[data-testid="supplier-column-selector"]')).not.toBeNull();
   expect(container.textContent).toContain("عرض غير مكتمل");
 
   await act(async () => container.querySelector('[data-testid="add-all-request-items"]').click());
-  expect(container.querySelectorAll('[data-testid="comparison-row"]')).toHaveLength(3);
+  expect(container.querySelectorAll('[data-testid="comparison-row"]')).toHaveLength(1);
 
   await act(async () => root.unmount());
   container.remove();
@@ -165,10 +169,11 @@ test("renders operational comparison controls in English", async () => {
   });
 
   for (const label of [
-    "Comparison details", "Add supplier offer", "Added offers",
+    "Comparison details", "Supplier offers", "Add supplier column",
     "Product comparison", "Supplier summary", "Mixed purchase and savings summary",
     "Save comparison", "Print", "All products", "Availability",
   ]) expect(container.textContent).toContain(label);
+  expect(container.textContent).not.toContain("Add supplier offer");
   expect(container.textContent).not.toContain("بيانات المقارنة");
 
   await act(async () => root.unmount());
@@ -193,13 +198,13 @@ test("reopens a multi-supplier comparison and renders core columns and highlight
   expect(text).toContain("CMP-000001");
   const renderedRows = [...container.querySelectorAll('[data-testid="comparison-row"]')];
   expect(renderedRows).toHaveLength(2);
-  expect(renderedRows.some((row) => row.className.includes("bg-emerald-50"))).toBe(true);
-  expect(renderedRows.some((row) => row.className.includes("bg-red-50"))).toBe(true);
+  expect(renderedRows.some((row) => row.className.includes("bg-emerald-500/5"))).toBe(true);
+  expect(renderedRows.some((row) => row.className.includes("bg-destructive/5"))).toBe(true);
   expect(container.textContent).toContain("المورد الأخضر");
   expect(container.textContent).toContain("المورد غير المتاح");
   for (const section of [
-    "1 — بيانات المقارنة", "2 — إضافة عرض مورد", "3 — العروض المضافة",
-    "4 — مقارنة المنتجات", "5 — ملخص الموردين", "6 — ملخص الشراء المختلط والتوفير",
+    "1 — بيانات المقارنة", "2 — عروض الموردين",
+    "3 — مقارنة المنتجات", "4 — ملخص الموردين", "5 — ملخص الشراء المختلط والتوفير",
   ]) expect(container.textContent).toContain(section);
   expect(container.querySelectorAll('[data-testid="supplier-offer-card"]')).toHaveLength(2);
   expect(container.querySelector('[data-testid="select-cheapest-complete-offer"]')).not.toBeNull();
@@ -207,6 +212,52 @@ test("reopens a multi-supplier comparison and renders core columns and highlight
   await act(async () => container.querySelector('[data-testid="comparison-print"]').click());
   expect(window.print).toHaveBeenCalledTimes(1);
 
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("add-all includes only approved request items and hides the redundant offer/PO actions", async () => {
+  globalThis.mockComparisonLocationState = {
+    sourceRequest: {
+      request_id: "request-mixed", request_number: "REQ-MIXED", project_name: "مشروع",
+      items: [
+        { id: "approved", position: 1, product_name: "معتمد", quantity: 2, unit: "قطعة", review_status: "approved" },
+        { id: "rejected", position: 2, product_name: "مرفوض", quantity: 1, unit: "قطعة", review_status: "rejected" },
+      ],
+    },
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  await act(async () => container.querySelector('[data-testid="add-all-request-items"]').click());
+  expect(container.querySelectorAll('[data-testid="comparison-row"]')).toHaveLength(1);
+  expect(container.textContent).toContain("مستبعد");
+  expect(container.querySelector('[data-testid="add-request-item-rejected"]').disabled).toBe(true);
+  expect(container.querySelector('[data-testid="add-offer-section"]')).toBeNull();
+  expect(container.textContent).not.toContain("تجهيز أوامر الشراء");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("deletes a safe saved comparison through the authenticated API after confirmation", async () => {
+  window.confirm = jest.fn(() => true);
+  mockDelete.mockResolvedValue({ data: { ok: true, comparison_number: "CMP-000001" } });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison initialComparison={detail} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  await act(async () => {
+    container.querySelector('[data-testid="delete-comparison"]').click();
+    await Promise.resolve();
+  });
+  expect(mockDelete).toHaveBeenCalledWith("/price-comparisons/comparison-1");
   await act(async () => root.unmount());
   container.remove();
 });
@@ -374,7 +425,7 @@ test("save-to-master remains separate and requires explicit confirmation", async
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
   await act(async () => {
-    container.querySelector('[data-testid="comparison-add-manual-supplier"]').click();
+    container.querySelector('[data-testid="comparison-add-manual-product"]').click();
   });
   await act(async () => {
     setNativeValue(

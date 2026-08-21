@@ -428,11 +428,14 @@ def create_rfq(
 
         items = session.scalars(
             select(IncomingPurchaseRequestItem)
-            .where(IncomingPurchaseRequestItem.request_id == request_row.id)
+            .where(
+                IncomingPurchaseRequestItem.request_id == request_row.id,
+                IncomingPurchaseRequestItem.review_status == "approved",
+            )
             .order_by(IncomingPurchaseRequestItem.position)
         ).all()
         if not items:
-            raise HTTPException(409, "لا توجد أصناف في طلب الشراء")
+            raise HTTPException(409, "لا توجد أصناف معتمدة مؤهلة للتسعير في طلب الشراء")
 
         request_id = request_row.id
         request_number = request_row.request_number
@@ -466,7 +469,10 @@ def create_rfq(
             session, entity_type="rfq", entity_id=rfq.id, event_type="rfq_created",
             project_id=project_id or "", actor_name=current_user.username,
             message=f"تم إنشاء طلب تسعير {rfq_number} من الطلب {request_number}",
-            metadata={"source_request_id": request_id, "actor_role": current_user.role},
+            metadata={
+                "source_request_id": request_id, "actor_role": current_user.role,
+                "eligible_item_count": len(items),
+            },
         )
         session.commit()
         return {"already_exists": False, "rfq": _rfq_detail(session, rfq)}

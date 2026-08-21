@@ -2587,6 +2587,11 @@ async def _dashboard_procurement_intelligence(
         key=lambda row: (sourcing_reason_priority.get(row["reason"], 9), row["deadline"] or "9999-99-99"),
     )
     sourcing_attention = sourcing_attention[:10]
+    requests_with_rfq = {rfq.source_request_id for rfq in rfqs}
+    requests_ready_for_sourcing = [
+        row for row in requests
+        if row.status == "pricing" and row.id not in requests_with_rfq
+    ]
 
     # ---- 6. Approval attention (same filters as _workflow_action_counts,
     # value totals added; no bucket double-counts an approval) ----
@@ -2635,6 +2640,14 @@ async def _dashboard_procurement_intelligence(
             "reference": row["rfq_number"], "project_name": row["project_name"],
             "reason": row["reason"], "due_or_age": row["deadline"],
             "path": f"/rfq/{row['rfq_id']}",
+        })
+    for request_row in sorted(requests_ready_for_sourcing, key=lambda row: row.updated_at):
+        attention_items.append({
+            "type": "sourcing_required", "reference": request_row.request_number,
+            "project_name": request_row.project_name,
+            "reason": "أصناف معتمدة جاهزة لإنشاء طلب تسعير ومقارنة",
+            "due_or_age": request_row.updated_at, "path": "/incoming-requests",
+            "responsible_role": "procurement_responsible",
         })
     pending_approvals = [
         approval for approval in approvals
@@ -2690,7 +2703,7 @@ async def _dashboard_procurement_intelligence(
         "requests_requiring_action": sum(
             1 for row in requests
             if row.status in {"new", "under_review", "need_clarification", "hold"}
-        ),
+        ) + len(requests_ready_for_sourcing),
         "active_purchase_orders": active_po_count,
         "formal_po_value": procurement_kpis["formal_po_total"],
         "actual_paid": round(float(actual_paid), 2),

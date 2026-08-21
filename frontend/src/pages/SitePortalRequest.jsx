@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Building2, LogOut, Paperclip, Plus, Search, Trash2, X } from "lucide-react";
+import { Building2, LogOut, Paperclip, Plus, RotateCcw, Search, Trash2, X } from "lucide-react";
 import api, { errMsg } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
@@ -32,6 +32,11 @@ const formatFileSize = (bytes) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+export const localDateInputValue = (date = new Date()) => {
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+};
+
 export default function SitePortalRequest() {
   const { user, logout } = useAuth();
   const preferences = usePreferences();
@@ -51,7 +56,8 @@ export default function SitePortalRequest() {
   const [manualName, setManualName] = useState("");
   const [manualUnit, setManualUnit] = useState("");
   const [destination, setDestination] = useState("site");
-  const [requiredDate, setRequiredDate] = useState("");
+  const today = localDateInputValue();
+  const [requiredDate, setRequiredDate] = useState(today);
   const [priority, setPriority] = useState("normal");
   const [notes, setNotes] = useState("");
   const [files, setFiles] = useState([]);
@@ -60,10 +66,20 @@ export default function SitePortalRequest() {
   const [clarificationDrafts, setClarificationDrafts] = useState({});
   const [clarificationFiles, setClarificationFiles] = useState({});
   const [resubmittingId, setResubmittingId] = useState("");
+  const [returnedItems, setReturnedItems] = useState([]);
+  const [correctionTarget, setCorrectionTarget] = useState(null);
+  const [correctionDraft, setCorrectionDraft] = useState({
+    product_name: "", unit: "", quantity: 1, note: "", required_delivery_date: today,
+  });
+  const [correctionFiles, setCorrectionFiles] = useState([]);
+  const [correcting, setCorrecting] = useState(false);
 
   const loadPortalRequests = () => api.get("/portal/purchase-requests")
     .then(({ data }) => setPortalRequests(data || []))
     .catch(() => setPortalRequests([]));
+  const loadReturnedItems = () => api.get("/portal/returned-items")
+    .then(({ data }) => setReturnedItems(data || []))
+    .catch(() => setReturnedItems([]));
 
   useEffect(() => {
     api.get("/portal/context").then(({ data }) => {
@@ -74,6 +90,7 @@ export default function SitePortalRequest() {
       .then(({ data }) => setPreviousItems(data))
       .catch(() => setPreviousItems([]));
     loadPortalRequests();
+    loadReturnedItems();
   }, []);
 
   useEffect(() => {
@@ -156,6 +173,45 @@ export default function SitePortalRequest() {
     }
   };
 
+  const openCorrection = (item) => {
+    setCorrectionTarget(item);
+    setCorrectionDraft({
+      product_name: item.product_name || "", unit: item.unit || "",
+      quantity: Number(item.quantity || 1), note: item.specifications || "",
+      required_delivery_date: today,
+    });
+    setCorrectionFiles([]);
+  };
+
+  const submitCorrection = async () => {
+    if (!correctionTarget) return;
+    if (!(Number(correctionDraft.quantity) > 0)) {
+      toast.error(tr("الكمية يجب أن تكون أكبر من صفر", "Quantity must be greater than zero"));
+      return;
+    }
+    const form = new FormData();
+    form.append("payload", JSON.stringify({
+      ...correctionDraft, quantity: Number(correctionDraft.quantity),
+    }));
+    correctionFiles.forEach((file) => form.append("attachments", file));
+    setCorrecting(true);
+    try {
+      const { data } = await api.post(
+        `/portal/returned-items/${correctionTarget.id}/correct`, form,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      toast.success(data.already_exists
+        ? tr(`تم تقديم هذا الصنف بالفعل في ${data.request_number}`, `This item was already resubmitted in ${data.request_number}`)
+        : tr(`تم إنشاء الطلب المصحح ${data.request_number}`, `Corrected request ${data.request_number} was created`));
+      setCorrectionTarget(null);
+      await Promise.all([loadReturnedItems(), loadPortalRequests()]);
+    } catch (error) {
+      toast.error(errMsg(error));
+    } finally {
+      setCorrecting(false);
+    }
+  };
+
   const projects = context?.projects ?? [];
   const noProjectAssigned = context !== null && projects.length === 0;
   const needsProjectChoice = projects.length > 1 && !projectId;
@@ -207,7 +263,7 @@ export default function SitePortalRequest() {
       setRows([]);
       setFiles([]);
       setNotes("");
-      setRequiredDate("");
+      setRequiredDate(today);
       loadPortalRequests();
     } catch (e) {
       toast.error(errMsg(e));
@@ -241,6 +297,16 @@ export default function SitePortalRequest() {
       </header>
 
       <main className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
+        {!!returnedItems.length && <section className="rounded-lg border border-amber-500/30 bg-card p-4" data-testid="returned-items-section">
+          <div className="mb-3"><h1 className="text-base font-bold">{tr("أصناف تحتاج إجراء", "Items Needing Action")}</h1><p className="mt-1 text-xs text-muted-foreground">{tr("هذه البنود خرجت من مسار التسعير الحالي. صحح البند لإنشاء طلب جديد مرتبط بالأصل.", "These items are excluded from the current sourcing path. Correct an item to create a new request linked to the original.")}</p></div>
+          <div className="space-y-2">{returnedItems.map((item) => <article key={item.id} className="rounded-md border bg-muted/30 p-3" data-testid="returned-item">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0"><div className="flex items-center gap-2"><span className="font-mono text-xs font-bold" dir="ltr">{item.request_number}</span><span className="rounded-full bg-background px-2 py-0.5 text-[11px] ring-1 ring-border">{item.status === "rejected" ? tr("مرفوض", "Rejected") : tr("يحتاج استكمال", "Needs Completion")}</span></div><div className="mt-1 font-semibold">{item.product_name}</div><div className="text-xs text-muted-foreground">{item.quantity} {item.unit} · {item.project_name}</div></div>
+              {item.corrected_request ? <div className="text-end text-xs text-emerald-700 dark:text-emerald-300"><div>{tr("أُعيد تقديمه", "Resubmitted")}</div><div className="font-mono font-bold" dir="ltr">{item.corrected_request.request_number}</div></div> : <Button size="sm" variant="outline" onClick={() => openCorrection(item)} data-testid={`correct-returned-item-${item.id}`}><RotateCcw className="h-3.5 w-3.5" />{tr("تصحيح وإعادة الطلب", "Correct and Re-submit Item")}</Button>}
+            </div>
+            <dl className="mt-3 grid gap-2 rounded-md bg-background/70 p-3 text-xs sm:grid-cols-3"><div><dt className="text-muted-foreground">{tr("السبب", "Reason")}</dt><dd className="mt-1 font-semibold">{item.reason || "-"}</dd></div><div><dt className="text-muted-foreground">{tr("المراجع", "Reviewer")}</dt><dd className="mt-1 font-semibold">{item.reviewer || "-"}</dd></div><div><dt className="text-muted-foreground">{tr("التاريخ", "Date")}</dt><dd className="mt-1 font-semibold">{item.reviewed_at ? new Date(item.reviewed_at).toLocaleString(locale) : "-"}</dd></div></dl>
+          </article>)}</div>
+        </section>}
         {!!portalRequests.length && <section className="rounded-lg border bg-card p-4" data-testid="portal-request-history">
           <div className="mb-3"><h1 className="text-base font-bold">{tr("طلباتي الأخيرة", "My Recent Requests")}</h1><p className="mt-1 text-xs text-muted-foreground">{tr("طلبات التوضيح تظهر هنا للرد وإعادة إرسال نفس رقم الطلب.", "Clarification requests appear here so you can respond and resubmit the same REQ.")}</p></div>
           <div className="space-y-2">{portalRequests.slice(0, 8).map((request) => <article key={request.id} className={`rounded-md border p-3 ${request.status === "need_clarification" ? "border-amber-500/40 bg-amber-500/10" : "bg-muted/30"}`} data-testid="portal-request-history-item">
@@ -296,6 +362,7 @@ export default function SitePortalRequest() {
             <Label>{tr("تاريخ التسليم المطلوب", "Required Delivery Date")}</Label>
             <Input
               type="date" data-testid="portal-required-date"
+              min={today}
               value={requiredDate} onChange={(e) => setRequiredDate(e.target.value)}
             />
           </div>
@@ -321,6 +388,21 @@ export default function SitePortalRequest() {
             </Select>
           </div>
         </div>
+
+        {correctionTarget && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCorrectionTarget(null); }}>
+          <section className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-5 shadow-xl" role="dialog" aria-modal="true" aria-label={tr("تصحيح وإعادة طلب الصنف", "Correct and resubmit item")} data-testid="returned-item-correction-dialog">
+            <div><h2 className="font-bold">{tr("تصحيح وإعادة طلب الصنف", "Correct and Re-submit Item")}</h2><p className="mt-1 text-xs text-muted-foreground">{tr(`سيُنشأ طلب جديد مرتبط بـ ${correctionTarget.request_number}. لن يتغير الطلب الأصلي.`, `A new request linked to ${correctionTarget.request_number} will be created. The original request will not change.`)}</p></div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5"><Label>{tr("الصنف", "Item")}</Label><Input value={correctionDraft.product_name} disabled={Boolean(correctionTarget.item_id)} onChange={(event) => setCorrectionDraft((current) => ({ ...current, product_name: event.target.value }))} /></div>
+              <div className="space-y-1.5"><Label>{tr("الوحدة", "Unit")}</Label><Input value={correctionDraft.unit} disabled={Boolean(correctionTarget.item_id)} onChange={(event) => setCorrectionDraft((current) => ({ ...current, unit: event.target.value }))} /></div>
+              <div className="space-y-1.5"><Label>{tr("الكمية *", "Quantity *")}</Label><Input type="number" min="0.001" step="any" value={correctionDraft.quantity} onChange={(event) => setCorrectionDraft((current) => ({ ...current, quantity: event.target.value }))} /></div>
+              <div className="space-y-1.5"><Label>{tr("تاريخ التسليم المطلوب", "Required Delivery Date")}</Label><Input type="date" min={today} value={correctionDraft.required_delivery_date} onChange={(event) => setCorrectionDraft((current) => ({ ...current, required_delivery_date: event.target.value }))} /></div>
+              <div className="space-y-1.5 sm:col-span-2"><Label>{tr("التصحيح / المواصفات", "Correction / Specifications")}</Label><Textarea rows={3} value={correctionDraft.note} onChange={(event) => setCorrectionDraft((current) => ({ ...current, note: event.target.value }))} /></div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2"><label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-xs hover:bg-muted"><Paperclip className="h-4 w-4" />{tr("إضافة مرفقات", "Add Attachments")}<input type="file" multiple className="hidden" accept={ACCEPTED_ATTACHMENT_TYPES} onChange={(event) => setCorrectionFiles(Array.from(event.target.files || []))} /></label><div className="flex gap-2"><Button variant="outline" onClick={() => setCorrectionTarget(null)}>{tr("إلغاء", "Cancel")}</Button><Button onClick={submitCorrection} disabled={correcting} data-testid="submit-corrected-item">{correcting ? tr("جارٍ الإرسال...", "Submitting...") : tr("إنشاء الطلب المصحح", "Create Corrected Request")}</Button></div></div>
+            {!!correctionFiles.length && <div className="text-xs text-muted-foreground">{correctionFiles.map((file) => file.name).join(" · ")}</div>}
+          </section>
+        </div>}
 
         {/* -------- الأصناف -------- */}
         <div className="space-y-4 rounded-lg border bg-card p-4">

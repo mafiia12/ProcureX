@@ -1823,6 +1823,7 @@ def test_attachment_validation_storage_and_protected_view(s, admin_headers):
     assert download.content == png
     assert download.headers["content-type"] == "image/png"
     project = s.get(f"{API}/projects").json()[0]
+    supplier = s.get(f"{API}/suppliers").json()[0]
     with SessionLocal.begin() as session:
         request_row = session.get(IncomingPurchaseRequest, request_id)
         request_row.status = "pricing"
@@ -1835,6 +1836,7 @@ def test_attachment_validation_storage_and_protected_view(s, admin_headers):
         "comparison_date": "2026-08-17",
         "rows": [{
             "product_name": "منتج بصورة", "supplier_name": "مورد يدوي",
+            "supplier_id": supplier["id"],
             "quantity": 1, "unit": "قطعة", "unit_price": 10,
             "availability": "available", "price_valid_until": "2099-01-01",
         }],
@@ -4108,6 +4110,86 @@ def _manual_item(name="صنف يدوي اختبار", unit="قطعة", quantity=
     return {"product_name": name, "unit": unit, "quantity": quantity, "note": note}
 
 
+def test_partial_item_review_progresses_only_approved_subset_and_creates_linked_correction(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        project_id = _make_project_for_portal(session, suffix)
+        portal_username, _ = _make_portal_user(session, suffix, project_ids=[project_id])
+        _make_user(session, username=f"partial-eng-{suffix}", role="procurement_engineer")
+        _make_user(session, username=f"partial-resp-{suffix}", role="procurement_responsible")
+    portal_headers = _login_headers(s, portal_username)
+    engineer_headers = _login_headers(s, f"partial-eng-{suffix}")
+    responsible_headers = _login_headers(s, f"partial-resp-{suffix}")
+    created = _submit_portal_request(s, portal_headers, _portal_payload(items=[
+        _manual_item(f"معتمد-{suffix}"),
+        _manual_item(f"مرفوض-{suffix}"),
+        _manual_item(f"ناقص-{suffix}"),
+    ])).json()
+    request_id = created["request_id"]
+    detail = s.get(
+        f"{API}/internal/incoming-purchase-requests/{request_id}",
+        headers=INTERNAL_HEADERS,
+    ).json()
+    decisions = [
+        (detail["items"][0]["id"], "approved", ""),
+        (detail["items"][1]["id"], "rejected", "غير مطلوب"),
+        (detail["items"][2]["id"], "need_clarification", "أكمل المواصفة"),
+    ]
+    for item_id, status, reason in decisions:
+        response = s.patch(
+            f"{API}/internal/incoming-purchase-requests/{request_id}/items/{item_id}/review",
+            headers={**INTERNAL_HEADERS, **engineer_headers},
+            json={"status": status, "reason": reason},
+        )
+        assert response.status_code == 200, response.text
+
+    progressed = s.post(
+        f"{API}/workflow/incoming-purchase-requests/{request_id}/technical-decision",
+        headers={**INTERNAL_HEADERS, **engineer_headers},
+        json={"decision": "approved_for_pricing"},
+    )
+    assert progressed.status_code == 200, progressed.text
+    assert progressed.json()["eligible_item_count"] == 1
+    assert progressed.json()["returned_item_count"] == 2
+
+    dashboard = s.get(f"{API}/dashboard", headers=responsible_headers)
+    assert dashboard.status_code == 200, dashboard.text
+    attention = dashboard.json()["attention_items"]
+    assert any(row["type"] == "sourcing_required" and row["reference"] == created["request_number"] for row in attention)
+
+    rfq = s.post(
+        RFQ_API, headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"source_request_id": request_id},
+    )
+    assert rfq.status_code == 200, rfq.text
+    assert len(rfq.json()["rfq"]["items"]) == 1
+    assert rfq.json()["rfq"]["items"][0]["product_name"] == f"معتمد-{suffix}"
+
+    returned = s.get(f"{PORTAL_API}/returned-items", headers=portal_headers)
+    assert returned.status_code == 200, returned.text
+    assert {row["status"] for row in returned.json()} == {"rejected", "need_clarification"}
+    returned_item = next(row for row in returned.json() if row["status"] == "need_clarification")
+    corrected = s.post(
+        f"{PORTAL_API}/returned-items/{returned_item['id']}/correct",
+        headers=portal_headers,
+        data={"payload": json.dumps({
+            "product_name": returned_item["product_name"], "unit": returned_item["unit"],
+            "quantity": 2, "note": "مواصفة مكتملة", "required_delivery_date": "2099-01-01",
+        })},
+    )
+    assert corrected.status_code == 200, corrected.text
+    child = corrected.json()
+    assert child["source_request_id"] == request_id
+    assert child["source_item_id"] == returned_item["id"]
+    with SessionLocal() as session:
+        original_item = session.get(IncomingPurchaseRequestItem, returned_item["id"])
+        child_request = session.get(IncomingPurchaseRequest, child["request_id"])
+        assert original_item is not None
+        assert original_item.review_status == "need_clarification"
+        assert child_request.source_request_id == request_id
+        assert child_request.source_item_id == original_item.id
+
+
 PDF_BYTES = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< >>\nendobj\n%%EOF"
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 XLSX_BYTES = b"PK\x03\x04" + b"\x00" * 32
@@ -5617,6 +5699,39 @@ def test_site_portal_cannot_read_quotation_attachment_or_comparison_rows(s):
     assert denied_comparison_rows.status_code == 403
 
 
+def test_comparison_delete_enforces_role_and_allows_only_safe_draft(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"delete-resp-{suffix}", role="procurement_responsible")
+        _make_user(session, username=f"delete-eng-{suffix}", role="procurement_engineer")
+    responsible_headers = _login_headers(s, f"delete-resp-{suffix}")
+    engineer_headers = _login_headers(s, f"delete-eng-{suffix}")
+    project = s.get(f"{API}/projects").json()[0]
+    item = s.get(f"{API}/items").json()[0]
+    supplier = s.get(f"{API}/suppliers").json()[0]
+    created = s.post(
+        f"{API}/price-comparisons", headers=responsible_headers,
+        json={
+            "project_id": project["id"], "comparison_date": "2026-08-21",
+            "rows": [{
+                "item_id": item["id"], "supplier_id": supplier["id"],
+                "quantity": 1, "unit_price": 100, "availability": "available",
+            }],
+        },
+    )
+    assert created.status_code == 200, created.text
+    comparison_id = created.json()["id"]
+    assert s.delete(f"{API}/price-comparisons/{comparison_id}").status_code == 401
+    assert s.delete(
+        f"{API}/price-comparisons/{comparison_id}", headers=engineer_headers,
+    ).status_code == 403
+    deleted = s.delete(
+        f"{API}/price-comparisons/{comparison_id}", headers=responsible_headers,
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert s.get(f"{API}/price-comparisons/{comparison_id}").status_code == 404
+
+
 # ---------------- Sprint 3.2: Comparison + Approval Review Workspace ----------------
 
 WORKSPACE_URL = lambda approval_id: f"{API}/workflow/approvals/{approval_id}/review-workspace"  # noqa: E731
@@ -5654,6 +5769,17 @@ def _make_approval_with_comparison(client, suffix, admin_headers, manual_item=Fa
     )
     assert response.status_code == 201, response.text
     return response.json()["approval"], request_id, item_id, supplier
+
+
+def test_comparison_delete_is_blocked_after_approval_traceability_exists(s, admin_headers):
+    approval, _request_id, _item_id, _supplier = _make_approval_with_comparison(
+        s, uuid.uuid4().hex[:8], admin_headers,
+    )
+    blocked = s.delete(
+        f"{API}/price-comparisons/{approval['comparison_id']}", headers=admin_headers,
+    )
+    assert blocked.status_code == 409
+    assert "لا يمكن حذف" in blocked.json()["detail"]
 
 
 def test_review_workspace_read_authorization_matrix(s, admin_headers):

@@ -47,7 +47,9 @@ const rowPayloadFields = [
   "selected_for_purchase",
 ];
 
-const rowItemKey = (row) => row.item_id || row.item_code || row.manual_product_key;
+const rowItemKey = (row) => (
+  row.source_request_item_id || row.item_id || row.item_code || row.manual_product_key
+);
 const rowSupplierKey = (row) => (
   row.supplier_id || row.supplier_code || row.manual_supplier_key
 );
@@ -108,7 +110,7 @@ function RequestAttachmentCard({ attachment, tr }) {
 function SupplierOfferColumn({
   group, itemOrder, tr, formatMoney, onPrice, onSelectRow, onSelectSupplier,
   onEdit, onDelete, quotation, canUpload, onUpload, onViewAttachment,
-  isCheapestComplete,
+  isCheapestComplete, supplierOptions, onAssignSupplier,
 }) {
   const summary = group.summary || {};
   const selectedCount = group.rows.filter((row) => Number(row.selected_for_purchase || 0) === 1).length;
@@ -130,41 +132,51 @@ function SupplierOfferColumn({
           canUpload={canUpload && !!quotation}
           onUpload={(files) => onUpload(quotation, files)}
           onView={onViewAttachment}
-          helper={quotation ? tr("المرفقات محفوظة على عرض المورد الأصلي.", "Files remain attached to the original supplier quotation.") : tr("يظهر المرفق عند استيراد العرض من RFQ.", "Attachments appear when the offer is imported from an RFQ.")}
+          helper={quotation ? tr("المرفقات محفوظة على عرض المورد الأصلي.", "Files remain attached to the original supplier quotation.") : tr("اختر المورد أولًا لتفعيل مرفقات عرضه.", "Select the supplier first to enable quotation attachments.")}
         />
         <Button type="button" className="w-full" variant={selectedCount ? "default" : "outline"} disabled={!summary.is_complete} onClick={() => onSelectSupplier(group)} data-testid={`select-supplier-offer-${group.key}`}>
           {selectedCount ? tr("العرض محدد للشراء", "Offer selected") : tr("اختيار عرض المورد", "Select supplier offer")}
         </Button>
       </div>}
     >
-      <div className="divide-y divide-slate-100">
-        <div className="grid grid-cols-[minmax(0,1.3fr)_58px_88px_88px] gap-2 bg-slate-50 px-3 py-2 text-[10px] font-bold text-slate-500">
+      {!group.supplierId && <div className="border-b bg-muted/40 p-3" data-testid="supplier-column-selector">
+        <SearchableSelect
+          value=""
+          options={supplierOptions}
+          placeholder={tr("اختر المورد", "Select supplier")}
+          searchPlaceholder={tr("ابحث باسم أو كود المورد...", "Search by supplier name or code...")}
+          testId={`supplier-selector-${group.key}`}
+          onValueChange={(value) => onAssignSupplier(group, value)}
+        />
+      </div>}
+      <div className="divide-y divide-border">
+        <div className="grid grid-cols-[minmax(0,1.3fr)_58px_88px_88px] gap-2 bg-muted/60 px-3 py-2 text-[10px] font-bold text-muted-foreground">
           <span>{tr("الصنف", "Item")}</span><span className="text-center">{tr("الكمية", "Qty")}</span><span className="text-center">{tr("سعر الوحدة", "Unit price")}</span><span className="text-center">{tr("الإجمالي", "Total")}</span>
         </div>
         {itemOrder.map((item) => {
           const row = group.rowsByItem.get(item.itemKey);
-          if (!row) return <div key={item.itemKey} className="grid min-h-[76px] grid-cols-[minmax(0,1.3fr)_58px_88px_88px] items-center gap-2 bg-slate-50/50 px-3 py-2 text-xs text-slate-400"><span className="truncate">{item.product_name}</span><span className="text-center">{fmt(item.quantity)}</span><span className="text-center">—</span><span className="text-center">{tr("غير مقدم", "Not quoted")}</span></div>;
-          const rowTone = row.selected_for_purchase ? "bg-primary/5" : row.is_unavailable ? "bg-red-50/70" : row.is_incomplete ? "bg-amber-50/70" : row.is_lowest_final_total ? "bg-emerald-50/70" : "";
+          if (!row) return <div key={item.itemKey} className="grid min-h-[76px] grid-cols-[minmax(0,1.3fr)_58px_88px_88px] items-center gap-2 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"><span className="truncate">{item.product_name}</span><span className="text-center">{fmt(item.quantity)}</span><span className="text-center">—</span><span className="text-center">{tr("غير مقدم", "Not quoted")}</span></div>;
+          const rowTone = row.selected_for_purchase ? "bg-primary/5" : row.is_unavailable ? "bg-destructive/5" : row.is_incomplete ? "bg-amber-500/5" : row.is_lowest_final_total ? "bg-emerald-500/5" : "";
           return <div key={item.itemKey} className={`min-h-[76px] px-3 py-2 ${rowTone}`} data-testid="comparison-row">
             <div className="grid grid-cols-[minmax(0,1.3fr)_58px_88px_88px] items-center gap-2">
-              <div className="min-w-0"><div className="truncate text-xs font-semibold text-slate-800" title={row.product_name}>{row.product_name}</div><div className="mt-1 flex flex-wrap gap-1">{row.is_lowest_final_total && <StatusBadge tone="success">{tr("أقل سعر", "Lowest")}</StatusBadge>}{row.is_unavailable && <StatusBadge tone="danger">{tr("غير متاح", "Unavailable")}</StatusBadge>}{row.is_incomplete && <StatusBadge tone="warning">{tr("ناقص", "Incomplete")}</StatusBadge>}</div></div>
+              <div className="min-w-0"><div className="truncate text-xs font-semibold text-foreground" title={row.product_name}>{row.product_name}</div><div className="mt-1 flex flex-wrap gap-1">{row.is_lowest_final_total && <StatusBadge tone="success">{tr("أقل سعر", "Lowest")}</StatusBadge>}{row.is_unavailable && <StatusBadge tone="danger">{tr("غير متاح", "Unavailable")}</StatusBadge>}{row.is_incomplete && <StatusBadge tone="warning">{tr("ناقص", "Incomplete")}</StatusBadge>}</div></div>
               <span className="text-center text-xs tabular-nums">{fmt(row.quantity)}</span>
               <Input type="number" min="0" step="0.01" value={row.unit_price || ""} onChange={(event) => onPrice(row.key, event.target.value)} className="h-8 px-1 text-center text-xs" data-testid={`inline-unit-price-${row.key}`} />
-              <span className="text-center text-xs font-bold tabular-nums text-slate-800">{formatMoney(row.final_total)}</span>
+              <span className="text-center text-xs font-bold tabular-nums text-foreground">{formatMoney(row.final_total)}</span>
             </div>
-            <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-slate-500"><span>{row.availability === "available" ? tr("متاح", "Available") : tr("غير متاح", "Unavailable")} · {row.delivery_days || 0} {tr("يوم", "days")}</span><span className="flex gap-1"><button type="button" className="font-semibold text-primary" onClick={() => onSelectRow(row)} disabled={!row.eligible}>{row.selected_for_purchase ? tr("إلغاء الاختيار", "Unselect") : tr("اختيار البند", "Select line")}</button><button type="button" title={tr("تعديل", "Edit")} className="font-semibold text-slate-500" onClick={() => onEdit(row)}>{tr("تعديل", "Edit")}</button><button type="button" title={tr("حذف", "Delete")} className="font-semibold text-red-600" onClick={() => onDelete(row.key)}>{tr("حذف", "Delete")}</button></span></div>
+            <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-muted-foreground"><span>{row.availability === "available" ? tr("متاح", "Available") : tr("غير متاح", "Unavailable")} · {row.delivery_days || 0} {tr("يوم", "days")}</span><span className="flex gap-1"><button type="button" className="font-semibold text-primary disabled:opacity-50" onClick={() => onSelectRow(row)} disabled={!row.eligible}>{row.selected_for_purchase ? tr("إلغاء الاختيار", "Unselect") : tr("اختيار البند", "Select line")}</button><button type="button" title={tr("تعديل", "Edit")} className="font-semibold text-muted-foreground" onClick={() => onEdit(row)}>{tr("تعديل", "Edit")}</button><button type="button" title={tr("حذف", "Delete")} className="font-semibold text-destructive" onClick={() => onDelete(row.key)}>{tr("حذف", "Delete")}</button></span></div>
           </div>;
         })}
       </div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-slate-100 p-3 text-xs">
-        <span className="text-slate-500">{tr("الإجمالي قبل الإضافات", "Subtotal")}</span><b className="text-end">{formatMoney(summary.items_subtotal)}</b>
-        <span className="text-slate-500">{tr("الخصم", "Discount")}</span><b className="text-end">-{formatMoney(summary.total_discounts)}</b>
-        <span className="text-slate-500">{tr("الضريبة", "VAT")}</span><b className="text-end">{formatMoney(summary.total_taxes)}</b>
-        <span className="text-slate-500">{tr("الشحن وتكاليف أخرى", "Shipping & other")}</span><b className="text-end">{formatMoney(Number(summary.total_shipping || 0) + Number(summary.total_other_costs || 0))}</b>
-        <span className="border-t pt-2 font-bold text-slate-800">{tr("الإجمالي النهائي", "Final total")}</span><b className="border-t pt-2 text-end text-sm text-primary">{formatMoney(summary.final_offer_total)}</b>
-        <span className="text-slate-500">{tr("مدة التوريد", "Lead time")}</span><b className="text-end">{summary.maximum_delivery_days ?? "-"} {tr("يوم", "days")}</b>
-        <span className="text-slate-500">{tr("شروط الدفع", "Payment terms")}</span><b className="truncate text-end" title={group.rows[0]?.payment_terms}>{group.rows[0]?.payment_terms || "-"}</b>
-        <span className="text-slate-500">{tr("صلاحية العرض", "Offer validity")}</span><b className="text-end">{group.rows[0]?.price_valid_until || "-"}</b>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border p-3 text-xs">
+        <span className="text-muted-foreground">{tr("الإجمالي قبل الإضافات", "Subtotal")}</span><b className="text-end">{formatMoney(summary.items_subtotal)}</b>
+        <span className="text-muted-foreground">{tr("الخصم", "Discount")}</span><b className="text-end">-{formatMoney(summary.total_discounts)}</b>
+        <span className="text-muted-foreground">{tr("الضريبة", "VAT")}</span><b className="text-end">{formatMoney(summary.total_taxes)}</b>
+        <span className="text-muted-foreground">{tr("الشحن وتكاليف أخرى", "Shipping & other")}</span><b className="text-end">{formatMoney(Number(summary.total_shipping || 0) + Number(summary.total_other_costs || 0))}</b>
+        <span className="border-t pt-2 font-bold text-foreground">{tr("الإجمالي النهائي", "Final total")}</span><b className="border-t pt-2 text-end text-sm text-primary">{formatMoney(summary.final_offer_total)}</b>
+        <span className="text-muted-foreground">{tr("مدة التوريد", "Lead time")}</span><b className="text-end">{summary.maximum_delivery_days ?? "-"} {tr("يوم", "days")}</b>
+        <span className="text-muted-foreground">{tr("شروط الدفع", "Payment terms")}</span><b className="truncate text-end" title={group.rows[0]?.payment_terms}>{group.rows[0]?.payment_terms || "-"}</b>
+        <span className="text-muted-foreground">{tr("صلاحية العرض", "Offer validity")}</span><b className="text-end">{group.rows[0]?.price_valid_until || "-"}</b>
       </div>
     </SupplierCard>
   );
@@ -214,6 +226,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   const [supplierQuotations, setSupplierQuotations] = useState(
     initialComparison?.supplier_quotations || location.state?.supplierQuotations || [],
   );
+  const [sourceRfqItems, setSourceRfqItems] = useState([]);
   const [supplierPage, setSupplierPage] = useState(0);
   const canUploadQuotation = ["admin", "procurement_responsible"].includes(user?.role);
   useEffect(() => {
@@ -275,6 +288,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   const [savedOpen, setSavedOpen] = useState(false);
   const [saved, setSaved] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [offerOpen, setOfferOpen] = useState(false);
   const [editingKey, setEditingKey] = useState("");
   const [draft, setDraft] = useState(() => ({ ...emptyComparisonRow(), entry_mode: "system" }));
@@ -303,7 +317,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   const supplierOptions = useMemo(() => suppliers.map((supplier) => ({
     value: supplier.id,
     label: `${supplier.code} — ${supplier.name}`,
-    searchText: `${supplier.phone || ""} ${supplier.email || ""}`,
+    searchText: `${supplier.specialty || ""} ${supplier.phone || ""} ${supplier.email || ""}`,
   })), [suppliers]);
   const categoryChoices = useMemo(() => mainCategoryOptions(items), [items]);
   const subcategoryChoices = useMemo(
@@ -381,9 +395,10 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     ]));
     const groups = new Map();
     calculations.rows.forEach((row) => {
-      const key = rowSupplierKey(row) || row.supplier_name || `unassigned-${row.key}`;
+      const key = rowSupplierKey(row) || row.supplier_slot || `unassigned-${row.key}`;
       if (!groups.has(key)) groups.set(key, {
         key,
+        supplierId: row.supplier_id || "",
         supplierName: row.supplier_name,
         supplierCode: row.supplier_code,
         rows: [],
@@ -395,6 +410,13 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     });
     return [...groups.values()];
   }, [calculations.rows, calculations.supplier_summaries]);
+  useEffect(() => {
+    if (!sourceRfqId) { setSourceRfqItems([]); return; }
+    api.get(`/workflow/rfqs/${sourceRfqId}`).then(({ data }) => {
+      setSourceRfqItems(data.items || []);
+      if (data.quotations) setSupplierQuotations(data.quotations);
+    }).catch(() => setSourceRfqItems([]));
+  }, [sourceRfqId]);
   const supplierPageCount = Math.max(1, Math.ceil(supplierOfferGroups.length / 3));
   const visibleSupplierGroups = supplierOfferGroups.slice(supplierPage * 3, supplierPage * 3 + 3);
   useEffect(() => {
@@ -442,7 +464,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     setBrandFilter("");
     setAvailabilityFilter("");
   };
-  const sourceRequestItemToRow = (requestItem) => {
+  const sourceRequestItemToRow = (requestItem, supplier = {}, supplierSlot = "") => {
     const linkedItemId = requestItem.master_item_id || requestItem.item_id || "";
     const systemItem = items.find((entry) => entry.id === linkedItemId);
 
@@ -458,6 +480,8 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     supplier_code: "",
     supplier_name: "",
     selected_for_purchase: 0,
+    source_request_item_id: requestItem.id || requestItem.source_request_item_id || "",
+    supplier_slot: supplierSlot,
   };
 
   // لو الصنف مربوط بصنف موجود بالفعل في Master Items
@@ -477,9 +501,9 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
       main_category: requestItem.main_category
         || systemItem.main_category || systemItem.category || "",
       subcategory: requestItem.subcategory || systemItem.subcategory || "",
-      supplier_id: "",
-      supplier_code: "",
-      supplier_name: "",
+      supplier_id: supplier.id || "",
+      supplier_code: supplier.code || "",
+      supplier_name: supplier.name || "",
       selected_for_purchase: 0,
       entry_mode: "system",
     };
@@ -511,6 +535,9 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     ),
 
     manual_supplier_key: "",
+    supplier_id: supplier.id || "",
+    supplier_code: supplier.code || "",
+    supplier_name: supplier.name || "",
   };
 
   return row;
@@ -518,9 +545,34 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
 
 
   const addSourceRequestItem = (requestItem) => {
-    const newRow = sourceRequestItemToRow(requestItem);
-
-  setRows((current) => [...current, newRow]);
+    if (requestItem.review_status !== "approved") {
+      toast.error(tr("هذا الصنف غير مؤهل للمقارنة", "This item is not eligible for comparison"));
+      return;
+    }
+    const groups = supplierOfferGroups.length ? supplierOfferGroups : [{
+      key: `slot-${globalThis.crypto?.randomUUID?.() || Date.now()}`,
+      rows: [], rowsByItem: new Map(),
+    }];
+    const additions = groups.flatMap((group) => {
+      const first = group.rows?.[0] || {};
+      const supplier = suppliers.find((entry) => entry.id === first.supplier_id) || {};
+      const candidate = sourceRequestItemToRow(
+        requestItem, supplier, first.supplier_slot || group.key,
+      );
+      return group.rowsByItem?.has(rowItemKey(candidate)) ? [] : [candidate];
+    });
+    const hadSupplierGroups = supplierOfferGroups.length > 0;
+    setRows((current) => {
+      if (!hadSupplierGroups && current.some(
+        (row) => row.source_request_item_id === requestItem.id,
+      )) return current;
+      const uniqueAdditions = additions.filter((candidate) => !current.some((row) => (
+        row.source_request_item_id === candidate.source_request_item_id
+        && (rowSupplierKey(row) || row.supplier_slot)
+          === (rowSupplierKey(candidate) || candidate.supplier_slot)
+      )));
+      return [...current, ...uniqueAdditions];
+    });
 
   toast.success(
     tr(
@@ -532,28 +584,102 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
 
 
   const addAllSourceRequestItems = () => {
-    const requestItems = sourceRequest?.items || [];
+    const requestItems = (sourceRequest?.items || []).filter(
+      (item) => item.review_status === "approved",
+    );
 
   if (!requestItems.length) {
     toast.error(
       tr(
-        "لا توجد أصناف في طلب الشراء",
-        "There are no items in the purchase request"
+        "لا توجد أصناف معتمدة مؤهلة في طلب الشراء",
+        "There are no approved eligible items in the purchase request"
       )
     );
     return;
   }
 
-  const newRows = requestItems.map(sourceRequestItemToRow);
-
-  setRows((current) => [...current, ...newRows]);
+  const groups = supplierOfferGroups.length ? supplierOfferGroups : [{
+    key: `slot-${globalThis.crypto?.randomUUID?.() || Date.now()}`,
+    rows: [], rowsByItem: new Map(),
+  }];
+  const additions = [];
+  groups.forEach((group) => {
+    const first = group.rows?.[0] || {};
+    const supplier = suppliers.find((entry) => entry.id === first.supplier_id) || {};
+    requestItems.forEach((requestItem) => {
+      const candidate = sourceRequestItemToRow(
+        requestItem, supplier, first.supplier_slot || group.key,
+      );
+      if (!group.rowsByItem?.has(rowItemKey(candidate))) additions.push(candidate);
+    });
+  });
+  setRows((current) => [...current, ...additions]);
 
   toast.success(
     tr(
-      `تمت إضافة ${newRows.length} صنف للمقارنة`,
-      `${newRows.length} items added to comparison`
+      `تمت إضافة ${additions.length} صف مؤهل إلى شبكة المقارنة`,
+      `${additions.length} eligible rows added to the comparison grid`
     )
   );
+  };
+  const addSupplierColumn = () => {
+    if (!itemOrder.length) {
+      toast.error(tr("أضف الأصناف المؤهلة أولًا", "Add eligible items first"));
+      return;
+    }
+    if (supplierOfferGroups.some((group) => !group.supplierId)) {
+      toast.error(tr("اختر مورد العمود الحالي أولًا", "Select the supplier for the current column first"));
+      return;
+    }
+    const slot = `slot-${globalThis.crypto?.randomUUID?.() || Date.now()}`;
+    setRows((current) => [...current, ...itemOrder.map((item) => ({
+      ...emptyComparisonRow(), ...item,
+      id: undefined,
+      key: globalThis.crypto?.randomUUID?.() || `supplier-row-${Date.now()}-${Math.random()}`,
+      supplier_id: "", supplier_code: "", supplier_name: "",
+      supplier_slot: slot, selected_for_purchase: 0, unit_price: 0,
+      entry_mode: item.item_id ? "system" : "manual",
+    }))]);
+  };
+
+  const ensureSupplierQuotation = async (supplierId) => {
+    let rfqId = sourceRfqId;
+    if (!rfqId && sourceRequestId) {
+      const { data } = await api.post("/workflow/rfqs", { source_request_id: sourceRequestId });
+      rfqId = data.rfq.id;
+      setSourceRfqId(rfqId);
+      setSourceRfqItems(data.rfq.items || []);
+    }
+    if (!rfqId) return null;
+    await api.post(`/workflow/rfqs/${rfqId}/suppliers`, { supplier_id: supplierId });
+    const { data } = await api.post(`/workflow/rfqs/${rfqId}/quotations`, { supplier_id: supplierId });
+    setSupplierQuotations((current) => [
+      ...current.filter((item) => item.id !== data.quotation.id), data.quotation,
+    ]);
+    return data.quotation;
+  };
+
+  const assignSupplierToGroup = async (group, supplierId) => {
+    if (supplierOfferGroups.some((entry) => entry.key !== group.key && entry.supplierId === supplierId)) {
+      toast.error(tr("هذا المورد مستخدم بالفعل في المقارنة", "This supplier is already used in the comparison"));
+      return;
+    }
+    const supplier = suppliers.find((entry) => entry.id === supplierId);
+    if (!supplier) return;
+    try {
+      await ensureSupplierQuotation(supplierId);
+      setRows((current) => current.map((row) => {
+        const currentKey = rowSupplierKey(row) || row.supplier_slot || `unassigned-${row.key}`;
+        return currentKey === group.key ? {
+          ...row, supplier_id: supplier.id, supplier_code: supplier.code,
+          supplier_name: supplier.name, supplier_slot: "", manual_supplier_key: "",
+          selected_for_purchase: 0,
+        } : row;
+      }));
+      toast.success(tr(`تم اختيار المورد ${supplier.name}`, `Supplier ${supplier.name} selected`));
+    } catch (error) {
+      toast.error(errMsg(error));
+    }
   };
   const openNewOffer = (mode = "system") => {
     setEditingKey("");
@@ -791,7 +917,9 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
       const url = URL.createObjectURL(data);
       window.open(url, "_blank", "noopener,noreferrer");
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (error) { toast.error(errMsg(error)); }
+    } catch (error) {
+      toast.error(tr(errMsg(error), "Could not open the supplier quotation attachment."));
+    }
   };
 
   const uploadQuotationAttachments = async (quotation, files) => {
@@ -811,7 +939,9 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
         ? { ...item, attachments: [...(item.attachments || []), ...additions], attachment_count: Number(item.attachment_count || 0) + additions.length }
         : item));
       toast.success(tr("تم رفع مرفق عرض المورد", "Supplier quotation attachment uploaded"));
-    } catch (error) { toast.error(errMsg(error)); }
+    } catch (error) {
+      toast.error(tr(errMsg(error), "Could not upload the supplier quotation attachment. Check the file type, size, and your permission."));
+    }
   };
 
 const toggleDetails = (key) => setExpandedRows((current) => {
@@ -854,7 +984,63 @@ const toggleDetails = (key) => setExpandedRows((current) => {
   const validateComparison = () => {
     if (!comparisonDate) return tr("تاريخ المقارنة مطلوب", "Comparison date is required");
     if (!rows.length) return tr("أضف عرض سعر واحداً على الأقل", "Add at least one price offer");
+    if (sourceRequestId && rows.some((row) => !row.supplier_id)) {
+      return tr("اختر موردًا فعليًا لكل عمود قبل حفظ المقارنة", "Select a Supplier Master record for every column before saving");
+    }
     return null;
+  };
+
+  const syncSupplierQuotations = async () => {
+    if (!sourceRfqId || !sourceRfqItems.length) return;
+    const updatedQuotations = [];
+    for (const group of supplierOfferGroups.filter((entry) => entry.supplierId)) {
+      let quotation = quotationForGroup(group);
+      if (!quotation) quotation = await ensureSupplierQuotation(group.supplierId);
+      if (!quotation) continue;
+      const lines = sourceRfqItems.map((rfqItem) => {
+        const row = group.rows.find((entry) => (
+          entry.rfq_item_id === rfqItem.id
+          || entry.source_request_item_id === rfqItem.source_request_item_id
+          || (entry.item_id && entry.item_id === rfqItem.item_id)
+          || entry.product_name === rfqItem.product_name
+        ));
+        return row ? {
+          rfq_item_id: rfqItem.id,
+          quantity: Number(row.quantity || rfqItem.quantity || 0),
+          unit: row.unit || rfqItem.unit || "",
+          unit_price: Number(row.unit_price || 0),
+          discount_pct: Number(row.discount_pct || 0),
+          tax_pct: Number(row.tax_pct || 0),
+          availability: row.availability || "available",
+          remark: row.notes || "",
+        } : null;
+      });
+      const completeEntry = lines.every((line) => (
+        line && (line.availability === "unavailable" || line.unit_price > 0)
+      ));
+      const first = group.rows[0] || {};
+      const { data } = await api.put(
+        `/workflow/rfqs/${sourceRfqId}/quotations/${quotation.id}`,
+        {
+          quotation_ref: quotation.quotation_ref || "",
+          quotation_date: quotation.quotation_date || comparisonDate,
+          valid_until: first.price_valid_until || quotation.valid_until || "",
+          payment_terms: first.payment_terms || quotation.payment_terms || "",
+          delivery_terms: quotation.delivery_terms || "",
+          currency: quotation.currency || "EGP",
+          notes: quotation.notes || "",
+          status: completeEntry ? "received" : "draft",
+          lines: lines.filter(Boolean),
+        },
+      );
+      updatedQuotations.push(data);
+    }
+    if (updatedQuotations.length) {
+      setSupplierQuotations((current) => [
+        ...current.filter((item) => !updatedQuotations.some((updated) => updated.id === item.id)),
+        ...updatedQuotations,
+      ]);
+    }
   };
   const applyDetail = (detail) => {
     savedFingerprintRef.current = comparisonFingerprint({
@@ -886,6 +1072,7 @@ const toggleDetails = (key) => setExpandedRows((current) => {
     if (error) { toast.error(error); return; }
     setSaving(true);
     try {
+      await syncSupplierQuotations();
       const response = comparisonId
         ? await api.put(`/price-comparisons/${comparisonId}`, payload())
         : await api.post("/price-comparisons", payload());
@@ -917,6 +1104,27 @@ const toggleDetails = (key) => setExpandedRows((current) => {
       applyDetail(response.data);
       setSavedOpen(false);
     } catch (error) { toast.error(errMsg(error)); }
+  };
+  const deleteComparison = async (id = comparisonId) => {
+    if (!id) return;
+    if (!window.confirm(tr(
+      "هل تريد حذف مسودة المقارنة؟ لا يمكن حذف مقارنة مرتبطة باعتماد أو أمر شراء.",
+      "Delete this draft comparison? Comparisons linked to an approval or PO cannot be deleted.",
+    ))) return;
+    setDeleting(true);
+    try {
+      const { data } = await api.delete(`/price-comparisons/${id}`);
+      toast.success(tr(`تم حذف ${data.comparison_number}`, `${data.comparison_number} deleted`));
+      setSaved((current) => current.filter((item) => item.id !== id));
+      if (id === comparisonId) {
+        savedFingerprintRef.current = currentFingerprint;
+        reset();
+      }
+    } catch (error) {
+      toast.error(errMsg(error));
+    } finally {
+      setDeleting(false);
+    }
   };
   useEffect(() => {
     const requestedId = location.state?.comparison_id;
@@ -1009,117 +1217,19 @@ const unselectedPurchaseItemCount = Math.max(
   0,
 
 );
-const preparePurchaseOrders = async () => {
-if (!selectedPurchaseRows.length) {
-toast.error(
-  tr(
-    "اختر عرضًا واحدًا على الأقل للشراء أولًا",
-    "Select at least one offer for purchase first"
-  )
-);
-return;
-}
-if (!comparisonId) {
-toast.error(
-  tr(
-    "احفظ المقارنة أولًا قبل إنشاء أوامر الشراء",
-    "Save the comparison before creating purchase orders"
-  )
-);
-return;
-}
-if (hasUnsavedChanges) {
-toast.error(
-  tr(
-    "احفظ اختيارات الشراء الحالية قبل إنشاء أوامر الشراء",
-    "Save the current purchase selections before creating purchase orders",
-  )
-);
-return;
-}
-
-const grouped = {};
- selectedPurchaseRows.forEach((row) => {
-    const supplierKey = rowSupplierKey(row);
-
-    if (!grouped[supplierKey]) {
-      grouped[supplierKey] = {
-        supplier_id: row.supplier_id || "",
-        supplier_name: row.supplier_name || "",
-        items: [],
-        total: 0,
-      };
-    }
-
-    grouped[supplierKey].items.push({
-      item_id: row.item_id || "",
-      item_code: row.item_code || "",
-      product_name: row.product_name || "",
-      brand: row.brand || "",
-      specifications: row.specifications || "",
-      quantity: Number(row.quantity || 0),
-      unit: row.unit || "",
-      unit_price: Number(row.unit_price || 0),
-      discount_pct: Number(row.discount_pct || 0),
-      vat_pct: Number(row.tax_pct || 0),
-      shipping_cost: Number(row.shipping_cost || 0),
-      other_cost: Number(row.other_cost || 0),
-      line_total: Number(row.final_total || 0),
-    });
-
-    grouped[supplierKey].total += Number(row.final_total || 0);
-  });
-
-const preparedOrders = Object.values(grouped);
-try {
-const project = projects.find(
-  (entry) => entry.name === projectName
-);
-
-const customer = customers.find(
-  (entry) => entry.name === customerName
-);
-
-const response = await api.post(
-  "/purchase-orders/from-comparison",
-  {
-    comparison_id: comparisonId,
-    comparison_number: comparisonNumber,
-
-    project_id: project?.id || "",
-    project_name: projectName || "",
-
-    customer_id: customer?.id || "",
-    customer_name: customerName || "",
-
-    po_date: today(),
-    created_by: "",
-
-    orders: preparedOrders,
-  }
-);
-
-toast.success(
-  tr(
-    `تم إنشاء ${response.data.count} أمر شراء بنجاح`,
-    `${response.data.count} purchase orders created successfully`
-  )
-);
-} catch (error) {
-toast.error(errMsg(error));
-}
-};
   const sendForApproval = async () => {
     if (!comparisonId) return toast.error(tr("احفظ المقارنة أولاً", "Save the comparison first"));
     if (hasUnsavedChanges) return toast.error(tr("احفظ الاختيارات الحالية أولاً", "Save the current selections first"));
     if (!selectedPurchaseRows.length) return toast.error(tr("اختر عرضًا صالحًا واحدًا على الأقل", "Select at least one valid offer"));
+    if (supplierOfferGroups.some((group) => !group.supplierId)) return toast.error(tr("اختر موردًا فعليًا لكل عمود", "Select a Supplier Master record for every column"));
+    if (selectedPurchaseItemCount !== allComparisonItemsCount) return toast.error(tr("اختر عرضًا صالحًا لكل صنف قبل الإرسال", "Select one valid offer for every item before sending"));
     try {
       const { data } = await api.post("/workflow/approvals/from-comparison", {
         comparison_id: comparisonId,
         created_by: "",
         approval_type: "comparison_workflow",
       });
-      toast.success(tr(`أُرسلت المقارنة لمهندس المشتريات — ${data.approval.approval_number}`, `Sent to procurement engineer — ${data.approval.approval_number}`));
+      toast.success(tr(`أُرسلت المقارنة للمراجعة والاعتماد — ${data.approval.approval_number}`, `Sent for review and approval — ${data.approval.approval_number}`));
       navigate("/approvals", { state: { approval_id: data.approval.id } });
     } catch (error) { toast.error(errMsg(error)); }
   };
@@ -1139,11 +1249,12 @@ toast.error(errMsg(error));
           <div className="flex flex-wrap gap-2 comparison-actions comparison-print-hidden">
             <Button size="sm" variant="outline" onClick={reset}><FilePlus2 className="h-4 w-4" /> {tr("جديدة", "New")}</Button>
             <Button size="sm" variant="outline" onClick={openSaved}><FolderOpen className="h-4 w-4" /> {tr("فتح", "Open")}</Button>
+            {comparisonId && <Button size="sm" variant="destructive" onClick={() => deleteComparison()} disabled={deleting} data-testid="delete-comparison"><Trash2 className="h-4 w-4" />{deleting ? tr("جارٍ الحذف", "Deleting") : tr("حذف المسودة", "Delete draft")}</Button>}
             <Button size="sm" onClick={save} disabled={saving} data-testid="comparison-save">
               <Save className="h-4 w-4" /> {saving ? tr("جارٍ الحفظ", "Saving") : tr("حفظ المقارنة", "Save comparison")}
             </Button>
             <Button size="sm" variant="outline" onClick={exportExcel}><Download className="h-4 w-4" /> Excel</Button>
-            <Button size="sm" variant="outline" onClick={sendForApproval}><Send className="h-4 w-4" /> {tr("إرسال لمهندس المشتريات", "Send to procurement engineer")}</Button>
+            <Button size="sm" variant="outline" onClick={sendForApproval}><Send className="h-4 w-4" /> {tr("إرسال للمراجعة والاعتماد", "Send for review and approval")}</Button>
             <Button size="sm" variant="outline" data-testid="comparison-print" onClick={() => window.print()}><Printer className="h-4 w-4" /> {tr("طباعة", "Print")}</Button>
           </div>
         </div>
@@ -1211,134 +1322,40 @@ toast.error(errMsg(error));
       }
     />
   </div>
-    <div className="mt-4 flex justify-end">
-    <Button
-      type="button"
-      onClick={preparePurchaseOrders}
-      disabled={!selectedPurchaseRows.length}
-    >
-      {tr("تجهيز أوامر الشراء", "Prepare purchase orders")}
-    </Button>
-  </div>
 </section>
 {sourceRequest && (
-  <section className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+  <section className="rounded-lg border bg-card p-4" data-testid="source-request-items-table">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h3 className="text-sm font-bold text-slate-900">
-          أصناف طلب الشراء
-        </h3>
-
-        <div className="mt-1 text-xs text-slate-600">
+        <h3 className="text-sm font-bold text-foreground">{tr("أصناف طلب الشراء", "Purchase request items")}</h3>
+        <div className="mt-1 text-xs text-muted-foreground">
           {sourceRequest.request_number} — {sourceRequest.project_name || "-"}
         </div>
-
-        <div className="mt-1 text-xs text-slate-500">
-          مقدم الطلب: {sourceRequest.requester_name || "-"}
-        </div>
       </div>
-
       <div className="flex items-center gap-2">
-  <div className="rounded-md bg-card px-3 py-2 text-xs font-bold text-blue-700 dark:text-blue-300">
-    {sourceRequest.items?.length || 0} صنف
-  </div>
-
-  <Button
-    type="button"
-    size="sm"
-    onClick={addAllSourceRequestItems}
-    data-testid="add-all-request-items"
-  >
-    <Plus className="h-4 w-4" />
-    {tr("إضافة كل الأصناف", "Add all items")}
-  </Button>
-</div>
+        <span className="rounded-md bg-muted px-3 py-2 text-xs font-bold">{(sourceRequest.items || []).filter((item) => item.review_status === "approved").length} {tr("مؤهل", "eligible")}</span>
+        <Button type="button" size="sm" onClick={addAllSourceRequestItems} data-testid="add-all-request-items"><Plus className="h-4 w-4" />{tr("إضافة جميع الأصناف المؤهلة", "Add all eligible items")}</Button>
+      </div>
     </div>
-
-    <div className="mt-4 space-y-2">
-      {(sourceRequest.items || []).map((item) => {
-        const statusLabel = {
-          approved: "معتمد",
-          rejected: "مرفوض",
-          need_clarification: "يحتاج استكمال",
-          pending: "قيد المراجعة",
-          hold: "معلّق",
-        }[item.review_status] || item.review_status || "قيد المراجعة";
-
-        const statusClass = {
-          approved: "border-emerald-200 bg-emerald-50",
-          rejected: "border-red-200 bg-red-50",
-          need_clarification: "border-blue-200 bg-blue-50",
-          pending: "border-slate-200 bg-slate-50",
-          hold: "border-amber-200 bg-amber-50",
-        }[item.review_status] || "border-slate-200 bg-white";
-        return (
-          <div
-            key={item.id}
-            className={`rounded-md border p-3 ${statusClass}`}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="font-bold text-slate-800">
-                  {item.position}. {item.product_name}
-                </div>
-
-                <div className="mt-1 text-xs text-slate-500">
-                  {item.quantity} {item.unit}
-                  {item.preferred_brand ? ` — ${item.preferred_brand}` : ""}
-                </div>
-
-                {item.specifications && (
-                  <div className="mt-1 text-xs text-slate-600">
-                    {item.specifications}
-                  </div>
-                )}
-
-                {item.review_reason && (
-                  <div className="mt-1 text-xs text-slate-500">
-                    {item.review_reason}
-                  </div>
-                )}
-              </div>
-
-            <div className="flex items-center gap-2">
-            <div className="rounded-md bg-white px-2 py-1 text-xs font-bold">
-              {statusLabel}
-            </div>
-
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => addSourceRequestItem(item)}
-              data-testid={`add-request-item-${item.id}`}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {tr("إضافة للمقارنة", "Add to comparison")}
-            </Button>
-          </div>
-            </div>
-          </div>
-        );
-      })}
+    <div className="mt-3 overflow-x-auto rounded-md border">
+      <table className="w-full min-w-[760px] text-xs">
+        <thead className="bg-muted/70"><tr><th className="p-2 text-start">#</th><th className="p-2 text-start">{tr("الصنف", "Item")}</th><th className="p-2 text-start">{tr("المواصفات", "Specification")}</th><th className="p-2 text-center">{tr("الكمية", "Qty")}</th><th className="p-2 text-center">{tr("الوحدة", "Unit")}</th><th className="p-2 text-center">{tr("المراجعة", "Review")}</th><th className="p-2 text-center">{tr("حالة المقارنة", "Comparison")}</th><th className="p-2 text-end">{tr("الإجراء", "Action")}</th></tr></thead>
+        <tbody>{(sourceRequest.items || []).map((item) => {
+          const eligible = item.review_status === "approved";
+          const alreadyAdded = rows.some((row) => row.source_request_item_id === item.id);
+          const reviewLabel = item.review_status === "approved" ? tr("معتمد", "Approved") : item.review_status === "rejected" ? tr("مرفوض", "Rejected") : item.review_status === "need_clarification" ? tr("يحتاج استكمال", "Needs Completion") : tr("غير مؤهل", "Not eligible");
+          return <tr key={item.id} className="border-t hover:bg-muted/30"><td className="p-2">{item.position}</td><td className="p-2 font-semibold">{item.product_name}</td><td className="max-w-64 truncate p-2 text-muted-foreground" title={item.specifications}>{item.specifications || "-"}</td><td className="p-2 text-center tabular-nums">{item.quantity}</td><td className="p-2 text-center">{item.unit}</td><td className="p-2 text-center"><StatusBadge tone={eligible ? "success" : item.review_status === "rejected" ? "danger" : "warning"}>{reviewLabel}</StatusBadge></td><td className="p-2 text-center">{alreadyAdded ? tr("مضاف", "Added") : eligible ? tr("جاهز", "Ready") : tr("مستبعد", "Excluded")}</td><td className="p-2 text-end"><Button type="button" size="sm" variant="outline" disabled={!eligible || alreadyAdded} onClick={() => addSourceRequestItem(item)} data-testid={`add-request-item-${item.id}`}><Plus className="h-3.5 w-3.5" />{tr("إضافة للمقارنة", "Add to comparison")}</Button></td></tr>;
+        })}</tbody>
+      </table>
     </div>
   </section>
 )}
-      <section className="rounded-lg border bg-card p-4 comparison-print-hidden" data-testid="add-offer-section">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><h3 className="text-sm font-bold">{tr("2 — إضافة عرض مورد", "2 — Add supplier offer")}</h3><p className="text-xs text-slate-500">{tr("أدخل عرضاً واحداً في نافذة مركزة وسريعة.", "Enter one offer in a focused form.")}</p></div>
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => openNewOffer("system")} data-testid="comparison-add-offer"><Plus className="h-4 w-4" /> {tr("إضافة عرض", "Add offer")}</Button>
-            <Button size="sm" variant="outline" onClick={() => openNewOffer("manual")} data-testid="comparison-add-manual-product"><PackagePlus className="h-4 w-4" /> {tr("إضافة منتج يدوي", "Add manual product")}</Button>
-            <Button size="sm" variant="outline" onClick={() => openNewOffer("manual")} data-testid="comparison-add-manual-supplier"><UserPlus className="h-4 w-4" /> {tr("إضافة مورد يدوي", "Add manual supplier")}</Button>
-          </div>
-        </div>
-      </section>
 
       <section className="space-y-3 rounded-lg border bg-card p-3" data-testid="added-offers-section">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-bold">{tr("3 — العروض المضافة", "3 — Added offers")} <span className="font-normal text-slate-500">({rows.length})</span></h3>
+          <h3 className="text-sm font-bold">{tr("2 — عروض الموردين", "2 — Supplier offers")} <span className="font-normal text-muted-foreground">({rows.length})</span></h3>
           <div className="flex flex-1 flex-wrap justify-end gap-2 comparison-print-hidden">
+            {!sourceRequest && <Button type="button" size="sm" variant="outline" onClick={() => openNewOffer("manual")} data-testid="comparison-add-manual-product"><PackagePlus className="h-4 w-4" />{tr("إضافة بند يدوي", "Add manual line")}</Button>}
             <Input className="h-8 max-w-64" placeholder={tr("بحث بالمنتج أو المورد...", "Search by product or supplier...")} value={search} onChange={(event) => setSearch(event.target.value)} />
             <select className="h-8 max-w-44 rounded-md border border-slate-200 bg-white px-2 text-xs" value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
               <option value="">{tr("كل المنتجات", "All products")}</option>{productFilterOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -1366,11 +1383,12 @@ toast.error(errMsg(error));
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/50 p-3">
             <div><div className="text-xs font-bold text-foreground">{tr("مقارنة الموردين", "Supplier comparison")}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{tr("ثلاثة عروض في كل صفحة مع محاذاة الأصناف رأسيًا.", "Three offers per page with vertically aligned items.")}</div></div>
             <div className="flex items-center gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={addSupplierColumn} data-testid="add-supplier-column"><Plus className="h-4 w-4" />{tr("إضافة عمود مورد", "Add supplier column")}</Button>
               <Button type="button" size="sm" className="bg-emerald-700 text-white hover:bg-emerald-800 dark:bg-emerald-600 dark:hover:bg-emerald-500" onClick={selectCheapestComplete} data-testid="select-cheapest-complete-offer">{tr("اختيار أرخص عرض كامل", "Select cheapest complete offer")}</Button>
               {supplierOfferGroups.length > 3 && <div className="flex items-center gap-1 rounded-md border bg-card p-1"><Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={supplierPage === 0} onClick={() => setSupplierPage((page) => page - 1)} aria-label={tr("الموردون السابقون", "Previous suppliers")}>{direction === "rtl" ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}</Button><span className="min-w-24 text-center text-xs text-muted-foreground" dir="ltr">{supplierPage * 3 + 1}–{Math.min((supplierPage + 1) * 3, supplierOfferGroups.length)} / {supplierOfferGroups.length}</span><Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={supplierPage + 1 >= supplierPageCount} onClick={() => setSupplierPage((page) => page + 1)} aria-label={tr("الموردون التاليون", "Next suppliers")}>{direction === "rtl" ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</Button></div>}
             </div>
           </div>
-          {visibleSupplierGroups.length ? <div className="grid items-stretch gap-3 xl:grid-cols-3">{visibleSupplierGroups.map((group) => <SupplierOfferColumn key={group.key} group={group} itemOrder={itemOrder} tr={tr} formatMoney={formatMoney} onPrice={(keyValue, value) => updateRowField(keyValue, "unit_price", value)} onSelectRow={selectForPurchase} onSelectSupplier={selectSupplierOffer} onEdit={editRow} onDelete={deleteRow} quotation={quotationForGroup(group)} canUpload={canUploadQuotation} onUpload={uploadQuotationAttachments} onViewAttachment={viewQuotationAttachment} isCheapestComplete={group.key === cheapestSelectableGroup?.key} />)}</div> : <EmptyState title={tr("لا توجد عروض موردين", "No supplier offers")} description={tr("أضف عرضًا أو استورد عروض RFQ لبدء المقارنة.", "Add an offer or import RFQ quotations to start comparing.")} />}
+          {visibleSupplierGroups.length ? <div className="grid items-stretch gap-3 xl:grid-cols-3">{visibleSupplierGroups.map((group) => <SupplierOfferColumn key={group.key} group={group} itemOrder={itemOrder} tr={tr} formatMoney={formatMoney} onPrice={(keyValue, value) => updateRowField(keyValue, "unit_price", value)} onSelectRow={selectForPurchase} onSelectSupplier={selectSupplierOffer} onEdit={editRow} onDelete={deleteRow} quotation={quotationForGroup(group)} canUpload={canUploadQuotation} onUpload={uploadQuotationAttachments} onViewAttachment={viewQuotationAttachment} isCheapestComplete={group.key === cheapestSelectableGroup?.key} supplierOptions={supplierOptions} onAssignSupplier={assignSupplierToGroup} />)}</div> : <EmptyState title={tr("لا توجد عروض موردين", "No supplier offers")} description={tr("أضف الأصناف المؤهلة ثم اختر المورد لكل عمود.", "Add eligible items, then select a supplier for each column.")} />}
         </div>
         {showDetailedTable && <div className="mt-4 overflow-hidden rounded-md border border-slate-200" data-testid="detailed-offers-table">
           <table className="w-full table-fixed text-xs">
@@ -1505,7 +1523,7 @@ toast.error(errMsg(error));
       <details className="comparison-summary rounded-lg border border-slate-200 bg-white p-3">
         <summary className="cursor-pointer text-sm font-bold text-slate-700">{tr("التحليل التفصيلي والتوفير", "Detailed analysis and savings")}</summary>
       <section className="mt-4 space-y-3" data-testid="comparison-results-section">
-        <h3 className="text-sm font-bold text-slate-800">{tr("4 — مقارنة المنتجات", "4 — Product comparison")}</h3>
+        <h3 className="text-sm font-bold text-foreground">{tr("3 — مقارنة المنتجات", "3 — Product comparison")}</h3>
         <div className="comparison-matrix overflow-x-auto rounded-lg border border-slate-200 bg-white">
           <table className="w-full min-w-[940px] text-xs"><thead className="bg-slate-50"><tr>
             <th className="p-2 text-start">{tr("المنتج", "Product")}</th><th className="p-2">{tr("أقل سعر وحدة", "Lowest unit price")}</th><th className="p-2">{tr("أقل إجمالي نهائي", "Lowest final total")}</th><th className="p-2">{tr("أسرع تسليم", "Fastest delivery")}</th><th className="p-2">{tr("آخر سعر شراء", "Last purchase price")}</th><th className="p-2">{tr("الفرق التاريخي", "Historical difference")}</th><th className="p-2">{tr("العروض المتاحة", "Available offers")}</th>
@@ -1522,7 +1540,7 @@ toast.error(errMsg(error));
       </section>
 
       <section className="space-y-3 comparison-summary" data-testid="supplier-summary-section">
-        <h3 className="text-sm font-bold text-slate-800">{tr("5 — ملخص الموردين", "5 — Supplier summary")}</h3>
+        <h3 className="text-sm font-bold text-foreground">{tr("4 — ملخص الموردين", "4 — Supplier summary")}</h3>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <Metric label={tr("أرخص عرض كامل", "Cheapest complete offer")} value={scenario.cheapest_complete_supplier?.supplier_name} accent="text-emerald-700" />
           <Metric label={tr("أسرع عرض كامل", "Fastest complete offer")} value={scenario.fastest_complete_supplier?.supplier_name} accent="text-blue-700" />
@@ -1536,7 +1554,7 @@ toast.error(errMsg(error));
       </section>
 
       <section className="space-y-3 comparison-summary" data-testid="mixed-savings-section">
-        <h3 className="text-sm font-bold text-slate-800">{tr("6 — ملخص الشراء المختلط والتوفير", "6 — Mixed purchase and savings summary")}</h3>
+        <h3 className="text-sm font-bold text-foreground">{tr("5 — ملخص الشراء المختلط والتوفير", "5 — Mixed purchase and savings summary")}</h3>
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
           <Metric label={tr("إجمالي الشراء المختلط", "Mixed purchase total")} value={formatMoney(scenario.mixed_supplier_total)} />
           <Metric label={tr("أرخص عرض كامل", "Cheapest complete offer")} value={scenario.single_supplier_total == null ? "-" : formatMoney(scenario.single_supplier_total)} accent="text-emerald-700" />
@@ -1621,7 +1639,7 @@ toast.error(errMsg(error));
 
       <Dialog open={savedOpen} onOpenChange={setSavedOpen}>
         <DialogContent className="max-w-2xl" dir={direction}><DialogHeader><DialogTitle>{tr("المقارنات المحفوظة", "Saved comparisons")}</DialogTitle><DialogDescription>{tr("اختر مقارنة لإعادة فتحها وتعديلها.", "Select a comparison to reopen and edit it.")}</DialogDescription></DialogHeader>
-          <div className="max-h-[60vh] space-y-2 overflow-y-auto">{saved.map((row) => <button type="button" key={row.id} onClick={() => loadComparison(row.id)} className="flex w-full items-center justify-between rounded-md border p-3 text-start hover:bg-slate-50"><div><div className="font-mono text-sm font-bold">{row.comparison_number}</div><div className="text-xs text-slate-500">{row.project_name || row.customer_name || tr("بدون مشروع أو عميل", "No project or customer")}</div></div><div className="text-xs text-slate-500">{row.comparison_date} — {row.row_count} {tr("عرض", "offers")}</div></button>)}</div>
+          <div className="max-h-[60vh] space-y-2 overflow-y-auto">{saved.map((row) => <div key={row.id} className="flex items-center gap-2 rounded-md border p-2"><button type="button" onClick={() => loadComparison(row.id)} className="flex min-w-0 flex-1 items-center justify-between rounded-md p-1 text-start hover:bg-muted"><div><div className="font-mono text-sm font-bold">{row.comparison_number}</div><div className="text-xs text-muted-foreground">{row.project_name || row.customer_name || tr("بدون مشروع أو عميل", "No project or customer")}</div></div><div className="text-xs text-muted-foreground">{row.comparison_date} — {row.row_count} {tr("عرض", "offers")}</div></button><Button type="button" size="icon" variant="ghost" className="text-destructive" onClick={() => deleteComparison(row.id)} aria-label={tr("حذف المقارنة", "Delete comparison")}><Trash2 className="h-4 w-4" /></Button></div>)}</div>
         </DialogContent>
       </Dialog>
     </div>

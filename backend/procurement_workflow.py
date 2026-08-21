@@ -665,12 +665,12 @@ def _approval_code() -> str:
 
 
 def _calculated_selected_rows(session, comparison: PriceComparison) -> list[dict]:
-    rows = session.scalars(
+    all_rows = session.scalars(
         select(PriceComparisonRow).where(
             PriceComparisonRow.comparison_id == comparison.id,
-            PriceComparisonRow.selected_for_purchase == 1,
         ).order_by(PriceComparisonRow.position)
     ).all()
+    rows = [row for row in all_rows if row.selected_for_purchase == 1]
     if not rows:
         raise HTTPException(422, "اختر عرضًا صالحًا لكل صنف واحفظ المقارنة أولاً")
     calculated = calculate_comparison(
@@ -682,6 +682,14 @@ def _calculated_selected_rows(session, comparison: PriceComparison) -> list[dict
     product_keys = [row.get("item_id") or row.get("item_code") or row.get("product_name") for row in calculated]
     if len(product_keys) != len(set(product_keys)):
         raise HTTPException(422, "يجب اختيار عرض واحد فقط لكل صنف")
+    all_product_keys = {
+        row.item_id or row.item_code or row.product_name for row in all_rows
+    }
+    if set(product_keys) != all_product_keys:
+        raise HTTPException(422, "يجب اختيار عرض صالح لكل صنف قبل إرسال المقارنة للاعتماد")
+    if comparison.source_request_id:
+        if any(not row.supplier_id for row in rows):
+            raise HTTPException(422, "يجب ربط كل عرض مختار بمورد فعلي من سجل الموردين")
     return calculated
 
 
@@ -1212,9 +1220,13 @@ def request_technical_decision(
             items = session.scalars(select(IncomingPurchaseRequestItem).where(
                 IncomingPurchaseRequestItem.request_id == request_row.id
             )).all()
-            incomplete = [item for item in items if item.review_status != "approved"]
-            if incomplete:
-                raise HTTPException(409, "اعتمد جميع أصناف الطلب فنيًا قبل اعتماده للتسعير")
+            approved_items = [item for item in items if item.review_status == "approved"]
+            returned_items = [
+                item for item in items
+                if item.review_status in {"rejected", "need_clarification"}
+            ]
+            if not approved_items:
+                raise HTTPException(409, "يجب اعتماد صنف واحد مؤهل على الأقل قبل الانتقال للتسعير")
         previous = request_row.status
         timestamp = now_iso()
         request_row.status = new_status
@@ -1227,8 +1239,16 @@ def request_technical_decision(
         _audit(session, entity_type="incoming_request", entity_id=request_row.id,
                event_type=event_type, project_id=request_row.project_id,
                actor_name=current_user.username, message=message,
-               metadata={"actor_role": current_user.role})
-        return {"ok": True, "already_recorded": False, "status": new_status}
+               metadata={
+                   "actor_role": current_user.role,
+                   "eligible_item_count": len(approved_items) if body.decision == "approved_for_pricing" else 0,
+                   "returned_item_count": len(returned_items) if body.decision == "approved_for_pricing" else 0,
+               })
+        return {
+            "ok": True, "already_recorded": False, "status": new_status,
+            "eligible_item_count": len(approved_items) if body.decision == "approved_for_pricing" else 0,
+            "returned_item_count": len(returned_items) if body.decision == "approved_for_pricing" else 0,
+        }
 
 
 @internal_workflow_router.post("/approvals/{approval_id}/ready")

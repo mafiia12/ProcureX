@@ -68,12 +68,13 @@ const MULTI_PROJECT_CONTEXT = {
 const CEMENT = { id: "item-1", code: "ITM-000001", name: "أسمنت أبيض", unit: "كيس", main_category: "مواد بناء" };
 const SILICONE = { id: "item-2", code: "ITM-000002", name: "سيليكون", unit: "أنبوبة", main_category: "كيماويات" };
 
-function mockContextAndItems({ context = SINGLE_PROJECT_CONTEXT, previous = [], search = [], portalRequests = [] } = {}) {
+function mockContextAndItems({ context = SINGLE_PROJECT_CONTEXT, previous = [], search = [], portalRequests = [], returnedItems = [] } = {}) {
   mockGet.mockImplementation((url, config) => {
     if (url === "/portal/context") return Promise.resolve({ data: context });
     if (url === "/portal/previous-items") return Promise.resolve({ data: previous });
     if (url === "/portal/items") return Promise.resolve({ data: search });
     if (url === "/portal/purchase-requests") return Promise.resolve({ data: portalRequests });
+    if (url === "/portal/returned-items") return Promise.resolve({ data: returnedItems });
     return Promise.resolve({ data: [] });
   });
 }
@@ -134,6 +135,39 @@ test("renders the request page for an authenticated site portal user", async () 
   expect(container.querySelector('[data-testid="site-portal-request-page"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="portal-requester-name"]').textContent).toBe("مهندس الموقع");
 
+  await act(async () => root.unmount());
+});
+
+test("required delivery date defaults to the local creation date and prevents earlier dates", async () => {
+  mockContextAndItems();
+  const { container, root } = await renderPage();
+  const input = container.querySelector('[data-testid="portal-required-date"]');
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60_000;
+  const expected = new Date(now.getTime() - offset).toISOString().slice(0, 10);
+  expect(input.value).toBe(expected);
+  expect(input.min).toBe(expected);
+  await act(async () => root.unmount());
+});
+
+test("shows returned items and creates a linked corrected request", async () => {
+  const returned = {
+    id: "returned-1", request_number: "REQ-ORIGINAL", project_name: "مشروع الاختبار",
+    product_name: "رخام", quantity: 2, unit: "م2", specifications: "سمك غير واضح",
+    status: "need_clarification", reason: "حدد السمك", reviewer: "proc.engineer",
+    reviewed_at: "2026-08-21T10:00:00Z", corrected_request: null, item_id: "",
+  };
+  mockContextAndItems({ returnedItems: [returned] });
+  mockPost.mockResolvedValue({ data: { request_number: "REQ-CORRECTED", already_exists: false } });
+  const { container, root } = await renderPage();
+  expect(container.querySelector('[data-testid="returned-items-section"]')).not.toBeNull();
+  expect(container.textContent).toContain("حدد السمك");
+  await click(container.querySelector('[data-testid="correct-returned-item-returned-1"]'));
+  expect(container.querySelector('[data-testid="returned-item-correction-dialog"]')).not.toBeNull();
+  await click(container.querySelector('[data-testid="submit-corrected-item"]'));
+  const call = mockPost.mock.calls.find(([url]) => url === "/portal/returned-items/returned-1/correct");
+  expect(call).toBeDefined();
+  expect(JSON.parse(call[1].get("payload"))).toEqual(expect.objectContaining({ quantity: 2 }));
   await act(async () => root.unmount());
 });
 

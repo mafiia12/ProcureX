@@ -117,6 +117,7 @@ export default function IncomingPurchaseRequests() {
   const [converting, setConverting] = useState(false);
   const [rfq, setRfq] = useState(null);
   const [creatingRfq, setCreatingRfq] = useState(false);
+  const [progressConfirmOpen, setProgressConfirmOpen] = useState(false);
 
   const openConvert = (item) => {
     setConvertTarget(item);
@@ -221,6 +222,20 @@ export default function IncomingPurchaseRequests() {
       toast.success(tr("تم تسجيل قرار المراجعة الفنية", "Technical review decision recorded"));
       await Promise.all([loadDetail(selected.id), loadList()]);
     } catch (error) { toast.error(errMsg(error)); }
+  };
+  const approvedItemCount = (selected?.items || []).filter(
+    (item) => item.review_status === "approved",
+  ).length;
+  const returnedItemCount = (selected?.items || []).filter(
+    (item) => ["rejected", "need_clarification"].includes(item.review_status),
+  ).length;
+  const pendingItemCount = Math.max(
+    (selected?.items || []).length - approvedItemCount - returnedItemCount,
+    0,
+  );
+  const confirmEligibleProgression = async () => {
+    setProgressConfirmOpen(false);
+    await technicalDecision("approved_for_pricing");
   };
   const openProjectFlow = async (mode) => {
     try {
@@ -619,11 +634,20 @@ export default function IncomingPurchaseRequests() {
                   <Input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder={tr("اسم الموظف", "Employee name")} />
                 </div>
                 {selected.status === "pricing" ? <div className="rounded-lg border bg-emerald-500/10 p-4 lg:col-span-2" data-testid="technical-review-complete"><div className="flex items-center gap-3"><CheckCircle2 className="h-8 w-8 text-emerald-700" /><div><h3 className="font-bold text-emerald-950">{tr("تمت المراجعة الفنية", "Technical review completed")}</h3><p className="text-sm text-emerald-800">{tr("جاهز للتسعير والمقارنة", "Ready for pricing and comparison")}</p></div></div></div> : ["rejected", "completed", "cancelled"].includes(selected.status) ? <div className="rounded-lg border bg-destructive/10 p-4 text-sm font-bold text-destructive lg:col-span-2">{tr("انتهت المراجعة بحالة", "Review ended with status")}: {statusLabel(selected.status, language)}</div> : canReviewTechnical ? <div className="space-y-3 rounded-lg border bg-blue-500/10 p-4 lg:col-span-2" data-testid="technical-review-actions">
-                  <div><div className="text-xs font-bold text-blue-700">{tr("الإجراء المسؤول: مهندس المشتريات", "Action owner: Procurement Engineer")}</div><h3 className="font-bold text-blue-950">{tr("قرار المراجعة الفنية لطلب الشراء", "Purchase request technical decision")}</h3></div>
-                  <Input value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder={tr("سبب طلب التوضيح (مطلوب عند الإرجاع)", "Clarification reason (required when returning)")} />
+                  <div><div className="text-xs font-bold text-blue-700 dark:text-blue-300">{tr("الإجراء المسؤول: مهندس المشتريات", "Action owner: Procurement Engineer")}</div><h3 className="font-bold text-blue-950 dark:text-blue-100">{tr("قرار المراجعة الفنية لطلب الشراء", "Purchase request technical decision")}</h3></div>
+                  <div className="grid gap-2 sm:grid-cols-3" data-testid="partial-review-summary">
+                    <Info label={tr("مؤهل للتسعير", "Eligible for sourcing")} value={approvedItemCount} />
+                    <Info label={tr("سيعود لمقدم الطلب", "Returned to requester")} value={returnedItemCount} />
+                    <Info label={tr("لم يُحسم بعد", "Not decided yet")} value={pendingItemCount} />
+                  </div>
+                  <Input value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder={tr("ملاحظة القرار (اختياري)", "Decision note (optional)")} />
                   <div className="flex flex-wrap gap-2">
-                    <Button onClick={() => technicalDecision("approved_for_pricing")} className="bg-emerald-700 text-white hover:bg-emerald-800">{tr("اعتماد للتسعير", "Approve for pricing")}</Button>
-                    <Button variant="outline" onClick={() => technicalDecision("revision_required")}>{tr("يحتاج توضيح", "Needs clarification")}</Button>
+                    <Button
+                      onClick={() => setProgressConfirmOpen(true)}
+                      disabled={approvedItemCount === 0}
+                      className="bg-emerald-700 text-white hover:bg-emerald-800"
+                      data-testid="approve-eligible-items"
+                    >{tr("اعتماد الأصناف المؤهلة للتسعير", "Approve eligible items for sourcing")}</Button>
                     <Button variant="outline" onClick={() => technicalDecision("hold")}>{tr("تعليق", "Place on hold")}</Button>
                     <Button variant="destructive" onClick={() => technicalDecision("rejected")}>{tr("رفض", "Reject")}</Button>
                   </div>
@@ -760,6 +784,24 @@ export default function IncomingPurchaseRequests() {
             <Button data-testid="convert-form-submit" onClick={submitConvert} disabled={converting}>
               {converting ? tr("جارٍ الإضافة...", "Adding...") : tr("إضافة إلى الأصناف", "Add to Item Master")}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={progressConfirmOpen} onOpenChange={setProgressConfirmOpen}>
+        <DialogContent dir={direction} className="max-w-md" data-testid="eligible-items-confirmation">
+          <DialogHeader>
+            <DialogTitle className="text-start">{tr("تأكيد انتقال الأصناف المؤهلة", "Confirm eligible item progression")}</DialogTitle>
+            <DialogDescription className="text-start">
+              {tr("سيستمر فقط ما تم اعتماده في مسار التسعير. البنود المرتجعة تبقى محفوظة في الطلب الأصلي.", "Only approved items will continue to sourcing. Returned items remain preserved on the original request.")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <Info label={tr("ستنتقل للتسعير", "Moving to sourcing")} value={approvedItemCount} />
+            <Info label={tr("ستعود لمقدم الطلب", "Returning to requester")} value={returnedItemCount} />
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setProgressConfirmOpen(false)}>{tr("إلغاء", "Cancel")}</Button>
+            <Button onClick={confirmEligibleProgression} data-testid="confirm-eligible-items">{tr("تأكيد الاعتماد للتسعير", "Confirm for sourcing")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

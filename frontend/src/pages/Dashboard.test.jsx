@@ -90,6 +90,23 @@ test("centers actual actionable records with one direct action", async () => {
   container.remove();
 });
 
+test("renders a pricing-ready request as sourcing work for Procurement Responsible", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [{
+      type: "sourcing_required", reference: "REQ-READY", project_name: "مشروع أ",
+      reason: "أصناف معتمدة جاهزة لإنشاء طلب تسعير ومقارنة", path: "/incoming-requests",
+      responsible_role: "procurement_responsible",
+    }],
+  });
+  const row = container.querySelector('[data-testid="attention-item-sourcing_required"]');
+  expect(row).not.toBeNull();
+  expect(row.textContent).toContain("بدء التسعير");
+  await act(async () => row.querySelector("button").click());
+  expect(mockNavigate).toHaveBeenCalledWith("/incoming-requests");
+  await act(async () => root.unmount());
+});
+
 test("keeps one useful project chart and compact workflow health", async () => {
   const { container, root } = await renderDashboard();
   expect(container.querySelector('[data-testid="chart-project-value"]')).toBeTruthy();

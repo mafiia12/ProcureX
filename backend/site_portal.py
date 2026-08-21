@@ -81,6 +81,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _local_today():
+    """Application-local date used for delivery-date boundaries."""
+    return datetime.now().astimezone().date()
+
+
 class ProjectRef(BaseModel):
     id: str
     code: str
@@ -121,6 +126,14 @@ class PortalRequestIn(BaseModel):
     # _resolve_project) — never trusted for a single-project user.
     project_id: str = Field(default="", max_length=64)
     items: List[PortalRequestItemIn] = Field(min_length=1, max_length=MAX_ITEMS)
+
+
+class CorrectedReturnedItemIn(BaseModel):
+    product_name: str = Field(default="", max_length=200)
+    unit: str = Field(default="", max_length=50)
+    quantity: float = Field(gt=0, le=1_000_000_000)
+    note: str = Field(default="", max_length=2000)
+    required_delivery_date: str = Field(default="", max_length=10)
 
 
 def _owned_request(session, request_id: str, user: User) -> IncomingPurchaseRequest:
@@ -181,6 +194,199 @@ def list_portal_requests(user: User = Depends(require_site_portal)) -> list[dict
             "updated_at": row.updated_at,
             "clarification": _clarification_summary(history_by_request.get(row.id, [])),
         } for row in requests]
+
+
+@router.get("/returned-items")
+def list_returned_items(user: User = Depends(require_site_portal)) -> list[dict]:
+    """Return only this Site Engineer's item-level exceptions.
+
+    The rows remain part of their original REQ. A linked child REQ is exposed
+    when the item has already been corrected, preventing accidental duplicates.
+    """
+    with SessionLocal() as session:
+        records = session.execute(
+            select(IncomingPurchaseRequestItem, IncomingPurchaseRequest)
+            .join(
+                IncomingPurchaseRequest,
+                IncomingPurchaseRequest.id == IncomingPurchaseRequestItem.request_id,
+            )
+            .where(
+                IncomingPurchaseRequest.requester_user_id == user.id,
+                IncomingPurchaseRequestItem.review_status.in_({"rejected", "need_clarification"}),
+            )
+            .order_by(IncomingPurchaseRequestItem.reviewed_at.desc())
+        ).all()
+        source_item_ids = [item.id for item, _ in records]
+        children = session.scalars(
+            select(IncomingPurchaseRequest).where(
+                IncomingPurchaseRequest.source_item_id.in_(source_item_ids)
+            )
+        ).all() if source_item_ids else []
+        child_by_item = {child.source_item_id: child for child in children}
+        return [{
+            "id": item.id,
+            "request_id": request_row.id,
+            "request_number": request_row.request_number,
+            "project_name": request_row.project_name,
+            "item_id": item.item_id,
+            "product_name": item.product_name,
+            "quantity": item.quantity,
+            "unit": item.unit,
+            "specifications": item.specifications,
+            "status": item.review_status,
+            "reason": item.review_reason,
+            "reviewer": item.reviewed_by,
+            "reviewed_at": item.reviewed_at,
+            "corrected_request": ({
+                "id": child_by_item[item.id].id,
+                "request_number": child_by_item[item.id].request_number,
+                "status": child_by_item[item.id].status,
+            } if item.id in child_by_item else None),
+        } for item, request_row in records]
+
+
+@router.post("/returned-items/{item_id}/correct")
+async def correct_returned_item(
+    item_id: str,
+    payload: str = Form(...),
+    attachments: List[UploadFile] = File(default=[]),
+    user: User = Depends(require_site_portal),
+) -> dict:
+    """Create one linked child REQ for a corrected returned item.
+
+    Never edits or deletes the original line, and never injects a corrected
+    line into an RFQ/comparison that may already be running.
+    """
+    try:
+        body = CorrectedReturnedItemIn.model_validate_json(payload)
+    except ValidationError as exc:
+        raise HTTPException(422, "يرجى مراجعة بيانات الصنف المصحح") from exc
+    prepared = await _prepare_portal_attachments(attachments)
+    storage = get_attachment_storage()
+    written_keys: list[str] = []
+
+    with SessionLocal() as session:
+        item = session.get(IncomingPurchaseRequestItem, item_id)
+        if not item:
+            raise HTTPException(404, "الصنف المرتجع غير موجود")
+        original = _owned_request(session, item.request_id, user)
+        if item.review_status not in {"rejected", "need_clarification"}:
+            raise HTTPException(409, "هذا الصنف لا ينتظر تصحيحًا حاليًا")
+        existing = session.scalar(select(IncomingPurchaseRequest).where(
+            IncomingPurchaseRequest.source_item_id == item.id,
+        ))
+        if existing:
+            return {
+                "ok": True, "already_exists": True,
+                "request_id": existing.id, "request_number": existing.request_number,
+                "source_request_id": original.id, "source_item_id": item.id,
+            }
+
+        assigned_project_ids = {project.id for project in _assigned_projects(session, user.id)}
+        if original.project_id not in assigned_project_ids:
+            raise HTTPException(403, "لم يعد هذا المشروع مخصصًا لحسابك")
+        delivery_text = body.required_delivery_date.strip() or original.required_delivery_date
+        try:
+            delivery_date = datetime.strptime(delivery_text, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise HTTPException(422, "تاريخ التسليم المطلوب غير صحيح") from exc
+        if delivery_date < _local_today():
+            raise HTTPException(422, "تاريخ التسليم المطلوب لا يمكن أن يكون في الماضي")
+
+        master_item = session.get(Item, item.item_id) if item.item_id else None
+        product_name = (
+            (master_item.product_name or master_item.name) if master_item
+            else body.product_name.strip()
+        )
+        unit = (master_item.unit or item.unit) if master_item else body.unit.strip()
+        if not product_name:
+            raise HTTPException(422, "اسم الصنف المصحح مطلوب")
+        if not unit:
+            raise HTTPException(422, "وحدة الصنف المصحح مطلوبة")
+
+        request_id = str(uuid.uuid4())
+        request_number = f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
+        timestamp = _now()
+        try:
+            for attachment in prepared:
+                stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
+                attachment["stored_filename"] = f"{request_id}/{stored_name}"
+                storage.put(
+                    attachment["stored_filename"], attachment["content"],
+                    attachment["media_type"], attachment["sha256"],
+                )
+                written_keys.append(attachment["stored_filename"])
+
+            child = IncomingPurchaseRequest(
+                id=request_id, request_number=request_number,
+                requester_name=user.display_name or user.username,
+                company_name=original.company_name, phone_number=original.phone_number,
+                whatsapp_number=original.whatsapp_number, email=original.email,
+                project_name=original.project_name, project_id=original.project_id,
+                customer_id=original.customer_id, customer_name=original.customer_name,
+                project_location=original.project_location,
+                delivery_location=original.delivery_location,
+                required_delivery_date=delivery_text, priority=original.priority,
+                notes=body.note.strip(), status="new", assigned_employee="",
+                submission_token=str(uuid.uuid4()),
+                content_fingerprint=hashlib.sha256(f"corrected:{item.id}:{request_id}".encode()).hexdigest(),
+                requester_user_id=user.id,
+                delivery_destination=original.delivery_destination,
+                source_request_id=original.id, source_item_id=item.id,
+                created_at=timestamp, updated_at=timestamp,
+            )
+            session.add(child)
+            session.add(IncomingPurchaseRequestItem(
+                id=str(uuid.uuid4()), request_id=request_id, position=1,
+                item_id=master_item.id if master_item else "",
+                product_name=product_name,
+                preferred_brand=item.preferred_brand,
+                main_category=item.main_category, subcategory=item.subcategory,
+                specifications=body.note.strip(), quantity=body.quantity, unit=unit,
+            ))
+            for attachment in prepared:
+                session.add(IncomingRequestGeneralAttachment(
+                    id=str(uuid.uuid4()), request_id=request_id,
+                    original_filename=attachment["original_filename"],
+                    stored_filename=attachment["stored_filename"],
+                    media_type=attachment["media_type"],
+                    size_bytes=attachment["size_bytes"], sha256=attachment["sha256"],
+                    created_at=timestamp,
+                ))
+            session.add(IncomingRequestStatusHistory(
+                id=str(uuid.uuid4()), request_id=request_id, from_status="", to_status="new",
+                changed_by=user.username,
+                note=f"طلب مصحح مرتبط بـ {original.request_number} — البند {item.position}",
+                created_at=timestamp,
+            ))
+            session.add(IncomingRequestStatusHistory(
+                id=str(uuid.uuid4()), request_id=original.id,
+                from_status=original.status, to_status=original.status,
+                changed_by=user.username,
+                note=f"أُعيد تقديم البند {item.position} في الطلب المصحح {request_number}",
+                created_at=timestamp,
+            ))
+            session.add(InternalNotification(
+                id=str(uuid.uuid4()), notification_type="corrected_purchase_request",
+                entity_type="incoming_purchase_request", entity_id=request_id,
+                title=f"طلب مصحح جديد {request_number}",
+                message=f"مرتبط بالطلب {original.request_number} — {product_name}",
+                is_read=0, created_at=timestamp,
+            ))
+            session.commit()
+        except Exception:
+            session.rollback()
+            for key in written_keys:
+                try:
+                    storage.delete(key)
+                except Exception:
+                    pass
+            raise
+    return {
+        "ok": True, "already_exists": False,
+        "request_id": request_id, "request_number": request_number,
+        "source_request_id": original.id, "source_item_id": item.id,
+    }
 
 
 @router.post("/purchase-requests/{request_id}/clarification")
@@ -403,7 +609,7 @@ async def submit_portal_request(
         delivery_date = datetime.strptime(body.required_delivery_date, "%Y-%m-%d").date()
     except ValueError as exc:
         raise HTTPException(422, "تاريخ التسليم المطلوب غير صحيح") from exc
-    if delivery_date < datetime.now(timezone.utc).date():
+    if delivery_date < _local_today():
         raise HTTPException(422, "تاريخ التسليم المطلوب لا يمكن أن يكون في الماضي")
 
     if not body.items:

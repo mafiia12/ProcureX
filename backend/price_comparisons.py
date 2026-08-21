@@ -691,6 +691,8 @@ def _references(session, body: ComparisonIn):
     for row in body.rows:
         if not row.item_id and not row.product_name.strip():
             raise HTTPException(422, "اسم المنتج اليدوي مطلوب")
+        if body.source_request_id and not row.supplier_id:
+            raise HTTPException(422, "يجب اختيار مورد فعلي من سجل الموردين لكل عرض")
         row_document = row.model_dump()
         if row.selected_for_purchase and (
             not _offer_is_complete(row_document)
@@ -922,6 +924,51 @@ def create_comparison(
         _replace_rows(session, comparison, body, items, suppliers)
         session.commit()
         return _detail(session, comparison)
+
+
+@router.delete("/{comparison_id}")
+def delete_comparison(
+    comparison_id: str,
+    current_user: User = Depends(require_erp_role("procurement_responsible")),
+):
+    """Delete only a draft comparison with no downstream formal document."""
+    try:
+        from .database import PurchaseOrder
+        from .procurement_workflow import EngineerApproval, _audit
+    except ImportError:  # pragma: no cover
+        from database import PurchaseOrder
+        from procurement_workflow import EngineerApproval, _audit
+
+    with SessionLocal() as session:
+        comparison = session.get(PriceComparison, comparison_id)
+        if not comparison:
+            raise HTTPException(404, "المقارنة غير موجودة")
+        approval_exists = session.scalar(select(EngineerApproval.id).where(
+            EngineerApproval.comparison_id == comparison.id,
+        ))
+        purchase_order_exists = session.scalar(select(PurchaseOrder.id).where(
+            PurchaseOrder.comparison_id == comparison.id,
+        ))
+        if approval_exists or purchase_order_exists:
+            raise HTTPException(
+                409,
+                "لا يمكن حذف مقارنة أُرسلت للاعتماد أو ارتبطت بأمر شراء. احتفظ بها للتتبع.",
+            )
+        number = comparison.comparison_number
+        project_id = comparison.project_id or ""
+        session.execute(delete(PriceComparisonRow).where(
+            PriceComparisonRow.comparison_id == comparison.id,
+        ))
+        session.delete(comparison)
+        _audit(
+            session, entity_type="price_comparison", entity_id=comparison_id,
+            event_type="comparison_deleted", project_id=project_id,
+            actor_name=current_user.username,
+            message=f"تم حذف مسودة المقارنة {number}",
+            metadata={"actor_role": current_user.role, "comparison_number": number},
+        )
+        session.commit()
+        return {"ok": True, "comparison_id": comparison_id, "comparison_number": number}
 
 
 @router.put("/{comparison_id}")
