@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import api, { errMsg } from "@/lib/api";
 import { usePreferences } from "@/contexts/PreferencesContext";
 
-const EDITABLE_REFERENCE_LISTS = new Set(["currencies", "units", "vat_rates"]);
+const EDITABLE_REFERENCE_LISTS = new Set(["currencies"]);
 export default function SettingsPage() {
   const preferences = usePreferences();
   const { t } = preferences;
