@@ -196,6 +196,43 @@ test("no user block renders while anonymous", async () => {
   container.remove();
 });
 
+test("legacy purchase, register, price-history, and customers links are absent from formal navigation", async () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(<Layout />);
+  });
+
+  for (const path of ["/purchases", "/register", "/price-history", "/customers", "/approved-items-draft"]) {
+    expect(container.querySelector(`[href="${path}"]`)).toBeNull();
+  }
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("formal operations, master data, and admin navigation remain present", async () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(<Layout />);
+  });
+
+  for (const path of [
+    "/", "/incoming-requests", "/supplier-price-comparison", "/approvals",
+    "/purchase-orders", "/payments", "/suppliers", "/items", "/projects",
+  ]) {
+    expect(container.querySelector(`[href="${path}"]`)).not.toBeNull();
+  }
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("user management navigation is shown for an admin user", async () => {
   useAuth.mockReturnValue({
     user: { account_type: "erp", role: "admin" },

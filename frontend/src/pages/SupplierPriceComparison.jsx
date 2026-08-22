@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FilePlus2,
-  FolderOpen, PackagePlus, Pencil, Plus, Printer, Save, Trash2, UserPlus,
+  FolderOpen, MoreHorizontal, PackagePlus, Pencil, Plus, Printer, Save, Trash2, UserPlus,
   Send, Paperclip, ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -289,6 +289,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   const [saved, setSaved] = useState([]);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [offerOpen, setOfferOpen] = useState(false);
   const [editingKey, setEditingKey] = useState("");
   const [draft, setDraft] = useState(() => ({ ...emptyComparisonRow(), entry_mode: "system" }));
@@ -1217,6 +1218,20 @@ const unselectedPurchaseItemCount = Math.max(
   0,
 
 );
+
+const suppliersInComparisonCount = supplierOfferGroups.filter((group) => group.supplierId).length;
+
+const selectedSupplierName = selectedPurchaseSupplierCount === 1
+  ? (selectedPurchaseRows[0]?.supplier_name || "")
+  : "";
+
+const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
+  ? [...selectedPurchaseRows.reduce((map, row) => {
+      const name = row.supplier_name || tr("مورد غير محدد", "Unassigned supplier");
+      map.set(name, (map.get(name) || 0) + 1);
+      return map;
+    }, new Map()).entries()]
+  : [];
   const sendForApproval = async () => {
     if (!comparisonId) return toast.error(tr("احفظ المقارنة أولاً", "Save the comparison first"));
     if (hasUnsavedChanges) return toast.error(tr("احفظ الاختيارات الحالية أولاً", "Save the current selections first"));
@@ -1249,13 +1264,33 @@ const unselectedPurchaseItemCount = Math.max(
           <div className="flex flex-wrap gap-2 comparison-actions comparison-print-hidden">
             <Button size="sm" variant="outline" onClick={reset}><FilePlus2 className="h-4 w-4" /> {tr("جديدة", "New")}</Button>
             <Button size="sm" variant="outline" onClick={openSaved}><FolderOpen className="h-4 w-4" /> {tr("فتح", "Open")}</Button>
-            {comparisonId && <Button size="sm" variant="destructive" onClick={() => deleteComparison()} disabled={deleting} data-testid="delete-comparison"><Trash2 className="h-4 w-4" />{deleting ? tr("جارٍ الحذف", "Deleting") : tr("حذف المسودة", "Delete draft")}</Button>}
+            <Button size="sm" variant="outline" onClick={exportExcel}><Download className="h-4 w-4" /> Excel</Button>
+            <Button size="sm" variant="outline" data-testid="comparison-print" onClick={() => window.print()}><Printer className="h-4 w-4" /> {tr("طباعة", "Print")}</Button>
             <Button size="sm" onClick={save} disabled={saving} data-testid="comparison-save">
               <Save className="h-4 w-4" /> {saving ? tr("جارٍ الحفظ", "Saving") : tr("حفظ المقارنة", "Save comparison")}
             </Button>
-            <Button size="sm" variant="outline" onClick={exportExcel}><Download className="h-4 w-4" /> Excel</Button>
-            <Button size="sm" variant="outline" onClick={sendForApproval}><Send className="h-4 w-4" /> {tr("إرسال للمراجعة والاعتماد", "Send for review and approval")}</Button>
-            <Button size="sm" variant="outline" data-testid="comparison-print" onClick={() => window.print()}><Printer className="h-4 w-4" /> {tr("طباعة", "Print")}</Button>
+            <Button size="sm" onClick={sendForApproval} data-testid="comparison-send"><Send className="h-4 w-4" /> {tr("إرسال للمراجعة والاعتماد", "Send for review and approval")}</Button>
+            {comparisonId && (
+              <div className="relative">
+                <Button type="button" size="icon" variant="ghost" aria-label={tr("مزيد من الإجراءات", "More actions")} onClick={() => setMoreMenuOpen((value) => !value)} data-testid="comparison-more-actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+                {moreMenuOpen && (
+                  <div className="absolute end-0 z-20 mt-1 w-52 rounded-md border bg-card p-1 shadow-md" data-testid="comparison-more-menu">
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-start text-xs font-semibold text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                      disabled={deleting}
+                      onClick={() => { setMoreMenuOpen(false); deleteComparison(); }}
+                      data-testid="delete-comparison"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      {deleting ? tr("جارٍ الحذف", "Deleting") : tr("حذف مسودة المقارنة", "Delete draft comparison")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
@@ -1280,49 +1315,31 @@ const unselectedPurchaseItemCount = Math.max(
         <div className="mb-3 flex items-center gap-2"><Paperclip className="h-5 w-5 text-blue-700" /><div><h3 className="font-bold text-slate-900">{tr("مرفقات طلب الشراء", "Purchase request attachments")}</h3><p className="text-xs text-slate-600">{tr("اعرض المستند أثناء إدخال الأصناف والأسعار يدويًا.", "Keep the document visible while entering items and prices manually.")}</p></div></div>
         {sourceAttachments.length ? <div className="grid gap-3 lg:grid-cols-2">{sourceAttachments.map((attachment) => <RequestAttachmentCard key={attachment.id} attachment={attachment} tr={tr} />)}</div> : <div className="rounded-md border border-dashed bg-card/70 p-4 text-center text-sm text-muted-foreground">{tr("لا توجد مرفقات محفوظة لهذا الطلب.", "No saved attachments for this request.")}</div>}
       </section>}
-      <section className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
-  <div className="mb-3">
-    <h3 className="text-sm font-bold text-slate-900">
-      {tr("ملخص التجهيز للشراء", "Purchase preparation summary")}
-    </h3>
-
-    <p className="mt-1 text-xs text-slate-600">
-      {tr(
-        "ملخص الأصناف التي تم اختيار عروضها فعليًا للشراء.",
-        "Summary of items with offers actually selected for purchase."
+      {!!rows.length && (
+        <div
+          className="sticky top-[3.7rem] z-10 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border bg-card/95 px-3 py-2 text-xs shadow-sm backdrop-blur comparison-print-hidden"
+          data-testid="comparison-summary-bar"
+        >
+          <span className="font-bold text-foreground">{tr(`${allComparisonItemsCount} أصناف`, `${allComparisonItemsCount} items`)}</span>
+          <span className="text-muted-foreground">|</span>
+          <span className="font-bold text-foreground">{tr(`${suppliersInComparisonCount} موردين`, `${suppliersInComparisonCount} suppliers`)}</span>
+          {selectedSupplierName && <><span className="text-muted-foreground">|</span><span className="text-foreground">{tr("المختار:", "Selected:")} <b>{selectedSupplierName}</b></span></>}
+          {selectedPurchaseSupplierCount > 1 && <><span className="text-muted-foreground">|</span><span className="text-foreground">{tr(`اختيار مختلط — ${selectedPurchaseSupplierCount} موردين`, `Mixed selection — ${selectedPurchaseSupplierCount} suppliers`)}</span></>}
+          {!!selectedPurchaseRows.length && <><span className="text-muted-foreground">|</span><span className="font-bold text-emerald-700">{tr("الإجمالي:", "Total:")} {formatMoney(selectedPurchaseTotal)}</span></>}
+          {!!unselectedPurchaseItemCount && <><span className="text-muted-foreground">|</span><span className="text-amber-700">{tr(`${unselectedPurchaseItemCount} بدون اختيار`, `${unselectedPurchaseItemCount} unselected`)}</span></>}
+        </div>
       )}
-    </p>
-  </div>
-
-  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-    <Metric
-      label={tr("الأصناف المختارة", "Selected items")}
-      value={selectedPurchaseItemCount}
-      accent="text-emerald-700"
-    />
-
-    <Metric
-      label={tr("الموردون المختارون", "Selected suppliers")}
-      value={selectedPurchaseSupplierCount}
-    />
-
-    <Metric
-      label={tr("إجمالي الشراء المتوقع", "Expected purchase total")}
-      value={formatMoney(selectedPurchaseTotal)}
-      accent="text-emerald-700"
-    />
-
-    <Metric
-      label={tr("أصناف بدون اختيار", "Items without selection")}
-      value={unselectedPurchaseItemCount}
-      accent={
-        unselectedPurchaseItemCount > 0
-          ? "text-amber-700"
-          : "text-emerald-700"
-      }
-    />
-  </div>
-</section>
+      {selectedPurchaseSupplierCount > 1 && (
+        <section className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs dark:border-violet-900/40 dark:bg-violet-950/20" data-testid="mixed-selection-summary">
+          <div className="mb-1.5 font-bold text-foreground">{tr("اختيار مختلط", "Mixed selection")}</div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-muted-foreground">
+            {mixedSelectionBreakdown.map(([name, count]) => (
+              <span key={name}>{name}: {count} {tr("بند", "items")}</span>
+            ))}
+            <span className="font-bold text-foreground">{tr("الإجمالي:", "Total:")} {formatMoney(selectedPurchaseTotal)}</span>
+          </div>
+        </section>
+      )}
 {sourceRequest && (
   <section className="rounded-lg border bg-card p-4" data-testid="source-request-items-table">
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1357,11 +1374,20 @@ const unselectedPurchaseItemCount = Math.max(
           <div className="flex flex-1 flex-wrap justify-end gap-2 comparison-print-hidden">
             {!sourceRequest && <Button type="button" size="sm" variant="outline" onClick={() => openNewOffer("manual")} data-testid="comparison-add-manual-product"><PackagePlus className="h-4 w-4" />{tr("إضافة بند يدوي", "Add manual line")}</Button>}
             <Input className="h-8 max-w-64" placeholder={tr("بحث بالمنتج أو المورد...", "Search by product or supplier...")} value={search} onChange={(event) => setSearch(event.target.value)} />
-            <select className="h-8 max-w-44 rounded-md border border-slate-200 bg-white px-2 text-xs" value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
-              <option value="">{tr("كل المنتجات", "All products")}</option>{productFilterOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
             <select className="h-8 max-w-44 rounded-md border border-slate-200 bg-white px-2 text-xs" value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}>
               <option value="">{tr("كل الموردين", "All suppliers")}</option>{supplierFilterOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <select className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs" value={availabilityFilter} onChange={(event) => setAvailabilityFilter(event.target.value)}>
+              <option value="">{tr("كل حالات التوفر", "All availability states")}</option><option value="available">{tr("متاح", "Available")}</option><option value="unavailable">{tr("غير متاح", "Unavailable")}</option>
+            </select>
+            <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => setShowDetailedTable((value) => !value)}>{showDetailedTable ? tr("إخفاء الجدول", "Hide table") : tr("جدول تفصيلي", "Detailed table")}</Button>
+          </div>
+        </div>
+        <details className="rounded-md border border-slate-200 comparison-print-hidden" data-testid="advanced-filters">
+          <summary className="cursor-pointer select-none px-3 py-2 text-xs font-bold text-muted-foreground">{tr("فلاتر إضافية", "Advanced filters")}</summary>
+          <div className="flex flex-wrap items-center gap-2 border-t p-3">
+            <select className="h-8 max-w-44 rounded-md border border-slate-200 bg-white px-2 text-xs" value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
+              <option value="">{tr("كل المنتجات", "All products")}</option>{productFilterOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
             <select data-testid="offers-category-filter" className="h-8 max-w-40 rounded-md border border-slate-200 bg-white px-2 text-xs" value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); setSubcategoryFilter(""); setBrandFilter(""); }}>
               <option value="">{tr("كل التصنيفات الرئيسية", "All main categories")}</option>{offerClassificationOptions.categories.map((value) => <option key={value} value={value}>{value}</option>)}
@@ -1372,13 +1398,9 @@ const unselectedPurchaseItemCount = Math.max(
             <select data-testid="offers-brand-filter" className="h-8 max-w-40 rounded-md border border-slate-200 bg-white px-2 text-xs" value={brandFilter} disabled={!subcategoryFilter} onChange={(event) => setBrandFilter(event.target.value)}>
               <option value="">{tr("كل العلامات", "All brands")}</option>{offerClassificationOptions.brands.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
-            <select className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs" value={availabilityFilter} onChange={(event) => setAvailabilityFilter(event.target.value)}>
-              <option value="">{tr("كل حالات التوفر", "All availability states")}</option><option value="available">{tr("متاح", "Available")}</option><option value="unavailable">{tr("غير متاح", "Unavailable")}</option>
-            </select>
-            <Button type="button" size="sm" variant="ghost" className="h-8" onClick={() => { setSearch(""); setProductFilter(""); setSupplierFilter(""); setCategoryFilter(""); setSubcategoryFilter(""); setBrandFilter(""); setAvailabilityFilter(""); }}>{tr("مسح", "Clear")}</Button>
-            <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => setShowDetailedTable((value) => !value)}>{showDetailedTable ? tr("إخفاء الجدول", "Hide table") : tr("جدول تفصيلي", "Detailed table")}</Button>
+            <Button type="button" size="sm" variant="ghost" className="h-8" onClick={() => { setSearch(""); setProductFilter(""); setSupplierFilter(""); setCategoryFilter(""); setSubcategoryFilter(""); setBrandFilter(""); setAvailabilityFilter(""); }}>{tr("مسح كل الفلاتر", "Clear all filters")}</Button>
           </div>
-        </div>
+        </details>
         <div data-testid="vertical-offer-cards">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/50 p-3">
             <div><div className="text-xs font-bold text-foreground">{tr("مقارنة الموردين", "Supplier comparison")}</div><div className="mt-0.5 text-[11px] text-muted-foreground">{tr("ثلاثة عروض في كل صفحة مع محاذاة الأصناف رأسيًا.", "Three offers per page with vertically aligned items.")}</div></div>
@@ -1520,7 +1542,7 @@ const unselectedPurchaseItemCount = Math.max(
         </div>}
       </section>
 
-      <details className="comparison-summary rounded-lg border border-slate-200 bg-white p-3">
+      {!!rows.length && <details className="comparison-summary rounded-lg border border-slate-200 bg-white p-3">
         <summary className="cursor-pointer text-sm font-bold text-slate-700">{tr("التحليل التفصيلي والتوفير", "Detailed analysis and savings")}</summary>
       <section className="mt-4 space-y-3" data-testid="comparison-results-section">
         <h3 className="text-sm font-bold text-foreground">{tr("3 — مقارنة المنتجات", "3 — Product comparison")}</h3>
@@ -1563,7 +1585,7 @@ const unselectedPurchaseItemCount = Math.max(
           <Metric label={tr("عدد الموردين في الشراء المختلط", "Suppliers in mixed purchase")} value={scenario.mixed_supplier_count} />
         </div>
       </section>
-      </details>
+      </details>}
 
       <Dialog open={offerOpen} onOpenChange={setOfferOpen}>
         <DialogContent className="flex max-h-[92vh] max-w-4xl flex-col gap-0 overflow-hidden p-0" dir={direction} data-testid="offer-modal">

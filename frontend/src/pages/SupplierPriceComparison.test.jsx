@@ -170,11 +170,80 @@ test("renders operational comparison controls in English", async () => {
 
   for (const label of [
     "Comparison details", "Supplier offers", "Add supplier column",
-    "Product comparison", "Supplier summary", "Mixed purchase and savings summary",
-    "Save comparison", "Print", "All products", "Availability",
+    "Save comparison", "Print", "Advanced filters", "All availability states",
   ]) expect(container.textContent).toContain(label);
   expect(container.textContent).not.toContain("Add supplier offer");
   expect(container.textContent).not.toContain("بيانات المقارنة");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("an empty comparison hides the summary bar, mixed-selection panel, and detailed analysis section", async () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  expect(container.querySelector('[data-testid="comparison-summary-bar"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mixed-selection-summary"]')).toBeNull();
+  expect(container.textContent).not.toContain("Product comparison");
+  expect(container.textContent).not.toContain("Supplier summary");
+  expect(container.textContent).not.toContain("Mixed purchase and savings summary");
+  // Advanced (secondary) filters stay collapsed by default but remain present in the DOM.
+  expect(container.querySelector('[data-testid="advanced-filters"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="advanced-filters"]').hasAttribute("open")).toBe(false);
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("compact summary bar shows item and supplier counts once the comparison has rows, and hides the mixed-selection panel without a multi-supplier selection", async () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison initialComparison={detail} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
+  const bar = container.querySelector('[data-testid="comparison-summary-bar"]');
+  expect(bar).not.toBeNull();
+  expect(bar.textContent).toContain("1"); // one distinct item
+  expect(bar.textContent).toContain("2"); // two suppliers quoted
+  expect(container.querySelector('[data-testid="mixed-selection-summary"]')).toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("mixed-selection summary appears only once items are selected from more than one supplier", async () => {
+  const mixedDetail = {
+    ...detail,
+    rows: [
+      { ...detail.rows[0], id: "row-m1", item_id: "item-1", item_code: "ITM-1", product_name: "منتج أول", selected_for_purchase: 1 },
+      {
+        ...detail.rows[0], id: "row-m2", item_id: "item-2", item_code: "ITM-2", product_name: "منتج ثان",
+        supplier_id: "supplier-2", supplier_code: "SUP-2", supplier_name: "المورد غير المتاح",
+        unit_price: 60, selected_for_purchase: 1,
+      },
+    ],
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison initialComparison={mixedDetail} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
+  const mixed = container.querySelector('[data-testid="mixed-selection-summary"]');
+  expect(mixed).not.toBeNull();
+  expect(mixed.textContent).toContain("المورد الأخضر");
+  expect(mixed.textContent).toContain("المورد غير المتاح");
 
   await act(async () => root.unmount());
   container.remove();
@@ -252,6 +321,9 @@ test("deletes a safe saved comparison through the authenticated API after confir
   await act(async () => {
     root.render(<SupplierPriceComparison initialComparison={detail} />);
     await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  await act(async () => {
+    container.querySelector('[data-testid="comparison-more-actions"]').click();
   });
   await act(async () => {
     container.querySelector('[data-testid="delete-comparison"]').click();
