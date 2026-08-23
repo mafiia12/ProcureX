@@ -2870,32 +2870,66 @@ def _csv_environment(name: str, default: str = "") -> list[str]:
 
 
 def _validate_hosted_configuration(surface: str) -> None:
+    """Fail fast at startup rather than serving a misconfigured staging/
+    production instance. Both hosted surfaces share the baseline hardening
+    checks below; APP_SURFACE=full additionally requires the internal-access
+    fallback to never substitute for real ERP authentication, and
+    APP_SURFACE=public additionally requires PostgreSQL and private S3-
+    compatible attachment storage.
+
+    What this function cannot verify from inside the running process: that
+    the backend is actually bound to a private/loopback interface (e.g.
+    127.0.0.1) with only a reverse proxy exposed publicly, and that HTTPS is
+    actually terminated in front of it. Those are operational requirements
+    enforced by the deployment itself (systemd unit / proxy config /
+    firewall), not by application code.
+    """
     environment = os.getenv("APP_ENV", "development").strip().lower()
     if environment not in {"staging", "production"}:
         return
     label = "Production" if environment == "production" else "Staging"
-    if surface != "public":
-        raise RuntimeError(
-            f"{label} startup is restricted to APP_SURFACE=public until ERP authentication exists"
-        )
+    if surface not in {"full", "public"}:
+        raise RuntimeError(f"{label} startup requires APP_SURFACE to be 'full' or 'public'")
+
     origins = _csv_environment("CORS_ORIGINS")
     hosts = _csv_environment("TRUSTED_HOSTS")
     if not origins or "*" in origins or any(not origin.startswith("https://") for origin in origins):
         raise RuntimeError(f"{label} CORS_ORIGINS must be an explicit HTTPS allowlist")
     if not hosts or any("*" in host or "://" in host or "/" in host for host in hosts):
         raise RuntimeError(f"{label} TRUSTED_HOSTS must be an explicit hostname allowlist")
+    if os.getenv("FORCE_HTTPS", "").strip().lower() != "true":
+        raise RuntimeError(f"{label} FORCE_HTTPS must be true")
+    if len(os.getenv("AUTH_SECRET_KEY", "")) < 32:
+        raise RuntimeError(f"{label} AUTH_SECRET_KEY must contain at least 32 characters")
+
+    if surface == "full":
+        # Formal ERP routes are protected by per-user JWT + role checks
+        # (require_erp_role); require_internal_access's shared-token-or-
+        # localhost gate is defense-in-depth only and must never be the sole
+        # gate. Behind a reverse proxy, blindly trusting forwarded headers
+        # for that gate's "is this localhost" fallback would make it
+        # spoofable from the internet, so trusting proxy headers in
+        # production requires an explicit shared token instead of relying
+        # on the IP fallback.
+        if (
+            os.getenv("TRUST_PROXY_HEADERS", "").strip().lower() == "true"
+            and not os.getenv("INTERNAL_REQUEST_TOKEN", "").strip()
+        ):
+            raise RuntimeError(
+                f"{label} full-surface deployments that trust proxy headers must set "
+                "INTERNAL_REQUEST_TOKEN instead of relying on the spoofable localhost fallback"
+            )
+        return
+
+    # surface == "public"
+    if len(os.getenv("REQUEST_PRIVACY_SALT", "")) < 32:
+        raise RuntimeError(f"{label} REQUEST_PRIVACY_SALT must contain at least 32 characters")
     if not os.getenv("DATABASE_URL", "").startswith(
         ("postgres://", "postgresql://", "postgresql+psycopg://")
     ):
         raise RuntimeError(f"{label} DATABASE_URL must use PostgreSQL")
     if os.getenv("ATTACHMENT_STORAGE_BACKEND", "").lower() != "s3":
         raise RuntimeError(f"{label} attachments must use private S3-compatible storage")
-    if os.getenv("FORCE_HTTPS", "").strip().lower() != "true":
-        raise RuntimeError(f"{label} FORCE_HTTPS must be true")
-    if len(os.getenv("REQUEST_PRIVACY_SALT", "")) < 32:
-        raise RuntimeError(f"{label} REQUEST_PRIVACY_SALT must contain at least 32 characters")
-    if len(os.getenv("AUTH_SECRET_KEY", "")) < 32:
-        raise RuntimeError(f"{label} AUTH_SECRET_KEY must contain at least 32 characters")
     missing_r2 = [name for name in (
         "R2_ENDPOINT_URL", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME",
     ) if not os.getenv(name, "").strip()]

@@ -2063,16 +2063,8 @@ def test_public_deployment_surface_does_not_register_internal_erp_routes():
         assert client.get("/api/public/purchase-requests/health").json() == {"ok": True}
 
 
-def test_production_refuses_full_erp_surface(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "production")
-    with pytest.raises(RuntimeError, match="restricted to APP_SURFACE=public"):
-        create_app(surface="full", initialize_database=False)
-
-
 @pytest.mark.parametrize("environment", ["staging", "production"])
-def test_hosted_surfaces_are_public_only_with_strict_configuration(
-    monkeypatch, environment
-):
+def test_hosted_public_surface_requires_strict_configuration(monkeypatch, environment):
     values = {
         "APP_ENV": environment,
         "DATABASE_URL": "postgresql://user:password@database.example/procurex?sslmode=require",
@@ -2081,6 +2073,7 @@ def test_hosted_surfaces_are_public_only_with_strict_configuration(
         "FORCE_HTTPS": "true",
         "ATTACHMENT_STORAGE_BACKEND": "s3",
         "REQUEST_PRIVACY_SALT": "x" * 32,
+        "AUTH_SECRET_KEY": "x" * 32,
         "R2_ENDPOINT_URL": "https://account.r2.cloudflarestorage.com",
         "R2_ACCESS_KEY_ID": "test-access-key",
         "R2_SECRET_ACCESS_KEY": "test-secret-key",
@@ -2089,14 +2082,92 @@ def test_hosted_surfaces_are_public_only_with_strict_configuration(
     for name, value in values.items():
         monkeypatch.setenv(name, value)
 
-    with pytest.raises(RuntimeError, match="restricted to APP_SURFACE=public"):
-        create_app(surface="full", initialize_database=False)
     public_app = create_app(surface="public", initialize_database=False)
     paths = {route.path for route in public_app.routes}
     assert "/api/public/purchase-requests" in paths
     assert "/api/purchases" not in paths
     assert not any(path.startswith("/api/internal/") for path in paths)
     assert "/docs" not in paths
+
+
+# ---------- Hosted full-ERP-surface configuration (APP_ENV=production/staging, APP_SURFACE=full) ----------
+
+def _set_valid_full_surface_env(monkeypatch, environment="production"):
+    monkeypatch.setenv("APP_ENV", environment)
+    monkeypatch.setenv("CORS_ORIGINS", "https://procurement.example.com")
+    monkeypatch.setenv("TRUSTED_HOSTS", "procurement.example.com")
+    monkeypatch.setenv("FORCE_HTTPS", "true")
+    monkeypatch.setenv("AUTH_SECRET_KEY", "x" * 32)
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+    monkeypatch.delenv("INTERNAL_REQUEST_TOKEN", raising=False)
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_hosted_full_surface_allowed_with_secure_configuration(monkeypatch, environment):
+    """1. production/staging + full + valid secure configuration => allowed."""
+    _set_valid_full_surface_env(monkeypatch, environment)
+    full_app = create_app(surface="full", initialize_database=False)
+    paths = {route.path for route in full_app.routes}
+    assert "/api/purchases" in paths
+    assert any(path.startswith("/api/internal/") for path in paths)
+    assert "/docs" in paths
+
+
+def test_hosted_full_surface_rejects_wildcard_cors(monkeypatch):
+    """2. production + full + wildcard CORS => rejected."""
+    _set_valid_full_surface_env(monkeypatch)
+    monkeypatch.setenv("CORS_ORIGINS", "*")
+    with pytest.raises(RuntimeError, match="CORS_ORIGINS must be an explicit HTTPS allowlist"):
+        create_app(surface="full", initialize_database=False)
+
+
+@pytest.mark.parametrize("unsafe_hosts", ["", "*", "*.example.com", "https://procurement.example.com"])
+def test_hosted_full_surface_rejects_unsafe_trusted_hosts(monkeypatch, unsafe_hosts):
+    """3. production + full + missing/unsafe trusted hosts => rejected."""
+    _set_valid_full_surface_env(monkeypatch)
+    monkeypatch.setenv("TRUSTED_HOSTS", unsafe_hosts)
+    with pytest.raises(RuntimeError, match="TRUSTED_HOSTS must be an explicit hostname allowlist"):
+        create_app(surface="full", initialize_database=False)
+
+
+@pytest.mark.parametrize("secret", ["", "too-short"])
+def test_hosted_full_surface_rejects_missing_auth_secret(monkeypatch, secret):
+    """4. production + full + missing/short production auth secret => rejected."""
+    _set_valid_full_surface_env(monkeypatch)
+    monkeypatch.setenv("AUTH_SECRET_KEY", secret)
+    with pytest.raises(RuntimeError, match="AUTH_SECRET_KEY must contain at least 32 characters"):
+        create_app(surface="full", initialize_database=False)
+
+
+def test_hosted_full_surface_rejects_spoofable_internal_access_fallback(monkeypatch):
+    """Trusting proxy headers in production without an explicit internal-access
+    token would make the require_internal_access localhost fallback spoofable
+    from the internet - reject that combination rather than silently allowing
+    it to stand in for real ERP authentication."""
+    _set_valid_full_surface_env(monkeypatch)
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
+    with pytest.raises(RuntimeError, match="INTERNAL_REQUEST_TOKEN"):
+        create_app(surface="full", initialize_database=False)
+
+
+def test_hosted_full_surface_allows_trusted_proxy_headers_with_internal_token(monkeypatch):
+    _set_valid_full_surface_env(monkeypatch)
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
+    monkeypatch.setenv("INTERNAL_REQUEST_TOKEN", "x" * 32)
+    full_app = create_app(surface="full", initialize_database=False)
+    assert any(route.path == "/api/purchases" for route in full_app.routes)
+
+
+def test_development_full_surface_configuration_is_unaffected(monkeypatch):
+    """5. existing development configuration remains unaffected - none of the
+    hosted-surface checks apply outside staging/production."""
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    monkeypatch.delenv("TRUSTED_HOSTS", raising=False)
+    monkeypatch.delenv("FORCE_HTTPS", raising=False)
+    monkeypatch.delenv("AUTH_SECRET_KEY", raising=False)
+    full_app = create_app(surface="full", initialize_database=False)
+    assert any(route.path == "/api/purchases" for route in full_app.routes)
 
 
 def test_staging_refuses_filesystem_attachment_storage(monkeypatch):
@@ -7188,6 +7259,12 @@ def test_dashboard_attention_items_are_filtered_by_role_ownership(s, admin_heade
     # pending_approval ownership is dynamic - it follows the specific
     # approval's own responsible_role column, not a fixed type mapping.
     approval, *_rest = _make_approval_with_comparison(s, uuid.uuid4().hex[:8], admin_headers)
+    # The dashboard only surfaces the 8 oldest pending comparison_workflow
+    # approvals - backdate this one so it's never pushed out of that window
+    # by other tests' leftover pending approvals in this shared session.
+    with SessionLocal() as session:
+        session.get(EngineerApproval, approval["id"]).created_at = "2000-01-01T00:00:00Z"
+        session.commit()
 
     def has_pending_approval(dash):
         return has_item(dash, "pending_approval", approval["approval_number"])
