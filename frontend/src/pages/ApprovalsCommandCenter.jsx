@@ -227,16 +227,34 @@ function LegacyApproval({ selected, actor, cashCode, setCashCode, action, share,
   return <div className="space-y-4"><div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">{tr("هذا اعتماد خارجي قديم؛ أدوات المشاركة محفوظة للتوافق ولا تختلط بمسار الاعتمادات الداخلي.", "This is a legacy external approval; sharing tools remain for compatibility and are separate from the internal workflow.")}</div><div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/50 p-3 text-sm"><div>{tr("المهندس", "Engineer")}<br/><b>{selected.engineer_name || "-"}</b></div><div>{tr("الإجمالي", "Total")}<br/><b>{fmtEGP(selected.final_total)}</b></div></div><div className="flex flex-wrap gap-2">{selected.status === "draft" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/ready`)}><CheckCircle2 className="h-4 w-4" />{tr("جاهز للإرسال", "Ready to send")}</Button>}{selected.status === "ready_to_send" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/sent`)}><ExternalLink className="h-4 w-4" />{tr("تسجيل فتح المشاركة", "Record share opened")}</Button>}{selected.status === "revision_requested" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/revision`)}>{tr("إنشاء الإصدار التالي", "Create next revision")}</Button>}<Button variant="outline" onClick={() => share("copy")}><ClipboardCopy className="h-4 w-4" />{tr("نسخ الرابط", "Copy link")}</Button><Button variant="outline" disabled={!selected.engineer_phone} onClick={() => share("whatsapp")}><MessageCircle className="h-4 w-4" />WhatsApp</Button><Button variant="outline" disabled={!selected.engineer_email} onClick={() => share("gmail")}><Mail className="h-4 w-4" />{tr("بريد", "Email")}</Button></div><details className="rounded-xl border p-3"><summary className="cursor-pointer font-bold">{tr("سجل المدفوعات المنفصل", "Separate legacy payment history")}</summary><div className="mt-3 space-y-2">{!selected.payments.length ? <div className="text-sm text-muted-foreground">{tr("لا توجد دفعات.", "No payments.")}</div> : selected.payments.map((payment) => <div key={payment.id} className="rounded-lg border p-3"><div className="flex justify-between"><b>{payment.method}</b><span>{dictionaryLabel(paymentLabels, payment.status, tr, payment.status)}</span></div><div className="mt-1 text-sm">{fmtEGP(payment.amount)}</div>{payment.status === "under_review" && <div className="mt-2 flex gap-2"><Button size="sm" onClick={() => action(`/workflow/payments/${payment.id}/verify`)}>{tr("تحقق", "Verify")}</Button><Button size="sm" variant="destructive" onClick={() => action(`/workflow/payments/${payment.id}/reject`)}>{tr("رفض", "Reject")}</Button></div>}{payment.method === "cash" && payment.status === "pending" && <div className="mt-2 flex gap-2"><Input value={cashCode} onChange={(event) => setCashCode(event.target.value.toUpperCase())} placeholder="CASH-XXXXXX" /><Button onClick={() => action(`/workflow/payments/${payment.id}/confirm-cash`, { cash_reference: cashCode, actor })}>{tr("تأكيد النقد", "Confirm cash")}</Button></div>}</div>)}</div></details></div>;
 }
 
-async function downloadWorkspaceFile(path) {
-  const popup = window.open("", "_blank", "noopener,noreferrer");
+const INLINE_VIEWABLE_ATTACHMENT_TYPES = new Set(["application/pdf"]);
+const isInlineViewableAttachment = (mediaType) =>
+  typeof mediaType === "string"
+  && (INLINE_VIEWABLE_ATTACHMENT_TYPES.has(mediaType) || mediaType.startsWith("image/"));
+
+// Fetches the attachment as an authenticated blob before doing anything else -
+// never opens a tab/window ahead of a confirmed, non-empty Blob, which is what
+// previously left users staring at a stuck about:blank tab on failure.
+async function downloadWorkspaceFile(path, { filename, mediaType, failureMessage } = {}) {
   try {
     const response = await api.get(path, { responseType: "blob" });
-    const url = URL.createObjectURL(response.data);
-    if (popup) popup.location.href = url; else window.open(url, "_blank", "noopener,noreferrer");
+    const blob = response.data;
+    if (!(blob instanceof Blob) || blob.size === 0) throw new Error("empty-attachment-response");
+    const resolvedType = mediaType || blob.type;
+    const url = URL.createObjectURL(blob);
+    if (isInlineViewableAttachment(resolvedType)) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename || "attachment";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
     window.setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch (error) {
-    if (popup) popup.close();
-    toast.error(errMsg(error));
+    toast.error(failureMessage || errMsg(error));
   }
 }
 
@@ -244,15 +262,22 @@ function AttachmentRow({ attachment, requestId }) {
   const path = attachment.source === "general"
     ? `/internal/incoming-purchase-requests/${requestId}/general-attachments/${attachment.id}`
     : `/internal/incoming-purchase-requests/${requestId}/attachments/${attachment.id}`;
-  return <button type="button" onClick={() => downloadWorkspaceFile(path)} className="flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-xs hover:bg-slate-50" data-testid="request-attachment-row">
+  const open = () => downloadWorkspaceFile(path, { filename: attachment.original_filename, mediaType: attachment.media_type });
+  return <button type="button" onClick={open} className="flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-xs hover:bg-slate-50" data-testid="request-attachment-row">
     <span className="flex items-center gap-1"><Paperclip className="h-3 w-3" /> {attachment.original_filename}</span>
     <span className="text-slate-400">{((attachment.size_bytes || 0) / 1024).toFixed(0)} KB</span>
   </button>;
 }
 
 function QuotationAttachmentLink({ rfqId, quotationId, attachment }) {
+  const { tr } = usePreferences();
   const path = `/workflow/rfqs/${rfqId}/quotations/${quotationId}/attachments/${attachment.id}`;
-  return <button type="button" onClick={() => downloadWorkspaceFile(path)} className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100" data-testid="quotation-attachment-link">
+  const open = () => downloadWorkspaceFile(path, {
+    filename: attachment.original_filename,
+    mediaType: attachment.media_type,
+    failureMessage: tr("تعذر فتح مرفق عرض المورد", "Could not open the supplier quotation attachment."),
+  });
+  return <button type="button" onClick={open} className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100" data-testid="quotation-attachment-link">
     <Paperclip className="me-1 inline h-3 w-3" /> {attachment.original_filename}
   </button>;
 }

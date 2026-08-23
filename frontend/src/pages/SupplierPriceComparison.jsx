@@ -914,12 +914,24 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
 
   const viewQuotationAttachment = async (attachment) => {
     try {
-      const { data } = await api.get(attachment.download_url, { responseType: "blob" });
-      const url = URL.createObjectURL(data);
-      window.open(url, "_blank", "noopener,noreferrer");
+      const response = await api.get(attachment.download_url, { responseType: "blob" });
+      const blob = response.data;
+      if (!(blob instanceof Blob) || blob.size === 0) throw new Error("empty-attachment-response");
+      const mediaType = attachment.media_type || blob.type;
+      const url = URL.createObjectURL(blob);
+      if (mediaType === "application/pdf" || (typeof mediaType === "string" && mediaType.startsWith("image/"))) {
+        window.open(url, "_blank", "noopener,noreferrer");
+      } else {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = attachment.original_filename || "attachment";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (error) {
-      toast.error(tr(errMsg(error), "Could not open the supplier quotation attachment."));
+    } catch {
+      toast.error(tr("تعذر فتح مرفق عرض المورد", "Could not open the supplier quotation attachment."));
     }
   };
 

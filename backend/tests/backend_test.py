@@ -5704,6 +5704,41 @@ def test_site_portal_cannot_read_quotation_attachment_or_comparison_rows(s):
     assert denied_comparison_rows.status_code == 403
 
 
+def test_quotation_attachment_download_headers_and_auth(s):
+    """Regression: Approval Center / Supplier Comparison open the quotation
+    attachment as an authenticated blob and rely on this endpoint's
+    Content-Type/Content-Disposition to decide open-vs-download - an
+    anonymous request must be rejected before any bytes are served."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-dl-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"rfq-dl-resp-{suffix}")
+    rfq_id, supplier, _rfq = _rfq_with_supplier(s, suffix, responsible_headers)
+    quotation_id = s.post(
+        f"{RFQ_API}/{rfq_id}/quotations", headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"supplier_id": supplier["id"]},
+    ).json()["quotation"]["id"]
+    file_bytes = b"%PDF-1.4 test quotation content"
+    uploaded = s.post(
+        f"{RFQ_API}/{rfq_id}/quotations/{quotation_id}/attachments",
+        headers={**INTERNAL_HEADERS, **responsible_headers},
+        files=[("files", ("supplier offer.pdf", file_bytes, "application/pdf"))],
+    )
+    attachment_id = uploaded.json()["attachments"][0]["id"]
+    download_path = f"{RFQ_API}/{rfq_id}/quotations/{quotation_id}/attachments/{attachment_id}"
+
+    anonymous = s.get(download_path, headers=INTERNAL_HEADERS)
+    assert anonymous.status_code == 401
+
+    response = s.get(download_path, headers={**INTERNAL_HEADERS, **responsible_headers})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/pdf")
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("attachment;")
+    assert "filename*=UTF-8''supplier%20offer.pdf" in disposition
+    assert response.content == file_bytes
+
+
 def test_comparison_delete_enforces_role_and_allows_only_safe_draft(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:

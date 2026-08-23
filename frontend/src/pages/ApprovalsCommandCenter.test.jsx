@@ -1,5 +1,6 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { toast } from "sonner";
 import ApprovalsCommandCenter from "@/pages/ApprovalsCommandCenter";
 import { APPROVAL_STAGES, APPROVAL_STAGE_LABELS } from "@/lib/approvalStages";
 
@@ -291,6 +292,121 @@ test("request and quotation attachments render with filenames", async () => {
 
   await act(async () => root.unmount());
   container.remove();
+});
+
+describe("supplier quotation attachment open/download", () => {
+  const ATTACHMENT_PATH = "/workflow/rfqs/rfq-1/quotations/quo-1/attachments/qatt-1";
+  let originalOpen;
+  let originalCreateObjectURL;
+  let originalRevokeObjectURL;
+
+  beforeEach(() => {
+    originalOpen = window.open;
+    originalCreateObjectURL = window.URL.createObjectURL;
+    originalRevokeObjectURL = window.URL.revokeObjectURL;
+    window.open = jest.fn();
+    window.URL.createObjectURL = jest.fn(() => "blob:mock-url");
+    window.URL.revokeObjectURL = jest.fn();
+  });
+
+  afterEach(() => {
+    window.open = originalOpen;
+    window.URL.createObjectURL = originalCreateObjectURL;
+    window.URL.revokeObjectURL = originalRevokeObjectURL;
+  });
+
+  async function renderWithAttachmentResponse(respond) {
+    mockApproval = TECHNICAL_STAGE_APPROVAL;
+    mockWorkspace = richWorkspace;
+    const { container, root } = await renderCenter("procurement_engineer");
+    const baseImpl = mockGet.getMockImplementation();
+    mockGet.mockImplementation((path, config) => (
+      path === ATTACHMENT_PATH ? respond(path, config) : baseImpl(path, config)
+    ));
+    return { container, root };
+  }
+
+  test("opens a PDF attachment in a new tab once a valid blob is confirmed", async () => {
+    const blob = new Blob(["%PDF-1.4 fake"], { type: "application/pdf" });
+    const { container, root } = await renderWithAttachmentResponse(() => Promise.resolve({ data: blob }));
+
+    await click(container.querySelector('[data-testid="quotation-attachment-link"]'));
+
+    expect(mockGet).toHaveBeenCalledWith(ATTACHMENT_PATH, expect.objectContaining({ responseType: "blob" }));
+    expect(window.URL.createObjectURL).toHaveBeenCalledWith(blob);
+    expect(window.open).toHaveBeenCalledWith("blob:mock-url", "_blank", "noopener,noreferrer");
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test("downloads a non-viewable attachment (e.g. xlsx) with its original filename instead of opening a tab", async () => {
+    mockApproval = TECHNICAL_STAGE_APPROVAL;
+    mockWorkspace = {
+      ...richWorkspace,
+      supplier_quotations: [{
+        ...richWorkspace.supplier_quotations[0],
+        attachments: [{
+          id: "qatt-1", original_filename: "quote.xlsx",
+          media_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", size_bytes: 2048,
+        }],
+      }],
+    };
+    const blob = new Blob(["xlsx-bytes"], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const clickSpy = jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const { container, root } = await renderCenter("procurement_engineer");
+    const baseImpl = mockGet.getMockImplementation();
+    mockGet.mockImplementation((path, config) => (
+      path === ATTACHMENT_PATH ? Promise.resolve({ data: blob }) : baseImpl(path, config)
+    ));
+
+    await click(container.querySelector('[data-testid="quotation-attachment-link"]'));
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    clickSpy.mockRestore();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test("an API failure never opens a tab and shows the required toast instead of a stuck about:blank", async () => {
+    const { container, root } = await renderWithAttachmentResponse(() => Promise.reject({ response: { status: 500 } }));
+
+    await click(container.querySelector('[data-testid="quotation-attachment-link"]'));
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("تعذر فتح مرفق عرض المورد");
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test("an empty blob response is treated as a failure, not opened as a tab", async () => {
+    const emptyBlob = new Blob([], { type: "application/pdf" });
+    const { container, root } = await renderWithAttachmentResponse(() => Promise.resolve({ data: emptyBlob }));
+
+    await click(container.querySelector('[data-testid="quotation-attachment-link"]'));
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("تعذر فتح مرفق عرض المورد");
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test.each([401, 403])("a %i on the attachment request uses the authenticated client and shows an error, not a blank tab", async (status) => {
+    const { container, root } = await renderWithAttachmentResponse(() => Promise.reject({ response: { status } }));
+
+    await click(container.querySelector('[data-testid="quotation-attachment-link"]'));
+
+    expect(mockGet).toHaveBeenCalledWith(ATTACHMENT_PATH, expect.objectContaining({ responseType: "blob" }));
+    expect(window.open).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("تعذر فتح مرفق عرض المورد");
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
 });
 
 test("the currently selected comparison row is visibly highlighted", async () => {

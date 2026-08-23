@@ -1,5 +1,6 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { toast } from "sonner";
 
 import SupplierPriceComparison from "@/pages/SupplierPriceComparison";
 
@@ -430,6 +431,158 @@ test("renders supplier quotation attachments inside the matching supplier offer"
 
   await act(async () => root.unmount());
   container.remove();
+});
+
+describe("supplier quotation attachment open/download", () => {
+  const ATTACHMENT_PATH = "/workflow/rfqs/rfq-1/quotations/quotation-1/attachments/quote-file-1";
+  let originalOpen;
+  let originalCreateObjectURL;
+  let originalRevokeObjectURL;
+
+  beforeEach(() => {
+    originalOpen = window.open;
+    originalCreateObjectURL = window.URL.createObjectURL;
+    originalRevokeObjectURL = window.URL.revokeObjectURL;
+    window.open = jest.fn();
+    window.URL.createObjectURL = jest.fn(() => "blob:mock-url");
+    window.URL.revokeObjectURL = jest.fn();
+  });
+
+  afterEach(() => {
+    window.open = originalOpen;
+    window.URL.createObjectURL = originalCreateObjectURL;
+    window.URL.revokeObjectURL = originalRevokeObjectURL;
+  });
+
+  async function renderWithAttachment(attachmentOverrides, attachmentResponder) {
+    const withQuotationAttachment = {
+      ...detail,
+      source_rfq_id: "rfq-1",
+      supplier_quotations: [{
+        id: "quotation-1", supplier_id: "supplier-1", supplier_name: "المورد الأخضر",
+        status: "received", attachments: [{
+          id: "quote-file-1", original_filename: "supplier-offer.pdf",
+          download_url: ATTACHMENT_PATH, ...attachmentOverrides,
+        }],
+      }],
+    };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mockGet.mockImplementation((url, config) => (
+      url === ATTACHMENT_PATH ? attachmentResponder(url, config) : getResponse(url)
+    ));
+    await act(async () => {
+      root.render(<SupplierPriceComparison initialComparison={withQuotationAttachment} />);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    return { container, root };
+  }
+
+  function findViewButton(container, filename) {
+    return [...container.querySelectorAll("button")].find((button) => button.textContent.includes(filename));
+  }
+
+  afterEach(() => {
+    mockGet.mockImplementation(getResponse);
+  });
+
+  test("opens a PDF attachment in a new tab once a valid blob is confirmed", async () => {
+    const blob = new Blob(["%PDF-1.4 fake"], { type: "application/pdf" });
+    const { container, root } = await renderWithAttachment(
+      { media_type: "application/pdf" },
+      () => Promise.resolve({ data: blob }),
+    );
+
+    await act(async () => {
+      findViewButton(container, "supplier-offer.pdf").click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(mockGet).toHaveBeenCalledWith(ATTACHMENT_PATH, expect.objectContaining({ responseType: "blob" }));
+    expect(window.URL.createObjectURL).toHaveBeenCalledWith(blob);
+    expect(window.open).toHaveBeenCalledWith("blob:mock-url", "_blank", "noopener,noreferrer");
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test("downloads a non-viewable attachment (e.g. xlsx) with its original filename instead of opening a tab", async () => {
+    const blob = new Blob(["xlsx-bytes"], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const clickSpy = jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const { container, root } = await renderWithAttachment(
+      { original_filename: "supplier-offer.xlsx", media_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+      () => Promise.resolve({ data: blob }),
+    );
+
+    await act(async () => {
+      findViewButton(container, "supplier-offer.xlsx").click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    clickSpy.mockRestore();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test("an API failure never opens a tab and shows the required toast instead of a stuck about:blank", async () => {
+    const { container, root } = await renderWithAttachment(
+      { media_type: "application/pdf" },
+      () => Promise.reject({ response: { status: 500 } }),
+    );
+
+    await act(async () => {
+      findViewButton(container, "supplier-offer.pdf").click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("تعذر فتح مرفق عرض المورد");
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test("an empty blob response is treated as a failure, not opened as a tab", async () => {
+    const emptyBlob = new Blob([], { type: "application/pdf" });
+    const { container, root } = await renderWithAttachment(
+      { media_type: "application/pdf" },
+      () => Promise.resolve({ data: emptyBlob }),
+    );
+
+    await act(async () => {
+      findViewButton(container, "supplier-offer.pdf").click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("تعذر فتح مرفق عرض المورد");
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  test.each([401, 403])("a %i on the attachment request uses the authenticated client and shows an error, not a blank tab", async (status) => {
+    const { container, root } = await renderWithAttachment(
+      { media_type: "application/pdf" },
+      () => Promise.reject({ response: { status } }),
+    );
+
+    await act(async () => {
+      findViewButton(container, "supplier-offer.pdf").click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(mockGet).toHaveBeenCalledWith(ATTACHMENT_PATH, expect.objectContaining({ responseType: "blob" }));
+    expect(window.open).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("تعذر فتح مرفق عرض المورد");
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
 });
 
 test("adds, edits, and deletes a manual offer without saving master data", async () => {
