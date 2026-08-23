@@ -810,6 +810,15 @@ def _approval_detail(session, approval: EngineerApproval, *, include_token: bool
     ).all()]
     data["payments"] = _payments(session, approval.id)
     data["timeline"] = _timeline(session, approval.id)
+    linked_orders = session.scalars(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.approval_id == approval.id, PurchaseOrder.status != "cancelled")
+        .order_by(PurchaseOrder.created_at)
+    ).all()
+    data["purchase_orders"] = [
+        {"id": order.id, "po_number": order.po_number, "status": order.status}
+        for order in linked_orders
+    ]
     return data
 
 
@@ -829,12 +838,18 @@ def list_approvals(status: str = "", payment_status: str = "", project_id: str =
                 EngineerApproval.engineer_name.ilike(needle)
             )
         rows = session.scalars(statement).all()
+        ordered_approval_ids = {
+            row.approval_id for row in session.scalars(
+                select(PurchaseOrder).where(PurchaseOrder.status != "cancelled")
+            ).all() if row.approval_id
+        }
         result = []
         for approval in rows:
             data = _row(approval, exclude={"secure_token"})
             payments = _payments(session, approval.id)
             data["payment_status"] = payments[0]["status"] if payments else "not_started"
             data["payment_id"] = payments[0]["id"] if payments else ""
+            data["has_purchase_order"] = approval.id in ordered_approval_ids
             if not payment_status or data["payment_status"] == payment_status:
                 result.append(data)
         counts = {state: sum(1 for row in result if row["status"] == state) for state in APPROVAL_STATUSES}

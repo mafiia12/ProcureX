@@ -139,7 +139,7 @@ export default function ApprovalsCommandCenter() {
       <KpiCard label={tr("اعتماد المقارنة", "Comparison approval")} value={pendingTechnical} tone="info" />
       <KpiCard label={tr("موافقة تجارية", "Commercial approval")} value={pendingFund} tone="warning" />
       <KpiCard label={tr("إتاحة المبلغ", "Funds availability")} value={pendingRelease} tone="warning" />
-      <KpiCard label={tr("جاهز لأمر شراء", "Ready for PO")} value={internalItems.filter((item) => item.status === "approved" && item.approval_stage === APPROVAL_STAGES.PO_READY).length} tone="success" />
+      <KpiCard label={tr("جاهز لأمر شراء", "Ready for PO")} value={internalItems.filter((item) => item.status === "approved" && item.approval_stage === APPROVAL_STAGES.PO_READY && !item.has_purchase_order).length} tone="success" />
     </div>
     <div className="grid gap-2 rounded-lg border bg-card p-3 md:grid-cols-[1fr_220px_1fr]"><Input placeholder={tr("رقم الاعتماد أو المشروع", "Approval number or project")} value={filters.search} onChange={(event) => setFilters((value) => ({ ...value, search: event.target.value }))} /><select className="h-10 rounded-md border bg-background px-3" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}><option value="">{tr("كل حالات الاعتماد", "All approval statuses")}</option>{Object.entries(statusLabels).map(([value, labels]) => <option key={value} value={value}>{tr(...labels)}</option>)}</select><Input placeholder={tr("اسم منفذ الإجراء", "Action owner name")} value={actor} onChange={(event) => setActor(event.target.value)} /></div>
     <div className="grid gap-4 xl:grid-cols-[minmax(280px,.72fr)_minmax(0,1.5fr)]">
@@ -149,7 +149,7 @@ export default function ApprovalsCommandCenter() {
         <div className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/40 p-3 text-sm lg:grid-cols-4" data-testid="approval-decision-summary">
           {[["APR", selected.approval_number], [tr("المشروع", "Project"), selected.project_name || "-"], ["REQ", selected.source_request_number || "-"], ["CMP", selected.comparison_number || "-"], [tr("الإجمالي", "Total"), fmtEGP(selected.final_total)], [tr("المرحلة الحالية", "Current stage"), stageLabel(selected.approval_stage, tr)], [tr("المسؤول", "Responsible role"), dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)], [tr("القرار المطلوب", "Decision required"), stageLabel(selected.approval_stage, tr)]].map(([label, value]) => <div key={label}><div className="text-[11px] text-muted-foreground">{label}</div><div className="mt-0.5 font-semibold" dir={["APR", "REQ", "CMP"].includes(label) ? "ltr" : "auto"}>{value}</div></div>)}
         </div>
-        {selected.approval_type === "comparison_workflow" ? <InternalApproval selected={selected} role={role} note={note} setNote={setNote} canAct={canAct} currentStage={currentStage} requestDecision={requestDecision} action={legacyAction} releaseFunds={releaseFunds} releaseMethod={releaseMethod} setReleaseMethod={setReleaseMethod} createDraftPO={createDraftPO} tr={tr} /> : <LegacyApproval selected={selected} actor={actor} cashCode={cashCode} setCashCode={setCashCode} action={legacyAction} share={share} tr={tr} />}
+        {selected.approval_type === "comparison_workflow" ? <InternalApproval selected={selected} role={role} note={note} setNote={setNote} canAct={canAct} currentStage={currentStage} requestDecision={requestDecision} action={legacyAction} releaseFunds={releaseFunds} releaseMethod={releaseMethod} setReleaseMethod={setReleaseMethod} createDraftPO={createDraftPO} navigate={navigate} tr={tr} /> : <LegacyApproval selected={selected} actor={actor} cashCode={cashCode} setCashCode={setCashCode} action={legacyAction} share={share} tr={tr} />}
         <ReviewWorkspace workspace={workspace} timeline={selected.timeline || []} />
       </div>}</section>
     </div>
@@ -182,15 +182,36 @@ export default function ApprovalsCommandCenter() {
   </div>;
 }
 
-function InternalApproval({ selected, role, note, setNote, canAct, currentStage, requestDecision, action, releaseFunds, releaseMethod, setReleaseMethod, createDraftPO, tr }) {
+function InternalApproval({ selected, role, note, setNote, canAct, currentStage, requestDecision, action, releaseFunds, releaseMethod, setReleaseMethod, createDraftPO, navigate, tr }) {
   const isRelease = selected.status === "pending_approval" && selected.approval_stage === APPROVAL_STAGES.FUNDS_AVAILABILITY;
   const readyForPO = selected.status === "approved" && selected.approval_stage === APPROVAL_STAGES.PO_READY;
+  const linkedOrders = selected.purchase_orders || [];
+  const hasPurchaseOrders = readyForPO && linkedOrders.length > 0;
   const canReleaseFunds = role === "admin" || role === "commercial_manager";
   const canCreatePO = role === "admin" || role === "procurement_responsible";
-  return <><ProcurementProgress currentStage={currentStage} /><div className={`rounded-lg border p-3 ${readyForPO ? "bg-emerald-500/10" : "bg-blue-500/10"}`}><div className="text-xs font-bold text-muted-foreground">{tr("المطلوب الآن", "Decision required now")}</div><div className="mt-1 text-base font-bold">{stageLabel(selected.approval_stage, tr)}</div><div className="mt-1 text-sm text-muted-foreground">{tr("المسؤول", "Responsible")}: {dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)}</div></div>
+  return <><ProcurementProgress currentStage={currentStage} /><div className={`rounded-lg border p-3 ${readyForPO ? "bg-emerald-500/10" : "bg-blue-500/10"}`}><div className="text-xs font-bold text-muted-foreground">{tr("المطلوب الآن", "Decision required now")}</div><div className="mt-1 text-base font-bold">{hasPurchaseOrders ? tr("تم إنشاء أمر الشراء", "Purchase order created") : stageLabel(selected.approval_stage, tr)}</div><div className="mt-1 text-sm text-muted-foreground">{tr("المسؤول", "Responsible")}: {dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)}</div></div>
     {selected.status === "pending_approval" && !isRelease && <div className="space-y-3">{canAct ? <div className="sticky bottom-3 z-10 flex flex-wrap gap-2 rounded-lg border bg-card/95 p-2 shadow-sm backdrop-blur"><Button onClick={() => requestDecision("approved")} className="bg-emerald-700 text-white hover:bg-emerald-800"><ShieldCheck className="h-4 w-4" /> {selected.approval_stage === APPROVAL_STAGES.COMPARISON_TECHNICAL ? tr("اعتماد المقارنة", "Approve comparison") : tr("موافقة تجارية / اعتماد الصرف", "Commercial / expenditure approval")}</Button><Button variant="outline" onClick={() => requestDecision("revision_requested")}><Undo2 className="h-4 w-4" />{tr("تعديل مطلوب", "Request revision")}</Button><Button variant="destructive" onClick={() => requestDecision("rejected")}><XCircle className="h-4 w-4" />{tr("رفض", "Reject")}</Button></div> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
     {isRelease && <div className="space-y-3 rounded-lg border bg-violet-500/10 p-4"><div className="font-bold">{tr("الموافقة التجارية / اعتماد الصرف مكتمل — المبلغ لم يُتح بعد", "Commercial approval is complete — funds are not yet available")}</div><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={releaseMethod} onChange={(event) => setReleaseMethod(event.target.value)}><option value="">{tr("طريقة الإتاحة (اختياري)", "Availability method (optional)")}</option><option value="cash">{tr("نقدي", "Cash")}</option><option value="transfer">{tr("تحويل", "Transfer")}</option><option value="custody">{tr("عهدة", "Custody")}</option><option value="other">{tr("أخرى", "Other")}</option></select><Input value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("ملاحظة اختيارية", "Optional note")} />{canReleaseFunds ? <Button className="w-full" onClick={releaseFunds}><WalletCards className="h-5 w-5" />{tr("تأكيد إتاحة المبلغ لمسؤول المشتريات", "Confirm funds availability for procurement")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
-    {readyForPO && <div className="rounded-lg border bg-emerald-500/10 p-4"><div className="font-bold text-emerald-800 dark:text-emerald-300">{tr("🟢 التمويل متاح", "Funds available")}</div><div className="mt-1 text-sm text-muted-foreground">{tr("جاهز لإصدار أمر شراء ومراجعته", "Ready to create and review a purchase order")}</div>{canCreatePO ? <Button className="mt-3 w-full" onClick={createDraftPO}><ShoppingCart className="h-5 w-5" />{tr("إنشاء أوامر الشراء للمراجعة", "Create purchase orders for review")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
+    {readyForPO && (hasPurchaseOrders
+      ? <div className="rounded-lg border bg-emerald-500/10 p-4" data-testid="po-created-state">
+          <div className="flex items-center gap-2 font-bold text-emerald-800 dark:text-emerald-300"><CheckCircle2 className="h-5 w-5" />{tr("تم إنشاء أمر الشراء", "Purchase order created")}</div>
+          <div className="mt-1 text-sm text-muted-foreground">{linkedOrders.length > 1
+            ? tr(`تم إنشاء ${linkedOrders.length} أوامر شراء لهذا الاعتماد.`, `${linkedOrders.length} purchase orders were created for this approval.`)
+            : tr("تم إنشاء أمر الشراء لهذا الاعتماد.", "A purchase order was created for this approval.")}</div>
+          <Button
+            className="mt-3 w-full"
+            variant="outline"
+            data-testid="open-created-purchase-orders"
+            onClick={() => navigate(linkedOrders.length === 1 ? `/purchase-orders/${linkedOrders[0].id}` : "/purchase-orders")}
+          >
+            <ShoppingCart className="h-5 w-5" />
+            {linkedOrders.length === 1
+              ? tr("فتح أمر الشراء", "Open purchase order")
+              : tr(`عرض أوامر الشراء (${linkedOrders.length})`, `View purchase orders (${linkedOrders.length})`)}
+          </Button>
+        </div>
+      : <div className="rounded-lg border bg-emerald-500/10 p-4"><div className="font-bold text-emerald-800 dark:text-emerald-300">{tr("🟢 التمويل متاح", "Funds available")}</div><div className="mt-1 text-sm text-muted-foreground">{tr("جاهز لإصدار أمر شراء ومراجعته", "Ready to create and review a purchase order")}</div>{canCreatePO ? <Button className="mt-3 w-full" onClick={createDraftPO}><ShoppingCart className="h-5 w-5" />{tr("إنشاء أوامر الشراء للمراجعة", "Create purchase orders for review")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>
+    )}
     {selected.status === "revision_requested" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/revision`)}>{tr("إنشاء إصدار معدل", "Create revised version")}</Button>}</>;
 }
 

@@ -3030,6 +3030,11 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     po_numbers = [row["po_number"] for row in purchase_orders]
     assert len(po_numbers) == len(set(po_numbers)) == 2
     assert all(number.startswith("PO-") and len(number) == 9 for number in po_numbers)
+    approval_after_po = s.get(f"{API}/workflow/approvals/{approval['id']}", headers=INTERNAL_HEADERS).json()
+    assert {row["po_number"] for row in approval_after_po["purchase_orders"]} == set(po_numbers)
+    assert all(row["status"] != "cancelled" for row in approval_after_po["purchase_orders"])
+    approvals_list = s.get(f"{API}/workflow/approvals", headers=INTERNAL_HEADERS).json()["items"]
+    assert next(row for row in approvals_list if row["id"] == approval["id"])["has_purchase_order"] is True
     assert s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
         headers=INTERNAL_HEADERS,
