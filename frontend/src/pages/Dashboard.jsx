@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  AlertCircle, ChevronDown, CircleDollarSign, ClipboardCheck, FileCheck2,
+  AlertCircle, CircleDollarSign, ClipboardCheck, FileCheck2,
   Inbox, PackageCheck, Receipt, ShoppingCart, Truck, Wallet,
 } from "lucide-react";
 import {
@@ -59,7 +59,6 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { tr } = usePreferences();
   const [dashboard, setDashboard] = useState(null);
-  const [showLegacy, setShowLegacy] = useState(false);
 
   useEffect(() => {
     api.get("/dashboard").then((response) => setDashboard(response.data));
@@ -162,11 +161,6 @@ export default function Dashboard() {
             [ClipboardCheck, tr("مكتمل الاستلام", "Receiving complete"), receiving.completed_count, "success"],
           ].map(([Icon, label, value, tone]) => <KpiCard key={label} icon={Icon} label={label} value={value ?? 0} tone={tone} />)}
         </div>
-      </section>
-
-      <section data-testid="legacy-direct-purchases">
-        <button type="button" onClick={() => setShowLegacy((value) => !value)} className="flex w-full items-center justify-between rounded-lg border bg-muted/50 px-4 py-3 text-start" data-testid="legacy-direct-purchases-toggle"><span><span className="text-sm font-bold text-muted-foreground">{tr("بيانات الشراء المباشر القديمة", "Legacy direct-purchase data")}</span><span className="ms-2 text-xs text-muted-foreground">{tr("منفصلة عن مؤشرات المسار الرسمي", "Separated from formal workflow KPIs")}</span></span><ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showLegacy ? "rotate-180" : ""}`} /></button>
-        {showLegacy && <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4"><KpiCard icon={ShoppingCart} label={tr("قيمة الفواتير القديمة", "Legacy invoice value")} value={fmtEGP(dashboard.direct_purchase_total)} testId="kpi-total-purchases" /><KpiCard icon={Receipt} label={tr("عدد الفواتير", "Invoice count")} value={dashboard.direct_purchase_count || 0} /><KpiCard icon={Wallet} label={tr("المدفوع", "Paid")} value={fmtEGP(dashboard.direct_paid_total)} tone="success" /><KpiCard icon={AlertCircle} label={tr("المتبقي", "Outstanding")} value={fmtEGP(dashboard.direct_outstanding_total)} tone="warning" /></div>}
       </section>
     </div>
   );

@@ -765,6 +765,7 @@ async def list_incoming_requests(
     status: str = "",
     priority: str = "",
     assigned_employee: str = "",
+    current_user: User = Depends(require_erp_role()),
 ):
     with SessionLocal() as session:
         statement = select(IncomingPurchaseRequest)
@@ -795,7 +796,7 @@ async def list_incoming_requests(
 
 
 @internal_router.get("/notifications", dependencies=[Depends(require_internal_access)])
-async def list_request_notifications(unread_only: bool = False):
+async def list_request_notifications(unread_only: bool = False, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         statement = select(InternalNotification).where(
             InternalNotification.entity_type == "incoming_purchase_request"
@@ -810,7 +811,7 @@ async def list_request_notifications(unread_only: bool = False):
 
 
 @internal_router.get("/notifications/unread-count", dependencies=[Depends(require_internal_access)])
-async def unread_notification_count():
+async def unread_notification_count(current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         count = session.scalar(select(func.count()).select_from(InternalNotification).where(
             (InternalNotification.entity_type == "incoming_purchase_request")
@@ -820,7 +821,7 @@ async def unread_notification_count():
 
 
 @internal_router.post("/notifications/{notification_id}/read", dependencies=[Depends(require_internal_access)])
-async def mark_notification_read(notification_id: str):
+async def mark_notification_read(notification_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         row = session.get(InternalNotification, notification_id)
         if not row:
@@ -831,13 +832,13 @@ async def mark_notification_read(notification_id: str):
 
 
 @internal_router.get("/{request_id}", dependencies=[Depends(require_internal_access)])
-async def get_incoming_request(request_id: str):
+async def get_incoming_request(request_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         return _detail(session, _get_request(session, request_id))
 
 
 @internal_router.patch("/{request_id}/assignment", dependencies=[Depends(require_internal_access)])
-async def assign_request(request_id: str, body: AssignmentIn):
+async def assign_request(request_id: str, body: AssignmentIn, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         row = _get_request(session, request_id)
         row.assigned_employee = body.employee.strip()
@@ -847,7 +848,7 @@ async def assign_request(request_id: str, body: AssignmentIn):
 
 
 @internal_router.post("/{request_id}/notes", dependencies=[Depends(require_internal_access)])
-async def add_internal_note(request_id: str, body: InternalNoteIn):
+async def add_internal_note(request_id: str, body: InternalNoteIn, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         row = _get_request(session, request_id)
         created_at = _now()
@@ -1046,7 +1047,7 @@ async def update_approved_item_price(
     "/approved/items",
     dependencies=[Depends(require_internal_access)],
 )
-async def list_approved_items():
+async def list_approved_items(current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         rows = session.scalars(
             select(IncomingPurchaseRequestItem)
@@ -1100,7 +1101,7 @@ async def list_approved_items():
     "/hold/overdue",
     dependencies=[Depends(require_internal_access)],
 )
-async def list_overdue_hold_items():
+async def list_overdue_hold_items(current_user: User = Depends(require_erp_role())):
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
     with SessionLocal() as session:
@@ -1147,7 +1148,7 @@ async def list_overdue_hold_items():
 
         return result
 @internal_router.post("/{request_id}/status", dependencies=[Depends(require_internal_access)])
-async def change_request_status(request_id: str, body: StatusChangeIn):
+async def change_request_status(request_id: str, body: StatusChangeIn, current_user: User = Depends(require_erp_role())):
     if body.status not in REQUEST_STATUSES:
         raise HTTPException(422, "حالة الطلب غير صحيحة")
     with SessionLocal() as session:
@@ -1177,7 +1178,9 @@ async def change_request_status(request_id: str, body: StatusChangeIn):
     "/{request_id}/attachments/{attachment_id}",
     dependencies=[Depends(require_internal_access)],
 )
-async def get_request_attachment(request_id: str, attachment_id: str):
+async def get_request_attachment(
+    request_id: str, attachment_id: str, current_user: User = Depends(require_erp_role()),
+):
     with SessionLocal() as session:
         attachment = session.get(IncomingRequestAttachment, attachment_id)
         if not attachment:
@@ -1207,7 +1210,9 @@ async def get_request_attachment(request_id: str, attachment_id: str):
     "/{request_id}/general-attachments/{attachment_id}",
     dependencies=[Depends(require_internal_access)],
 )
-async def get_request_general_attachment(request_id: str, attachment_id: str):
+async def get_request_general_attachment(
+    request_id: str, attachment_id: str, current_user: User = Depends(require_erp_role()),
+):
     with SessionLocal() as session:
         attachment = session.get(IncomingRequestGeneralAttachment, attachment_id)
         if not attachment or attachment.request_id != request_id:
@@ -1231,7 +1236,7 @@ async def get_request_general_attachment(request_id: str, attachment_id: str):
 
 
 @internal_router.post("/{request_id}/convert-customer", dependencies=[Depends(require_internal_access)])
-async def convert_requester_to_customer(request_id: str):
+async def convert_requester_to_customer(request_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         row = _get_request(session, request_id)
         if row.converted_customer_id:
@@ -1267,7 +1272,7 @@ async def convert_requester_to_customer(request_id: str):
 
 
 @internal_router.post("/{request_id}/convert", dependencies=[Depends(require_internal_access)])
-async def convert_request_to_document(request_id: str, body: ConvertIn):
+async def convert_request_to_document(request_id: str, body: ConvertIn, current_user: User = Depends(require_erp_role())):
     if body.document_type not in DOCUMENT_TYPES:
         raise HTTPException(422, "نوع التحويل غير صحيح")
     with SessionLocal() as session:

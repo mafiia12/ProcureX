@@ -847,7 +847,7 @@ def _replace_rows(
 
 
 @router.get("")
-def list_comparisons():
+def list_comparisons(current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         comparisons = session.execute(
             select(PriceComparison, func.count(PriceComparisonRow.id))
@@ -874,7 +874,7 @@ def list_comparisons():
 
 
 @router.get("/{comparison_id}")
-def get_comparison(comparison_id: str):
+def get_comparison(comparison_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         comparison = session.get(PriceComparison, comparison_id)
         if not comparison:
@@ -1159,7 +1159,7 @@ def _export_workbook(detail: dict) -> bytes:
 
 
 @router.get("/{comparison_id}/export.xlsx")
-def export_comparison(comparison_id: str):
+def export_comparison(comparison_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         comparison = session.get(PriceComparison, comparison_id)
         if not comparison:

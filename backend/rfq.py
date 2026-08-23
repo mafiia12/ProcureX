@@ -13,6 +13,8 @@ supplier quotation line -> (optionally) a CMP row the frontend builds from
 
 from __future__ import annotations
 
+import ntpath
+import posixpath
 import uuid
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
@@ -703,9 +705,10 @@ async def upload_quotation_attachments(
             )
         media_type, extension = detected
         import hashlib
+        safe_name = ntpath.basename(posixpath.basename(upload.filename or f"attachment-{index}"))
         prepared.append({
             "content": content, "media_type": media_type, "extension": extension,
-            "original_filename": (upload.filename or f"attachment-{index}")[:240],
+            "original_filename": safe_name[:240],
             "size_bytes": len(content), "sha256": hashlib.sha256(content).hexdigest(),
         })
 

@@ -320,7 +320,7 @@ async def entity_list(coll_name):
 
 
 @api.get("/suppliers")
-async def list_suppliers(include_procurement: bool = False):
+async def list_suppliers(include_procurement: bool = False, current_user: User = Depends(require_erp_role())):
     suppliers = await entity_list("suppliers")
     if not include_procurement:
         return suppliers
@@ -404,12 +404,12 @@ async def list_suppliers(include_procurement: bool = False):
 
 
 @api.get("/customers")
-async def list_customers():
+async def list_customers(current_user: User = Depends(require_erp_role())):
     return await entity_list("customers")
 
 
 @api.get("/projects")
-async def list_projects(include_procurement: bool = False):
+async def list_projects(include_procurement: bool = False, current_user: User = Depends(require_erp_role())):
     projects = await entity_list("projects")
 
     purchases = await db.purchases.find(
@@ -492,6 +492,7 @@ async def list_items(
     subcategory: Optional[str] = None,
     brand: Optional[str] = None,
     search: Optional[str] = None,
+    current_user: User = Depends(require_erp_role()),
 ):
     items = [clean(d) for d in await db.items.find({}).sort("code", 1).to_list(10000)]
     for item in items:
@@ -602,12 +603,12 @@ async def delete_entity(coll_name, entity_id: str):
 
 
 @api.post("/items")
-async def create_item(body: ItemIn):
+async def create_item(body: ItemIn, current_user: User = Depends(require_erp_role())):
     return await create_entity("items", body)
 
 
 @api.put("/items/{entity_id}")
-async def update_item(entity_id: str, body: ItemIn):
+async def update_item(entity_id: str, body: ItemIn, current_user: User = Depends(require_erp_role())):
     return await update_entity("items", entity_id, body)
 
 @api.get("/purchase-orders")
@@ -790,19 +791,19 @@ async def get_purchase_order(
     return await _purchase_order_detail(purchase_order_id)
 
 @api.delete("/items/{entity_id}")
-async def delete_item(entity_id: str):
+async def delete_item(entity_id: str, current_user: User = Depends(require_erp_role())):
     return await delete_entity("items", entity_id)
 
 
 for _name in (name for name in ENTITIES if name != "items"):
     def _make(coll_name):
-        async def _create(body: EntityIn):
+        async def _create(body: EntityIn, current_user: User = Depends(require_erp_role())):
             return await create_entity(coll_name, body)
 
-        async def _update(entity_id: str, body: EntityIn):
+        async def _update(entity_id: str, body: EntityIn, current_user: User = Depends(require_erp_role())):
             return await update_entity(coll_name, entity_id, body)
 
-        async def _delete(entity_id: str):
+        async def _delete(entity_id: str, current_user: User = Depends(require_erp_role())):
             return await delete_entity(coll_name, entity_id)
         return _create, _update, _delete
 
@@ -1817,7 +1818,7 @@ async def paid_amounts():
 
 
 @api.get("/purchases")
-async def list_purchases():
+async def list_purchases(current_user: User = Depends(require_erp_role())):
     purchases = [clean(d) for d in await db.purchases.find({}).sort("purchase_id", -1).to_list(100000)]
     lines = await db.purchase_items.find({}, {"_id": 0}).to_list(100000)
     item_search = {}
@@ -1837,7 +1838,7 @@ async def list_purchases():
 
 
 @api.get("/purchases/{purchase_id}")
-async def get_purchase(purchase_id: str):
+async def get_purchase(purchase_id: str, current_user: User = Depends(require_erp_role())):
     pur = await db.purchases.find_one({"purchase_id": purchase_id})
     if not pur:
         raise HTTPException(404, "عملية الشراء غير موجودة")
@@ -1872,7 +1873,7 @@ async def get_purchase(purchase_id: str):
 
 
 @api.post("/purchases")
-async def create_purchase(body: PurchaseCreate):
+async def create_purchase(body: PurchaseCreate, current_user: User = Depends(require_erp_role())):
     if not body.purchase_date.strip():
         raise HTTPException(422, "من فضلك أدخل تاريخ شراء صحيح")
     invoice_number = body.invoice_number.strip()
@@ -2023,7 +2024,7 @@ async def create_purchase(body: PurchaseCreate):
 
 
 @api.delete("/purchases/{purchase_id}")
-async def delete_purchase(purchase_id: str):
+async def delete_purchase(purchase_id: str, current_user: User = Depends(require_erp_role())):
     with db.transaction() as tx:
         pur = await tx.purchases.find_one({"purchase_id": purchase_id})
         if not pur:
@@ -2059,7 +2060,7 @@ class PaymentCreate(BaseModel):
 
 
 @api.get("/payments")
-async def list_payments():
+async def list_payments(current_user: User = Depends(require_erp_role())):
     pays = [clean(d) for d in await db.payments.find({}).sort("payment_id", -1).to_list(100000)]
     purchases = {p["purchase_id"]: p for p in await db.purchases.find({}, {"_id": 0}).to_list(100000)}
     paid = await paid_amounts()
@@ -2075,7 +2076,7 @@ async def list_payments():
 
 
 @api.post("/payments")
-async def create_payment(body: PaymentCreate):
+async def create_payment(body: PaymentCreate, current_user: User = Depends(require_erp_role())):
     if not body.payment_date.strip():
         raise HTTPException(422, "من فضلك أدخل تاريخ الدفع")
     amount_paid = require_finite(body.amount_paid, "المبلغ المدفوع غير صحيح")
@@ -2127,7 +2128,7 @@ async def create_payment(body: PaymentCreate):
 
 
 @api.delete("/payments/{payment_id}")
-async def delete_payment(payment_id: str):
+async def delete_payment(payment_id: str, current_user: User = Depends(require_erp_role())):
     with db.transaction() as tx:
         pay = await tx.payments.find_one({"id": payment_id})
         if not pay:
@@ -2139,7 +2140,7 @@ async def delete_payment(payment_id: str):
 
 # ---------------- Price History ----------------
 @api.get("/price-history")
-async def list_price_history():
+async def list_price_history(current_user: User = Depends(require_erp_role())):
     return [clean(d) for d in await db.price_history.find({}).sort("record_no", -1).to_list(100000)]
 
 
@@ -2257,12 +2258,12 @@ class SettingsUpdate(BaseModel):
 
 
 @api.get("/settings")
-async def get_settings():
+async def get_settings(current_user: User = Depends(require_erp_role("admin"))):
     return [clean(d) for d in await db.settings.find({}).to_list(1000)]
 
 
 @api.put("/settings/{key}")
-async def update_settings(key: str, body: SettingsUpdate):
+async def update_settings(key: str, body: SettingsUpdate, current_user: User = Depends(require_erp_role("admin"))):
     res = await db.settings.update_one({"key": key}, {"$set": {"values": body.values}})
     if res.matched_count == 0:
         raise HTTPException(404, "القائمة غير موجودة")
@@ -2270,7 +2271,7 @@ async def update_settings(key: str, body: SettingsUpdate):
 
 
 @api.get("/system/diagnostics")
-async def system_diagnostics():
+async def system_diagnostics(current_user: User = Depends(require_erp_role("admin"))):
     paths = _runtime_paths()
     last_backup = None
     last_backup_file = paths["backups"] / "last-successful-backup.json"
@@ -2293,7 +2294,7 @@ async def system_diagnostics():
 
 
 @api.post("/system/backup")
-async def create_system_backup():
+async def create_system_backup(current_user: User = Depends(require_erp_role("admin"))):
     try:
         return _create_verified_runtime_backup()
     except HTTPException:
@@ -2304,7 +2305,9 @@ async def create_system_backup():
 
 
 @api.post("/system/open-folder/{kind}")
-async def open_system_folder(kind: str, request: Request):
+async def open_system_folder(
+    kind: str, request: Request, current_user: User = Depends(require_erp_role("admin")),
+):
     if request.client and request.client.host not in {"127.0.0.1", "::1", "testclient"}:
         raise HTTPException(403, "هذا الإجراء متاح محلياً فقط")
     paths = _runtime_paths()
@@ -2358,8 +2361,31 @@ def _dashboard_days_overdue(due_date: str, today: str) -> Optional[int]:
     return max(delta, 0)
 
 
+ATTENTION_TYPE_ROLE_OWNERS = {
+    # Technical review of incoming requests is the engineer's job - matches
+    # require_erp_role("procurement_engineer") on /items/{id}/review.
+    "needs_clarification": "procurement_engineer",
+    "request_review": "procurement_engineer",
+    # Sourcing/RFQ/PO/receiving is procurement_responsible's domain - matches
+    # require_erp_role("procurement_responsible") on RFQ creation, PO
+    # creation, and item-master conversion.
+    "sourcing_required": "procurement_responsible",
+    "rfq_past_deadline": "procurement_responsible",
+    "quotation_missing": "procurement_responsible",
+    "awaiting_supplier_confirmation": "procurement_responsible",
+    "partial_received": "procurement_responsible",
+    "delivery_problem": "procurement_responsible",
+    # Payments are the commercial manager's domain - matches
+    # require_erp_role("commercial_manager") on PO payment recording/void.
+    "overdue_payment": "commercial_manager",
+    # pending_approval has no single fixed owner - it is set per item below
+    # from that specific approval's own responsible_role column.
+}
+
+
 async def _dashboard_procurement_intelligence(
     session, requests, comparisons, approvals, procurement_kpis: dict,
+    viewer_role: str = "",
 ) -> dict:
     today = datetime.now(timezone.utc).date().isoformat()
 
@@ -2660,6 +2686,7 @@ async def _dashboard_procurement_intelligence(
             "project_name": approval.project_name,
             "reason": "اعتماد معلق يحتاج قرارًا",
             "due_or_age": approval.created_at, "path": "/approvals",
+            "responsible_role": approval.responsible_role,
         })
     for order in active_orders:
         if order.get("status") == "sent":
@@ -2694,6 +2721,16 @@ async def _dashboard_procurement_intelligence(
                 "due_or_age": request_row.updated_at,
                 "path": "/incoming-requests",
             })
+    for item in attention_items:
+        item.setdefault("responsible_role", ATTENTION_TYPE_ROLE_OWNERS.get(item["type"], ""))
+
+    # Admin sees the full action center; every other role sees only the
+    # items owned by their own workflow responsibility (existing RBAC roles
+    # above), not a generic shared list. Summary KPIs elsewhere are never
+    # filtered - only this action-center list is role-scoped.
+    if viewer_role and viewer_role != "admin":
+        attention_items = [item for item in attention_items if item["responsible_role"] == viewer_role]
+
     attention_items = attention_items[:20]
 
     active_po_count = sum(1 for o in active_orders if o.get("status") != "completed")
@@ -2775,6 +2812,7 @@ async def dashboard(current_user: User = Depends(require_erp_role())):
         )
         formal_intelligence = await _dashboard_procurement_intelligence(
             session, requests, comparisons, approvals, procurement_kpis,
+            viewer_role=current_user.role,
         )
 
     return {
@@ -2801,7 +2839,7 @@ async def dashboard(current_user: User = Depends(require_erp_role())):
 
 # ---------------- Excel import / export ----------------
 @api.get("/export/excel")
-async def export_excel():
+async def export_excel(current_user: User = Depends(require_erp_role())):
     data = await build_export_workbook(db)
     filename = f"RE_DECOR_Procurement_ERP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     return Response(content=data,
@@ -2810,7 +2848,7 @@ async def export_excel():
 
 
 @api.post("/import/excel")
-async def import_excel(file: UploadFile = File(...)):
+async def import_excel(file: UploadFile = File(...), current_user: User = Depends(require_erp_role())):
     if not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(422, "من فضلك ارفع ملف Excel بصيغة xlsx أو xlsm")
     content = await file.read()

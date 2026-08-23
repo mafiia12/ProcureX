@@ -18,6 +18,8 @@ _resolve_project and submit_portal_request for the server-side checks.
 from __future__ import annotations
 
 import hashlib
+import ntpath
+import posixpath
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -567,9 +569,10 @@ def _detect_and_read(content: bytes, filename: str) -> dict:
     if not detected:
         raise HTTPException(422, "المرفقات المسموحة هي صور JPG وPNG وWebP أو PDF أو ملفات Excel فقط")
     media_type, extension = detected
+    safe_name = ntpath.basename(posixpath.basename(filename))
     return {
         "content": content, "media_type": media_type, "extension": extension,
-        "original_filename": filename[:240], "size_bytes": len(content),
+        "original_filename": safe_name[:240], "size_bytes": len(content),
         "sha256": hashlib.sha256(content).hexdigest(),
     }
 

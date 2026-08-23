@@ -211,7 +211,7 @@ def test_procurement_kpis_keep_financial_ledgers_independent():
     ]
 
 
-def test_project_hub_uses_direct_purchase_business_id_for_payments(s):
+def test_project_hub_uses_direct_purchase_business_id_for_payments(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     project_id = f"T-KPI-PROJECT-{suffix}"
     purchase_pk = f"T-KPI-PURCHASE-PK-{suffix}"
@@ -235,7 +235,7 @@ def test_project_hub_uses_direct_purchase_business_id_for_payments(s):
     try:
         hub = s.get(
             f"{API}/workflow/projects/{project_id}/procurement-hub",
-            headers={"X-Internal-Token": "test-internal-token"},
+            headers={"X-Internal-Token": "test-internal-token", **admin_headers},
         )
         assert hub.status_code == 200, hub.text
         kpis = hub.json()["kpis"]
@@ -251,16 +251,16 @@ def test_project_hub_uses_direct_purchase_business_id_for_payments(s):
 
 
 # ---------- Entity list counts ----------
-def test_entity_lists(s):
-    suppliers = s.get(f"{API}/suppliers").json()
+def test_entity_lists(s, admin_headers):
+    suppliers = s.get(f"{API}/suppliers", headers=admin_headers).json()
     assert len(suppliers) == 17
     assert "formal_po_total" not in suppliers[0]
-    assert len(s.get(f"{API}/customers").json()) == 2
-    assert len(s.get(f"{API}/projects").json()) == 2
-    assert len(s.get(f"{API}/items").json()) == 15
+    assert len(s.get(f"{API}/customers", headers=admin_headers).json()) == 2
+    assert len(s.get(f"{API}/projects", headers=admin_headers).json()) == 2
+    assert len(s.get(f"{API}/items", headers=admin_headers).json()) == 15
 
 
-def test_supplier_list_exposes_grouped_id_linked_procurement_activity(s):
+def test_supplier_list_exposes_grouped_id_linked_procurement_activity(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     supplier_id = f"T-SUP-KPI-{suffix}"
     created_ids = []
@@ -312,7 +312,7 @@ def test_supplier_list_exposes_grouped_id_linked_procurement_activity(s):
         created_ids = [row.id for row in purchases + orders]
     try:
         response = s.get(
-            f"{API}/suppliers", params={"include_procurement": "true"},
+            f"{API}/suppliers", params={"include_procurement": "true"}, headers=admin_headers,
         )
         assert response.status_code == 200
         supplier = next(row for row in response.json() if row["id"] == supplier_id)
@@ -336,8 +336,8 @@ def test_supplier_list_exposes_grouped_id_linked_procurement_activity(s):
                 session.delete(supplier)
 
 
-def test_legacy_item_categories_are_exposed_safely(s):
-    items = s.get(f"{API}/items").json()
+def test_legacy_item_categories_are_exposed_safely(s, admin_headers):
+    items = s.get(f"{API}/items", headers=admin_headers).json()
     assert items
     for item in items:
         assert item["main_category"] == item["category"]
@@ -349,7 +349,7 @@ def test_legacy_item_categories_are_exposed_safely(s):
         assert "last_supplier" in item
 
 
-def test_item_category_subcategory_and_name_filtering(s):
+def test_item_category_subcategory_and_name_filtering(s, admin_headers):
     created = []
     try:
         fixtures = [
@@ -368,11 +368,12 @@ def test_item_category_subcategory_and_name_filtering(s):
                     "specifications": f"SPEC_{name}",
                     "unit": unit,
                 },
+                headers=admin_headers,
             )
             assert response.status_code == 200, response.text
             created.append(response.json())
 
-        by_main = s.get(f"{API}/items", params={"main_category": "مواد"}).json()
+        by_main = s.get(f"{API}/items", params={"main_category": "مواد"}, headers=admin_headers).json()
         assert {item["name"] for item in by_main} >= {
             "TEST_FILTER_CEMENT",
             "TEST_FILTER_SAND",
@@ -382,6 +383,7 @@ def test_item_category_subcategory_and_name_filtering(s):
         by_subcategory = s.get(
             f"{API}/items",
             params={"main_category": "مواد", "subcategory": "أسمنت"},
+            headers=admin_headers,
         ).json()
         assert [item["name"] for item in by_subcategory] == ["TEST_FILTER_CEMENT"]
 
@@ -392,6 +394,7 @@ def test_item_category_subcategory_and_name_filtering(s):
                 "subcategory": "أسمنت",
                 "brand": "Brand A",
             },
+            headers=admin_headers,
         ).json()
         assert [item["product_name"] for item in by_brand] == ["TEST_FILTER_CEMENT"]
 
@@ -402,18 +405,19 @@ def test_item_category_subcategory_and_name_filtering(s):
                 "subcategory": "ركام",
                 "search": "sand",
             },
+            headers=admin_headers,
         ).json()
         assert [item["name"] for item in by_name] == ["TEST_FILTER_SAND"]
 
         by_specification = s.get(
-            f"{API}/items", params={"search": "SPEC_TEST_FILTER_CABLE"}
+            f"{API}/items", params={"search": "SPEC_TEST_FILTER_CABLE"}, headers=admin_headers,
         ).json()
         assert [item["product_name"] for item in by_specification] == [
             "TEST_FILTER_CABLE"
         ]
     finally:
         for item in created:
-            s.delete(f"{API}/items/{item['id']}")
+            s.delete(f"{API}/items/{item['id']}", headers=admin_headers)
 
 
 # ---------- CRUD suppliers/customers/projects/items with autocode + dup ----------
@@ -426,14 +430,14 @@ def test_item_category_subcategory_and_name_filtering(s):
         ("items", "ITM-"),
     ],
 )
-def test_entity_crud(s, coll, prefix):
+def test_entity_crud(s, coll, prefix, admin_headers):
     name = f"TEST_{coll}_entity"
     # cleanup pre
-    existing = s.get(f"{API}/{coll}").json()
+    existing = s.get(f"{API}/{coll}", headers=admin_headers).json()
     for e in existing:
         if e.get("name") == name:
-            s.delete(f"{API}/{coll}/{e['id']}")
-    r = s.post(f"{API}/{coll}", json={"name": name})
+            s.delete(f"{API}/{coll}/{e['id']}", headers=admin_headers)
+    r = s.post(f"{API}/{coll}", json={"name": name}, headers=admin_headers)
     assert r.status_code == 200, r.text
     created = r.json()
     assert created["name"] == name
@@ -442,17 +446,17 @@ def test_entity_crud(s, coll, prefix):
     eid = created["id"]
 
     # duplicate name
-    dup = s.post(f"{API}/{coll}", json={"name": name})
+    dup = s.post(f"{API}/{coll}", json={"name": name}, headers=admin_headers)
     assert dup.status_code == 409
     assert "بالفعل" in dup.json().get("detail", "")
 
     # update
-    up = s.put(f"{API}/{coll}/{eid}", json={"name": name + "_upd"})
+    up = s.put(f"{API}/{coll}/{eid}", json={"name": name + "_upd"}, headers=admin_headers)
     assert up.status_code == 200
     assert up.json()["name"] == name + "_upd"
 
     # delete
-    d = s.delete(f"{API}/{coll}/{eid}")
+    d = s.delete(f"{API}/{coll}/{eid}", headers=admin_headers)
     assert d.status_code == 200
 
 
@@ -466,7 +470,7 @@ def test_entity_crud(s, coll, prefix):
     ],
 )
 def test_business_codes_ignore_input_are_immutable_and_are_never_reused(
-    s, coll, prefix
+    s, coll, prefix, admin_headers
 ):
     first_name = f"TEST_CODE_FIRST_{coll}"
     second_name = f"TEST_CODE_SECOND_{coll}"
@@ -479,6 +483,7 @@ def test_business_codes_ignore_input_are_immutable_and_are_never_reused(
                 "product_name": first_name,
                 "code": "MANUAL-999999",
             },
+            headers=admin_headers,
         )
         assert first.status_code == 200, first.text
         first_body = first.json()
@@ -493,11 +498,12 @@ def test_business_codes_ignore_input_are_immutable_and_are_never_reused(
                 "product_name": first_body.get("product_name"),
                 "code": "CHANGED-999999",
             },
+            headers=admin_headers,
         )
         assert updated.status_code == 200, updated.text
         assert updated.json()["code"] == first_body["code"]
 
-        assert s.delete(f"{API}/{coll}/{first_body['id']}").status_code == 200
+        assert s.delete(f"{API}/{coll}/{first_body['id']}", headers=admin_headers).status_code == 200
         created_ids.remove(first_body["id"])
         engine.dispose()  # New connections simulate application restart.
 
@@ -507,6 +513,7 @@ def test_business_codes_ignore_input_are_immutable_and_are_never_reused(
                 "name": second_name,
                 "product_name": second_name,
             },
+            headers=admin_headers,
         )
         assert second.status_code == 200, second.text
         second_body = second.json()
@@ -517,7 +524,7 @@ def test_business_codes_ignore_input_are_immutable_and_are_never_reused(
         )
     finally:
         for entity_id in created_ids:
-            s.delete(f"{API}/{coll}/{entity_id}")
+            s.delete(f"{API}/{coll}/{entity_id}", headers=admin_headers)
 
 
 def test_business_code_reservations_are_unique_under_concurrency():
@@ -674,7 +681,7 @@ def test_direct_payment_sequence_respects_history_concurrency_and_restart():
 
 
 @pytest.mark.parametrize("coll", ["suppliers", "customers"])
-def test_phone_is_optional_text_and_preserves_leading_zero_in_lists(s, coll):
+def test_phone_is_optional_text_and_preserves_leading_zero_in_lists(s, coll, admin_headers):
     with_phone_name = f"TEST_PHONE_{coll}"
     without_phone_name = f"TEST_EMPTY_PHONE_{coll}"
     created_ids = []
@@ -685,6 +692,7 @@ def test_phone_is_optional_text_and_preserves_leading_zero_in_lists(s, coll):
                 "name": with_phone_name,
                 "phone": "01001234567",
             },
+            headers=admin_headers,
         )
         without_phone = s.post(
             f"{API}/{coll}",
@@ -692,17 +700,18 @@ def test_phone_is_optional_text_and_preserves_leading_zero_in_lists(s, coll):
                 "name": without_phone_name,
                 "phone": "",
             },
+            headers=admin_headers,
         )
         assert with_phone.status_code == 200, with_phone.text
         assert without_phone.status_code == 200, without_phone.text
         created_ids.extend([with_phone.json()["id"], without_phone.json()["id"]])
 
-        listed = {row["name"]: row for row in s.get(f"{API}/{coll}").json()}
+        listed = {row["name"]: row for row in s.get(f"{API}/{coll}", headers=admin_headers).json()}
         assert listed[with_phone_name]["phone"] == "01001234567"
         assert listed[without_phone_name]["phone"] == ""
     finally:
         for entity_id in created_ids:
-            s.delete(f"{API}/{coll}/{entity_id}")
+            s.delete(f"{API}/{coll}/{entity_id}", headers=admin_headers)
 
 
 def test_business_code_sequence_sqlite_migration_preserves_existing_rows(tmp_path):
@@ -997,16 +1006,16 @@ def test_supplier_price_comparison_sqlite_migration_is_additive(tmp_path):
 
 def test_supplier_price_comparison_save_reopen_edit_export_and_persistence(s, admin_headers):
     before = {
-        "suppliers": len(s.get(f"{API}/suppliers").json()),
-        "customers": len(s.get(f"{API}/customers").json()),
-        "projects": len(s.get(f"{API}/projects").json()),
-        "items": len(s.get(f"{API}/items").json()),
-        "purchases": len(s.get(f"{API}/purchases").json()),
-        "payments": len(s.get(f"{API}/payments").json()),
+        "suppliers": len(s.get(f"{API}/suppliers", headers=admin_headers).json()),
+        "customers": len(s.get(f"{API}/customers", headers=admin_headers).json()),
+        "projects": len(s.get(f"{API}/projects", headers=admin_headers).json()),
+        "items": len(s.get(f"{API}/items", headers=admin_headers).json()),
+        "purchases": len(s.get(f"{API}/purchases", headers=admin_headers).json()),
+        "payments": len(s.get(f"{API}/payments", headers=admin_headers).json()),
     }
-    items = s.get(f"{API}/items").json()[:2]
-    suppliers = s.get(f"{API}/suppliers").json()[:3]
-    project = s.get(f"{API}/projects").json()[0]
+    items = s.get(f"{API}/items", headers=admin_headers).json()[:2]
+    suppliers = s.get(f"{API}/suppliers", headers=admin_headers).json()[:3]
+    project = s.get(f"{API}/projects", headers=admin_headers).json()[0]
 
     def offer(item, supplier, price, delivery, **overrides):
         return {
@@ -1085,7 +1094,7 @@ def test_supplier_price_comparison_save_reopen_edit_export_and_persistence(s, ad
     assert supplier_three["available_products"] == 0
 
     comparison_id = detail["id"]
-    reopened = s.get(f"{API}/price-comparisons/{comparison_id}")
+    reopened = s.get(f"{API}/price-comparisons/{comparison_id}", headers=admin_headers)
     assert reopened.status_code == 200
     assert reopened.json()["comparison_number"] == detail["comparison_number"]
 
@@ -1102,11 +1111,11 @@ def test_supplier_price_comparison_save_reopen_edit_export_and_persistence(s, ad
     assert len(updated.json()["rows"]) == 5
     assert updated.json()["rows"][0]["unit_price"] == 85
 
-    listing = s.get(f"{API}/price-comparisons").json()
+    listing = s.get(f"{API}/price-comparisons", headers=admin_headers).json()
     listed = next(row for row in listing if row["id"] == comparison_id)
     assert listed["row_count"] == 5
 
-    exported = s.get(f"{API}/price-comparisons/{comparison_id}/export.xlsx")
+    exported = s.get(f"{API}/price-comparisons/{comparison_id}/export.xlsx", headers=admin_headers)
     assert exported.status_code == 200
     assert "spreadsheetml" in exported.headers["content-type"]
     workbook = load_workbook(io.BytesIO(exported.content), read_only=True)
@@ -1114,28 +1123,28 @@ def test_supplier_price_comparison_save_reopen_edit_export_and_persistence(s, ad
     assert workbook["مقارنة المنتجات"].max_row == 6
 
     engine.dispose()
-    persisted = s.get(f"{API}/price-comparisons/{comparison_id}")
+    persisted = s.get(f"{API}/price-comparisons/{comparison_id}", headers=admin_headers)
     assert persisted.status_code == 200
     assert persisted.json()["notes"] == "تم التعديل"
     assert len(persisted.json()["rows"]) == 5
 
     after = {
-        "suppliers": len(s.get(f"{API}/suppliers").json()),
-        "customers": len(s.get(f"{API}/customers").json()),
-        "projects": len(s.get(f"{API}/projects").json()),
-        "items": len(s.get(f"{API}/items").json()),
-        "purchases": len(s.get(f"{API}/purchases").json()),
-        "payments": len(s.get(f"{API}/payments").json()),
+        "suppliers": len(s.get(f"{API}/suppliers", headers=admin_headers).json()),
+        "customers": len(s.get(f"{API}/customers", headers=admin_headers).json()),
+        "projects": len(s.get(f"{API}/projects", headers=admin_headers).json()),
+        "items": len(s.get(f"{API}/items", headers=admin_headers).json()),
+        "purchases": len(s.get(f"{API}/purchases", headers=admin_headers).json()),
+        "payments": len(s.get(f"{API}/payments", headers=admin_headers).json()),
     }
     assert after == before
 
 
 def test_manual_comparison_rows_persist_without_touching_master_data(s, admin_headers):
-    before_items = len(s.get(f"{API}/items").json())
-    before_suppliers = len(s.get(f"{API}/suppliers").json())
-    system_item = s.get(f"{API}/items").json()[0]
-    system_supplier = s.get(f"{API}/suppliers").json()[0]
-    project = s.get(f"{API}/projects").json()[0]
+    before_items = len(s.get(f"{API}/items", headers=admin_headers).json())
+    before_suppliers = len(s.get(f"{API}/suppliers", headers=admin_headers).json())
+    system_item = s.get(f"{API}/items", headers=admin_headers).json()[0]
+    system_supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
+    project = s.get(f"{API}/projects", headers=admin_headers).json()[0]
     manual_row = {
         "item_id": "",
         "product_name": "TEST_MANUAL_PRODUCT",
@@ -1174,8 +1183,8 @@ def test_manual_comparison_rows_persist_without_touching_master_data(s, admin_he
     assert stored["subcategory"] == "TEST_MANUAL_SUB"
     assert stored["specifications"] == "TEST_MANUAL_SPEC"
     assert stored["final_total"] == 212.2
-    assert len(s.get(f"{API}/items").json()) == before_items
-    assert len(s.get(f"{API}/suppliers").json()) == before_suppliers
+    assert len(s.get(f"{API}/items", headers=admin_headers).json()) == before_items
+    assert len(s.get(f"{API}/suppliers", headers=admin_headers).json()) == before_suppliers
 
     edited_manual = {**manual_row, "unit_price": 110, "notes": "TEST_EDITED"}
     system_row = {
@@ -1215,11 +1224,11 @@ def test_manual_comparison_rows_persist_without_touching_master_data(s, admin_he
     assert deleted.status_code == 200, deleted.text
     assert len(deleted.json()["rows"]) == 1
     assert deleted.json()["rows"][0]["item_id"] == system_item["id"]
-    assert len(s.get(f"{API}/items").json()) == before_items
-    assert len(s.get(f"{API}/suppliers").json()) == before_suppliers
+    assert len(s.get(f"{API}/items", headers=admin_headers).json()) == before_items
+    assert len(s.get(f"{API}/suppliers", headers=admin_headers).json()) == before_suppliers
 
 
-def test_product_update_preserves_legacy_item_name(s):
+def test_product_update_preserves_legacy_item_name(s, admin_headers):
     created = s.post(
         f"{API}/items",
         json={
@@ -1230,6 +1239,7 @@ def test_product_update_preserves_legacy_item_name(s):
             "specifications": "TEST_SPEC",
             "unit": "قطعة",
         },
+        headers=admin_headers,
     )
     assert created.status_code == 200, created.text
     item = created.json()
@@ -1240,33 +1250,34 @@ def test_product_update_preserves_legacy_item_name(s):
                 "product_name": "TEST_PRODUCT_UPDATED",
                 "brand": "TEST_BRAND_2",
             },
+            headers=admin_headers,
         )
         assert updated.status_code == 200, updated.text
         assert updated.json()["product_name"] == "TEST_PRODUCT_UPDATED"
         assert updated.json()["brand"] == "TEST_BRAND_2"
         assert updated.json()["name"] == "TEST_PRODUCT_ORIGINAL"
     finally:
-        s.delete(f"{API}/items/{item['id']}")
+        s.delete(f"{API}/items/{item['id']}", headers=admin_headers)
 
 
 # ---------- Settings ----------
-def test_settings(s):
-    r = s.get(f"{API}/settings")
+def test_settings(s, admin_headers):
+    r = s.get(f"{API}/settings", headers=admin_headers)
     assert r.status_code == 200
     data = r.json()
     assert len(data) == 12
     key = data[0]["key"]
     orig = data[0]["values"]
     new_vals = list(orig) + ["TEST_val"]
-    up = s.put(f"{API}/settings/{key}", json={"values": new_vals})
+    up = s.put(f"{API}/settings/{key}", json={"values": new_vals}, headers=admin_headers)
     assert up.status_code == 200
     assert "TEST_val" in up.json()["values"]
     # restore
-    s.put(f"{API}/settings/{key}", json={"values": orig})
+    s.put(f"{API}/settings/{key}", json={"values": orig}, headers=admin_headers)
 
 
-def test_system_diagnostics_excludes_secrets_and_reports_health(s):
-    response = s.get(f"{API}/system/diagnostics")
+def test_system_diagnostics_excludes_secrets_and_reports_health(s, admin_headers):
+    response = s.get(f"{API}/system/diagnostics", headers=admin_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["version"] == "0.3.0"
@@ -1278,8 +1289,8 @@ def test_system_diagnostics_excludes_secrets_and_reports_health(s):
     assert "DATABASE_URL" not in rendered
 
 
-def test_settings_backup_is_verified_and_does_not_return_records(s):
-    response = s.post(f"{API}/system/backup")
+def test_settings_backup_is_verified_and_does_not_return_records(s, admin_headers):
+    response = s.post(f"{API}/system/backup", headers=admin_headers)
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["status"] == "ok"
@@ -1294,13 +1305,13 @@ def test_settings_backup_is_verified_and_does_not_return_records(s):
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
-def test_open_folder_rejects_unknown_target(s):
-    assert s.post(f"{API}/system/open-folder/secrets").status_code == 404
+def test_open_folder_rejects_unknown_target(s, admin_headers):
+    assert s.post(f"{API}/system/open-folder/secrets", headers=admin_headers).status_code == 404
 
 
 # ---------- Excel export ----------
-def test_export_excel(s):
-    r = s.get(f"{API}/export/excel", timeout=60)
+def test_export_excel(s, admin_headers):
+    r = s.get(f"{API}/export/excel", timeout=60, headers=admin_headers)
     assert r.status_code == 200
     assert "spreadsheetml" in r.headers.get("content-type", "")
     assert len(r.content) > 1000
@@ -1321,7 +1332,7 @@ def test_export_excel(s):
     register = workbook["Purchase Register"]
     assert register.freeze_panes == "A2"
     assert register.auto_filter.ref == "A1:J1"
-    assert register.max_row - 1 == len(s.get(f"{API}/purchases").json())
+    assert register.max_row - 1 == len(s.get(f"{API}/purchases", headers=admin_headers).json())
     assert register["B2"].number_format == "yyyy-mm-dd"
     assert "EGP" in register["G2"].number_format
     assert register.column_dimensions["D"].width >= len("المورد")
@@ -1330,11 +1341,11 @@ def test_export_excel(s):
 
 # ---------- Purchase creation, dup, validation, cascade + Payment flow ----------
 @pytest.fixture(scope="module")
-def ids(s):
-    suppliers = s.get(f"{API}/suppliers").json()
-    customers = s.get(f"{API}/customers").json()
-    projects = s.get(f"{API}/projects").json()
-    items = s.get(f"{API}/items").json()
+def ids(s, admin_headers):
+    suppliers = s.get(f"{API}/suppliers", headers=admin_headers).json()
+    customers = s.get(f"{API}/customers", headers=admin_headers).json()
+    projects = s.get(f"{API}/projects", headers=admin_headers).json()
+    items = s.get(f"{API}/items", headers=admin_headers).json()
     return {
         "supplier_id": suppliers[0]["id"],
         "supplier_name": suppliers[0]["name"],
@@ -1367,10 +1378,10 @@ def _payload(ids, inv, qty=2, price=100, disc=10, vat=14):
     }
 
 
-def test_purchase_create_and_compute(s, ids):
-    ph_before = len(s.get(f"{API}/price-history").json())
+def test_purchase_create_and_compute(s, ids, admin_headers):
+    ph_before = len(s.get(f"{API}/price-history", headers=admin_headers).json())
     payload = _payload(ids, "TEST_INV_001", qty=2, price=100, disc=10, vat=14)
-    r = s.post(f"{API}/purchases", json=payload)
+    r = s.post(f"{API}/purchases", json=payload, headers=admin_headers)
     assert r.status_code == 200, r.text
     p = r.json()
     # line = 2*100*0.9*1.14 = 205.2
@@ -1385,14 +1396,14 @@ def test_purchase_create_and_compute(s, ids):
     assert p["purchase_id"] != "PUR-000001"
     created_purchase_ids.append(p["purchase_id"])
     # price history grew
-    ph_after = len(s.get(f"{API}/price-history").json())
+    ph_after = len(s.get(f"{API}/price-history", headers=admin_headers).json())
     assert ph_after == ph_before + 1
     # GET verification
-    got = s.get(f"{API}/purchases/{p['purchase_id']}").json()
+    got = s.get(f"{API}/purchases/{p['purchase_id']}", headers=admin_headers).json()
     assert got["invoice_total"] == p["invoice_total"]
     assert len(got["items"]) == 1
     master_item = next(
-        item for item in s.get(f"{API}/items").json() if item["id"] == ids["item_id"]
+        item for item in s.get(f"{API}/items", headers=admin_headers).json() if item["id"] == ids["item_id"]
     )
     assert got["items"][0]["unit"] == master_item["unit"]
     assert got["items"][0]["product_name"] == master_item["product_name"]
@@ -1400,7 +1411,7 @@ def test_purchase_create_and_compute(s, ids):
     assert got["items"][0]["specifications"] == master_item["specifications"]
 
 
-def test_purchase_multi_line_rounding_and_totals(s, ids):
+def test_purchase_multi_line_rounding_and_totals(s, ids, admin_headers):
     payload = _payload(ids, "TEST_MULTI_001", qty=3, price=10.005, disc=5, vat=14)
     payload["shipping_cost"] = 0.005
     payload["items"].append(
@@ -1412,10 +1423,10 @@ def test_purchase_multi_line_rounding_and_totals(s, ids):
             "vat_pct": 14,
         }
     )
-    response = s.post(f"{API}/purchases", json=payload)
+    response = s.post(f"{API}/purchases", json=payload, headers=admin_headers)
     assert response.status_code == 200, response.text
     purchase = response.json()
-    detail = s.get(f"{API}/purchases/{purchase['purchase_id']}").json()
+    detail = s.get(f"{API}/purchases/{purchase['purchase_id']}", headers=admin_headers).json()
     assert len(detail["items"]) == 2
     assert purchase["invoice_total"] == round(
         sum(line["line_total"] for line in detail["items"])
@@ -1423,11 +1434,11 @@ def test_purchase_multi_line_rounding_and_totals(s, ids):
         + purchase["other_costs"],
         2,
     )
-    assert s.delete(f"{API}/purchases/{purchase['purchase_id']}").status_code == 200
+    assert s.delete(f"{API}/purchases/{purchase['purchase_id']}", headers=admin_headers).status_code == 200
 
 
-def test_purchase_duplicate(s, ids):
-    r = s.post(f"{API}/purchases", json=_payload(ids, "TEST_INV_001"))
+def test_purchase_duplicate(s, ids, admin_headers):
+    r = s.post(f"{API}/purchases", json=_payload(ids, "TEST_INV_001"), headers=admin_headers)
     assert r.status_code == 409
     detail = r.json()["detail"]
     assert detail["code"] == "duplicate_supplier_invoice"
@@ -1435,49 +1446,49 @@ def test_purchase_duplicate(s, ids):
     assert detail["existing_purchase_id"] == created_purchase_ids[0]
 
     formatted = s.post(
-        f"{API}/purchases", json=_payload(ids, "  test_inv_٠٠١  ")
+        f"{API}/purchases", json=_payload(ids, "  test_inv_٠٠١  "), headers=admin_headers,
     )
     assert formatted.status_code == 409
     assert formatted.json()["detail"]["existing_purchase_id"] == created_purchase_ids[0]
 
 
-def test_purchase_validation(s, ids):
+def test_purchase_validation(s, ids, admin_headers):
     # missing supplier
     p = _payload(ids, "TEST_INV_X")
     p["supplier_id"] = "nonexistent"
-    r = s.post(f"{API}/purchases", json=p)
+    r = s.post(f"{API}/purchases", json=p, headers=admin_headers)
     assert r.status_code == 422
     # missing/invalid project IDs cannot be replaced by display names
     p = _payload(ids, "TEST_INV_BAD_PROJECT")
     p["project_id"] = "nonexistent-project"
     p["project_name"] = "اسم مشروع موجود لا يعوض المعرّف"
-    assert s.post(f"{API}/purchases", json=p).status_code == 422
+    assert s.post(f"{API}/purchases", json=p, headers=admin_headers).status_code == 422
     p = _payload(ids, "TEST_INV_MISSING_PROJECT")
     p.pop("project_id")
-    assert s.post(f"{API}/purchases", json=p).status_code == 422
+    assert s.post(f"{API}/purchases", json=p, headers=admin_headers).status_code == 422
     # empty items
     p = _payload(ids, "TEST_INV_Y")
     p["items"] = []
-    assert s.post(f"{API}/purchases", json=p).status_code == 422
+    assert s.post(f"{API}/purchases", json=p, headers=admin_headers).status_code == 422
     # qty <= 0
     p = _payload(ids, "TEST_INV_Z", qty=0)
-    assert s.post(f"{API}/purchases", json=p).status_code == 422
+    assert s.post(f"{API}/purchases", json=p, headers=admin_headers).status_code == 422
     # price <= 0
     p = _payload(ids, "TEST_INV_W", price=0)
-    assert s.post(f"{API}/purchases", json=p).status_code == 422
+    assert s.post(f"{API}/purchases", json=p, headers=admin_headers).status_code == 422
     # percentages and additional costs are bounded
     p = _payload(ids, "TEST_INV_BAD_DISCOUNT")
     p["items"][0]["discount_pct"] = 101
-    assert s.post(f"{API}/purchases", json=p).status_code == 422
+    assert s.post(f"{API}/purchases", json=p, headers=admin_headers).status_code == 422
     p = _payload(ids, "TEST_INV_BAD_TAX")
     p["items"][0]["vat_pct"] = -1
-    assert s.post(f"{API}/purchases", json=p).status_code == 422
+    assert s.post(f"{API}/purchases", json=p, headers=admin_headers).status_code == 422
     p = _payload(ids, "TEST_INV_BAD_SHIPPING")
     p["shipping_cost"] = -0.01
-    assert s.post(f"{API}/purchases", json=p).status_code == 422
+    assert s.post(f"{API}/purchases", json=p, headers=admin_headers).status_code == 422
 
 
-def test_purchase_transaction_rolls_back_on_line_history_failure(s, ids, monkeypatch):
+def test_purchase_transaction_rolls_back_on_line_history_failure(s, ids, monkeypatch, admin_headers):
     invoice = "TEST_INV_ROLLBACK"
     original_insert = LocalCollection.insert_one
 
@@ -1488,17 +1499,17 @@ def test_purchase_transaction_rolls_back_on_line_history_failure(s, ids, monkeyp
 
     monkeypatch.setattr(LocalCollection, "insert_one", fail_price_history)
     with TestClient(app, raise_server_exceptions=False) as safe_client:
-        response = safe_client.post(f"{API}/purchases", json=_payload(ids, invoice))
+        response = safe_client.post(f"{API}/purchases", json=_payload(ids, invoice), headers=admin_headers)
         assert response.status_code == 500
         assert response.json()["detail"]["code"] == "internal_error"
 
-    purchases = s.get(f"{API}/purchases").json()
+    purchases = s.get(f"{API}/purchases", headers=admin_headers).json()
     assert not any(row["invoice_number"] == invoice for row in purchases)
-    history = s.get(f"{API}/price-history").json()
+    history = s.get(f"{API}/price-history", headers=admin_headers).json()
     assert not any(row["invoice_number"] == invoice for row in history)
 
 
-def test_payment_flow(s, ids):
+def test_payment_flow(s, ids, admin_headers):
     assert created_purchase_ids, "purchase must be created first"
     pid = created_purchase_ids[0]
     # partial payment
@@ -1510,16 +1521,17 @@ def test_payment_flow(s, ids):
             "amount_paid": 100,
             "submission_token": "payment-test-token-001",
         },
+        headers=admin_headers,
     )
     assert r.status_code == 200, r.text
     pay1 = r.json()
     assert pay1["payment_id"].startswith("PAY-")
     assert len(pay1["payment_id"]) == 10
-    got = s.get(f"{API}/purchases/{pid}").json()
+    got = s.get(f"{API}/purchases/{pid}", headers=admin_headers).json()
     assert got["payment_status"] == "مدفوع جزئي"
     assert round(got["remaining"], 2) == round(205.2 - 100, 2)
 
-    payment_count = len(s.get(f"{API}/payments").json())
+    payment_count = len(s.get(f"{API}/payments", headers=admin_headers).json())
     replay = s.post(
         f"{API}/payments",
         json={
@@ -1528,11 +1540,12 @@ def test_payment_flow(s, ids):
             "amount_paid": 100,
             "submission_token": "payment-test-token-001",
         },
+        headers=admin_headers,
     )
     assert replay.status_code == 200
     assert replay.json()["id"] == pay1["id"]
     assert replay.json()["idempotent_replay"] is True
-    assert len(s.get(f"{API}/payments").json()) == payment_count
+    assert len(s.get(f"{API}/payments", headers=admin_headers).json()) == payment_count
 
     # exceed remaining
     r_over = s.post(
@@ -1542,6 +1555,7 @@ def test_payment_flow(s, ids):
             "payment_date": "2025-01-16",
             "amount_paid": 999,
         },
+        headers=admin_headers,
     )
     assert r_over.status_code == 422
 
@@ -1553,35 +1567,36 @@ def test_payment_flow(s, ids):
             "payment_date": "2025-01-17",
             "amount_paid": 105.2,
         },
+        headers=admin_headers,
     )
     assert r2.status_code == 200
     assert len(r2.json()["payment_id"]) == 10
     assert r2.json()["payment_id"] != pay1["payment_id"]
-    got2 = s.get(f"{API}/purchases/{pid}").json()
+    got2 = s.get(f"{API}/purchases/{pid}", headers=admin_headers).json()
     assert got2["payment_status"] == "مدفوع"
 
     # delete last payment recomputes status
     pay2_id = r2.json()["id"]
-    d = s.delete(f"{API}/payments/{pay2_id}")
+    d = s.delete(f"{API}/payments/{pay2_id}", headers=admin_headers)
     assert d.status_code == 200
-    got3 = s.get(f"{API}/purchases/{pid}").json()
+    got3 = s.get(f"{API}/purchases/{pid}", headers=admin_headers).json()
     assert got3["payment_status"] == "مدفوع جزئي"
 
 
-def test_purchase_delete_cascade(s, ids):
+def test_purchase_delete_cascade(s, ids, admin_headers):
     assert created_purchase_ids
     pid = created_purchase_ids[0]
-    d = s.delete(f"{API}/purchases/{pid}")
+    d = s.delete(f"{API}/purchases/{pid}", headers=admin_headers)
     assert d.status_code == 200
-    assert s.get(f"{API}/purchases/{pid}").status_code == 404
+    assert s.get(f"{API}/purchases/{pid}", headers=admin_headers).status_code == 404
     # payments for this purchase removed
-    pays = s.get(f"{API}/payments").json()
+    pays = s.get(f"{API}/payments", headers=admin_headers).json()
     assert not any(p["purchase_id"] == pid for p in pays)
 
 
 def test_original_data_intact(s, admin_headers):
     """Ensure PUR-000001 still exists and dashboard KPIs match."""
-    r = s.get(f"{API}/purchases/PUR-000001")
+    r = s.get(f"{API}/purchases/PUR-000001", headers=admin_headers)
     assert r.status_code == 200
     d = s.get(f"{API}/dashboard", headers=admin_headers).json()
     assert d["purchase_count"] == 1
@@ -1592,7 +1607,7 @@ def test_original_data_intact(s, admin_headers):
     assert all(
         "brand" in line and "specifications" in line for line in r.json()["items"]
     )
-    history = s.get(f"{API}/price-history").json()
+    history = s.get(f"{API}/price-history", headers=admin_headers).json()
     assert history and all(row["product_name"] for row in history)
     assert all("brand" in row and "specifications" in row for row in history)
 
@@ -1741,11 +1756,11 @@ def test_public_submission_is_idempotent_and_does_not_create_purchase(s):
     assert len(s.get(f"{API}/purchases").json()) == purchases_before
 
 
-def test_internal_boundary_list_filter_and_detail(s):
+def test_internal_boundary_list_filter_and_detail(s, admin_headers):
     assert s.get(f"{API}/internal/incoming-purchase-requests").status_code == 401
     listing = s.get(
         f"{API}/internal/incoming-purchase-requests",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         params={
             "search": incoming_state["request_number"],
             "status": "new",
@@ -1758,7 +1773,7 @@ def test_internal_boundary_list_filter_and_detail(s):
     incoming_state["request_id"] = row["id"]
     detail = s.get(
         f"{API}/internal/incoming-purchase-requests/{row['id']}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert detail.status_code == 200
     body = detail.json()
@@ -1797,14 +1812,14 @@ def test_attachment_validation_storage_and_protected_view(s, admin_headers):
     assert created.status_code == 200, created.text
     listing = s.get(
         f"{API}/internal/incoming-purchase-requests",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         params={"search": created.json()["request_number"]},
     ).json()
     request_id = listing[0]["id"]
     incoming_state["attachment_request_id"] = request_id
     detail = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()
     attachment = detail["items"][0]["attachment"]
     assert attachment["original_filename"] == "specification.png"
@@ -1817,13 +1832,13 @@ def test_attachment_validation_storage_and_protected_view(s, admin_headers):
     )
     download = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}/attachments/{attachment['id']}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert download.status_code == 200
     assert download.content == png
     assert download.headers["content-type"] == "image/png"
-    project = s.get(f"{API}/projects").json()[0]
-    supplier = s.get(f"{API}/suppliers").json()[0]
+    project = s.get(f"{API}/projects", headers=admin_headers).json()[0]
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
     with SessionLocal.begin() as session:
         request_row = session.get(IncomingPurchaseRequest, request_id)
         request_row.status = "pricing"
@@ -1842,7 +1857,7 @@ def test_attachment_validation_storage_and_protected_view(s, admin_headers):
         }],
     }, headers=admin_headers)
     assert comparison.status_code == 200, comparison.text
-    comparison_detail = s.get(f"{API}/price-comparisons/{comparison.json()['id']}")
+    comparison_detail = s.get(f"{API}/price-comparisons/{comparison.json()['id']}", headers=admin_headers)
     assert comparison_detail.status_code == 200
     assert comparison_detail.json()["source_attachments"] == [{
         "id": attachment["id"], "request_item_id": detail["items"][0]["id"],
@@ -1850,26 +1865,26 @@ def test_attachment_validation_storage_and_protected_view(s, admin_headers):
         "media_type": "image/png", "size_bytes": len(png), "is_image": True,
         "view_url": f"/internal/incoming-purchase-requests/{request_id}/attachments/{attachment['id']}",
     }]
-    assert s.get(f"{API}/price-comparisons").status_code == 200
+    assert s.get(f"{API}/price-comparisons", headers=admin_headers).status_code == 200
 
 
-def test_internal_assignment_notes_status_and_notifications(s):
+def test_internal_assignment_notes_status_and_notifications(s, admin_headers):
     request_id = incoming_state["request_id"]
     assignment = s.patch(
         f"{API}/internal/incoming-purchase-requests/{request_id}/assignment",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         json={"employee": "موظف المشتريات"},
     )
     assert assignment.status_code == 200
     note = s.post(
         f"{API}/internal/incoming-purchase-requests/{request_id}/notes",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         json={"author": "مدير المشتريات", "note": "تمت مراجعة المواصفات"},
     )
     assert note.status_code == 200
     changed = s.post(
         f"{API}/internal/incoming-purchase-requests/{request_id}/status",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         json={
             "status": "under_review",
             "changed_by": "مدير المشتريات",
@@ -1887,20 +1902,20 @@ def test_internal_assignment_notes_status_and_notifications(s):
     ):
         blocked = s.post(
             f"{API}/internal/incoming-purchase-requests/{request_id}/status",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
             json={"status": protected_status},
         )
         assert blocked.status_code == 409
     held = s.post(
         f"{API}/internal/incoming-purchase-requests/{request_id}/status",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         json={"status": "hold", "changed_by": "مدير المشتريات"},
     )
     assert held.status_code == 200
     assert held.json()["status"] == "hold"
     resumed = s.post(
         f"{API}/internal/incoming-purchase-requests/{request_id}/status",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         json={"status": "under_review", "changed_by": "مدير المشتريات"},
     )
     assert resumed.status_code == 200
@@ -1908,20 +1923,20 @@ def test_internal_assignment_notes_status_and_notifications(s):
     assert (
         s.post(
             f"{API}/internal/incoming-purchase-requests/{request_id}/status",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
             json={"status": "not-a-status"},
         ).status_code
         == 422
     )
     notifications = s.get(
         f"{API}/internal/incoming-purchase-requests/notifications?unread_only=true",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert notifications.status_code == 200
     assert any(item["entity_id"] == request_id for item in notifications.json())
 
 
-def test_terminal_and_historical_request_statuses_remain_readable_but_cannot_reopen(s):
+def test_terminal_and_historical_request_statuses_remain_readable_but_cannot_reopen(s, admin_headers):
     timestamp = datetime.now(timezone.utc).isoformat()
     request_ids = {}
     with SessionLocal.begin() as session:
@@ -1941,38 +1956,38 @@ def test_terminal_and_historical_request_statuses_remain_readable_but_cannot_reo
     for status, request_id in request_ids.items():
         loaded = s.get(
             f"{API}/internal/incoming-purchase-requests/{request_id}",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
         )
         assert loaded.status_code == 200
         assert loaded.json()["status"] == status
         reopened = s.post(
             f"{API}/internal/incoming-purchase-requests/{request_id}/status",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
             json={"status": "under_review"},
         )
         assert reopened.status_code == 409
 
 
-def test_customer_and_draft_conversions_never_create_completed_purchase(s):
+def test_customer_and_draft_conversions_never_create_completed_purchase(s, admin_headers):
     request_id = incoming_state["request_id"]
-    purchases_before = len(s.get(f"{API}/purchases").json())
+    purchases_before = len(s.get(f"{API}/purchases", headers=admin_headers).json())
     customer = s.post(
         f"{API}/internal/incoming-purchase-requests/{request_id}/convert-customer",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert customer.status_code == 200, customer.text
     assert customer.json()["customer_code"].startswith("CUS-")
     document = s.post(
         f"{API}/internal/incoming-purchase-requests/{request_id}/convert",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         json={"document_type": "internal_request", "converted_by": "مدير المشتريات"},
     )
     assert document.status_code == 200, document.text
     assert document.json()["document_number"].startswith("IPR-")
-    assert len(s.get(f"{API}/purchases").json()) == purchases_before
+    assert len(s.get(f"{API}/purchases", headers=admin_headers).json()) == purchases_before
     detail = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()
     assert detail["status"] == "converted_to_purchase"
     assert detail["converted_document"]["status"] == "draft"
@@ -1980,19 +1995,19 @@ def test_customer_and_draft_conversions_never_create_completed_purchase(s):
     second_id = incoming_state["attachment_request_id"]
     draft = s.post(
         f"{API}/internal/incoming-purchase-requests/{second_id}/convert",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         json={"document_type": "purchase_draft", "converted_by": "مدير المشتريات"},
     )
     assert draft.status_code == 200
     assert draft.json()["document_number"].startswith("PDR-")
-    assert len(s.get(f"{API}/purchases").json()) == purchases_before
+    assert len(s.get(f"{API}/purchases", headers=admin_headers).json()) == purchases_before
 
 
-def test_incoming_request_persists_after_reinitialization(s):
+def test_incoming_request_persists_after_reinitialization(s, admin_headers):
     init_db()
     listing = s.get(
         f"{API}/internal/incoming-purchase-requests",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         params={"search": incoming_state["request_number"]},
     )
     assert listing.status_code == 200
@@ -2173,7 +2188,7 @@ def test_document_capture_is_safe_when_disabled(s, monkeypatch):
     assert response.status_code == 503
 
 
-def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
+def test_document_capture_review_confirmation_and_audit(s, monkeypatch, admin_headers):
     monkeypatch.setenv("DOCUMENT_EXTRACTION_ENABLED", "true")
     monkeypatch.setenv(
         "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "https://example.invalid"
@@ -2190,7 +2205,7 @@ def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
         ),
     )
 
-    master_count = len(s.get(f"{API}/items").json())
+    master_count = len(s.get(f"{API}/items", headers=admin_headers).json())
     created_master = s.post(
         f"{API}/items",
         json={
@@ -2198,6 +2213,7 @@ def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
             "brand": "Test Brand",
             "unit": "roll",
         },
+        headers=admin_headers,
     )
     assert created_master.status_code == 200
     master = created_master.json()
@@ -2222,17 +2238,17 @@ def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
             row["id"]
             for row in s.get(
                 f"{API}/internal/incoming-purchase-requests",
-                headers=INTERNAL_HEADERS,
+                headers={**INTERNAL_HEADERS, **admin_headers},
                 params={"search": result["request_number"]},
             ).json()
             if row["request_number"] == result["request_number"]
         )
         detail_url = f"{API}/internal/incoming-purchase-requests/{request_id}"
-        assert s.get(detail_url, headers=INTERNAL_HEADERS).json()["items"] == []
+        assert s.get(detail_url, headers={**INTERNAL_HEADERS, **admin_headers}).json()["items"] == []
 
         assert run_once() is True
         review_url = f"{detail_url}/documents/{result['document_id']}"
-        review = s.get(review_url, headers=INTERNAL_HEADERS)
+        review = s.get(review_url, headers={**INTERNAL_HEADERS, **admin_headers})
         assert review.status_code == 200, review.text
         extracted = review.json()["items"]
         assert review.json()["status"] == "review_required"
@@ -2240,16 +2256,16 @@ def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
         assert extracted[0]["candidates"][0]["item_id"] == master["id"]
 
         assert (
-            s.post(f"{review_url}/retry", headers=INTERNAL_HEADERS).status_code == 200
+            s.post(f"{review_url}/retry", headers={**INTERNAL_HEADERS, **admin_headers}).status_code == 200
         )
-        assert s.get(review_url, headers=INTERNAL_HEADERS).json()["items"] == []
+        assert s.get(review_url, headers={**INTERNAL_HEADERS, **admin_headers}).json()["items"] == []
         assert run_once() is True
-        extracted = s.get(review_url, headers=INTERNAL_HEADERS).json()["items"]
+        extracted = s.get(review_url, headers={**INTERNAL_HEADERS, **admin_headers}).json()["items"]
 
         assert (
             s.patch(
                 f"{review_url}/items/{extracted[0]['id']}",
-                headers=INTERNAL_HEADERS,
+                headers={**INTERNAL_HEADERS, **admin_headers},
                 json={
                     "quantity": 14,
                     "selected_item_id": master["id"],
@@ -2260,7 +2276,7 @@ def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
         )
         added = s.post(
             f"{review_url}/items",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
             json={
                 "product_name": "DOC_CAPTURE_COPPER_CABLE",
                 "quantity": None,
@@ -2268,14 +2284,14 @@ def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
             },
         )
         assert added.status_code == 200
-        flagged = s.get(review_url, headers=INTERNAL_HEADERS).json()["items"]
+        flagged = s.get(review_url, headers={**INTERNAL_HEADERS, **admin_headers}).json()["items"]
         added_flag = next(row for row in flagged if row["id"] == added.json()["id"])
         assert added_flag["validation"]["missing_quantity"] is True
         assert added_flag["validation"]["missing_unit"] is True
         assert added_flag["validation"]["suspected_duplicate"] is True
         split = s.post(
             f"{review_url}/items/{added.json()['id']}/split",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
             json={
                 "first": {"product_name": "Split A", "quantity": 1, "unit": "roll"},
                 "second": {"product_name": "Split B", "quantity": 1, "unit": "roll"},
@@ -2284,43 +2300,43 @@ def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
         assert split.status_code == 200
         merge = s.post(
             f"{review_url}/items/merge",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
             json={"item_ids": [added.json()["id"], split.json()["created_id"]]},
         )
         assert merge.status_code == 200
         assert (
             s.delete(
                 f"{review_url}/items/{merge.json()['target_id']}",
-                headers=INTERNAL_HEADERS,
+                headers={**INTERNAL_HEADERS, **admin_headers},
             ).status_code
             == 200
         )
-        assert len(s.get(review_url, headers=INTERNAL_HEADERS).json()["items"]) == 1
+        assert len(s.get(review_url, headers={**INTERNAL_HEADERS, **admin_headers}).json()["items"]) == 1
         creation_request = s.post(
             f"{review_url}/items/{extracted[0]['id']}/master-creation-request",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
             json={
                 "requested_by": "Reviewer",
                 "confirmation": "REQUEST_MASTER_ITEM_CREATION",
             },
         )
         assert creation_request.status_code == 200
-        assert len(s.get(f"{API}/items").json()) == master_count + 1
+        assert len(s.get(f"{API}/items", headers=admin_headers).json()) == master_count + 1
 
         confirm = s.post(
             f"{review_url}/confirm",
-            headers=INTERNAL_HEADERS,
+            headers={**INTERNAL_HEADERS, **admin_headers},
             json={"confirmed_by": "Reviewer", "confirmation": "CONFIRM_REVIEWED_ITEMS"},
         )
         assert confirm.status_code == 200, confirm.text
         assert confirm.json()["items_added"] == 1
-        detail_after = s.get(detail_url, headers=INTERNAL_HEADERS).json()
+        detail_after = s.get(detail_url, headers={**INTERNAL_HEADERS, **admin_headers}).json()
         assert len(detail_after["items"]) == 1
         assert detail_after["items"][0]["quantity"] == 14
         assert (
             s.post(
                 f"{review_url}/confirm",
-                headers=INTERNAL_HEADERS,
+                headers={**INTERNAL_HEADERS, **admin_headers},
                 json={
                     "confirmed_by": "Reviewer",
                     "confirmation": "CONFIRM_REVIEWED_ITEMS",
@@ -2345,7 +2361,7 @@ def test_document_capture_review_confirmation_and_audit(s, monkeypatch):
         s.delete(f"{API}/items/{master['id']}")
 
 
-def test_document_upload_security_and_cancel(s, monkeypatch):
+def test_document_upload_security_and_cancel(s, monkeypatch, admin_headers):
     monkeypatch.setenv("DOCUMENT_EXTRACTION_ENABLED", "true")
     monkeypatch.setenv(
         "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "https://example.invalid"
@@ -2389,7 +2405,7 @@ def test_document_upload_security_and_cancel(s, monkeypatch):
     retained_result = retained.json()
     listing = s.get(
         f"{API}/internal/incoming-purchase-requests",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         params={"search": retained_result["request_number"]},
     ).json()
     request_id = listing[0]["id"]
@@ -2397,13 +2413,13 @@ def test_document_upload_security_and_cancel(s, monkeypatch):
         f"{API}/internal/incoming-purchase-requests/{request_id}"
         f"/documents/{retained_result['document_id']}"
     )
-    review = s.get(review_url, headers=INTERNAL_HEADERS).json()
+    review = s.get(review_url, headers={**INTERNAL_HEADERS, **admin_headers}).json()
     assert review["document_type"] == "supplier_quotation"
     assert review["status"] == "uploaded"
     assert len(review["files"]) == 2
-    assert s.post(f"{review_url}/retry", headers=INTERNAL_HEADERS).status_code == 409
-    assert s.post(f"{review_url}/cancel", headers=INTERNAL_HEADERS).status_code == 200
-    assert s.get(review_url, headers=INTERNAL_HEADERS).json()["status"] == "cancelled"
+    assert s.post(f"{review_url}/retry", headers={**INTERNAL_HEADERS, **admin_headers}).status_code == 409
+    assert s.post(f"{review_url}/cancel", headers={**INTERNAL_HEADERS, **admin_headers}).status_code == 200
+    assert s.get(review_url, headers={**INTERNAL_HEADERS, **admin_headers}).json()["status"] == "cancelled"
 
 
 def test_document_capture_migration_is_additive_and_backed_up(tmp_path):
@@ -2653,11 +2669,11 @@ def test_guided_project_approval_payment_revision_and_cash_workflow(s, admin_hea
                 review_status="approved", reviewed_by="engineer", reviewed_at=timestamp,
             ),
         ])
-    existing_project = s.get(f"{API}/projects").json()[0]
+    existing_project = s.get(f"{API}/projects", headers=admin_headers).json()[0]
     linked = s.post(
         f"{API}/workflow/incoming-purchase-requests/{request_id}/link-project",
         json={"project_id": existing_project["id"], "actor": "tester"},
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert linked.status_code == 200, linked.text
     with SessionLocal() as session:
@@ -2678,18 +2694,18 @@ def test_guided_project_approval_payment_revision_and_cash_workflow(s, admin_hea
     created_project = s.post(
         f"{API}/workflow/incoming-purchase-requests/{second_id}/create-project",
         json={"name": unique_project_name, "customer_name": "عميل جديد", "city": "الجيزة", "actor": "tester"},
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert created_project.status_code == 200, created_project.text
     duplicate_project = s.post(
         f"{API}/workflow/incoming-purchase-requests/{request_id}/create-project",
         json={"name": unique_project_name},
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert duplicate_project.status_code == 409
 
-    item = s.get(f"{API}/items").json()[0]
-    supplier = s.get(f"{API}/suppliers").json()[0]
+    item = s.get(f"{API}/items", headers=admin_headers).json()[0]
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
     technical = s.post(
         f"{API}/workflow/incoming-purchase-requests/{request_id}/technical-decision",
         headers={**INTERNAL_HEADERS, **admin_headers},
@@ -2796,12 +2812,12 @@ def test_guided_project_approval_payment_revision_and_cash_workflow(s, admin_hea
         "cash_reference": cash_payment["cash_reference"], "actor": "cashier",
     }).status_code == 409
 
-    hub = s.get(f"{API}/workflow/projects/{existing_project['id']}/procurement-hub", headers=INTERNAL_HEADERS)
+    hub = s.get(f"{API}/workflow/projects/{existing_project['id']}/procurement-hub", headers={**INTERNAL_HEADERS, **admin_headers})
     assert hub.status_code == 200
     assert hub.json()["kpis"]["comparison_count"] >= 3
 
 
-def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
+def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"role-engineer-{suffix}", role="procurement_engineer")
@@ -2836,9 +2852,9 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
                 review_status="approved", reviewed_by="engineer", reviewed_at=timestamp,
             ),
         ])
-    project = s.get(f"{API}/projects").json()[0]
-    items = s.get(f"{API}/items").json()[:2]
-    suppliers = s.get(f"{API}/suppliers").json()[:2]
+    project = s.get(f"{API}/projects", headers=admin_headers).json()[0]
+    items = s.get(f"{API}/items", headers=admin_headers).json()[:2]
+    suppliers = s.get(f"{API}/suppliers", headers=admin_headers).json()[:2]
     comparison_body = {
         "project_id": project["id"], "project_name": project["name"],
         "source_request_id": request_id, "source_request_number": "CLIENT-SPOOFED-REQUEST",
@@ -2864,7 +2880,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     assert denied_review.status_code == 403
     historical = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert historical.status_code == 200
     assert historical.json()["project_id"] == ""
@@ -2876,7 +2892,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     assert unlinked_review.status_code == 409
     linked = s.post(
         f"{API}/workflow/incoming-purchase-requests/{request_id}/link-project",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **responsible_headers},
         json={"project_id": project["id"], "actor": "engineer"},
     )
     assert linked.status_code == 200, linked.text
@@ -2893,7 +2909,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     )
     assert repeated_review.status_code == 200
     assert repeated_review.json()["already_recorded"] is True
-    reopened_request = s.get(f"{API}/internal/incoming-purchase-requests/{request_id}", headers=INTERNAL_HEADERS)
+    reopened_request = s.get(f"{API}/internal/incoming-purchase-requests/{request_id}", headers={**INTERNAL_HEADERS, **admin_headers})
     assert reopened_request.status_code == 200
     assert reopened_request.json()["status"] == "pricing"
     assert reopened_request.json()["project_id"] == project["id"]
@@ -2964,7 +2980,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     assert approval["responsible_role"] == "procurement_engineer"
     request_after_approval = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()
     assert request_after_approval["status"] == "waiting_for_approval"
     assert s.get(f"{API}/public/approvals/{approval['secure_token']}").status_code == 404
@@ -3005,7 +3021,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     assert released.json()["approval"]["approval_stage"] == "po_ready"
     assert s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()["status"] == "approved"
     repeated_release = s.post(
         f"{API}/workflow/approvals/{approval['id']}/funds-release", headers={**INTERNAL_HEADERS, **manager_headers},
@@ -3030,14 +3046,14 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     po_numbers = [row["po_number"] for row in purchase_orders]
     assert len(po_numbers) == len(set(po_numbers)) == 2
     assert all(number.startswith("PO-") and len(number) == 9 for number in po_numbers)
-    approval_after_po = s.get(f"{API}/workflow/approvals/{approval['id']}", headers=INTERNAL_HEADERS).json()
+    approval_after_po = s.get(f"{API}/workflow/approvals/{approval['id']}", headers={**INTERNAL_HEADERS, **admin_headers}).json()
     assert {row["po_number"] for row in approval_after_po["purchase_orders"]} == set(po_numbers)
     assert all(row["status"] != "cancelled" for row in approval_after_po["purchase_orders"])
-    approvals_list = s.get(f"{API}/workflow/approvals", headers=INTERNAL_HEADERS).json()["items"]
+    approvals_list = s.get(f"{API}/workflow/approvals", headers={**INTERNAL_HEADERS, **admin_headers}).json()["items"]
     assert next(row for row in approvals_list if row["id"] == approval["id"])["has_purchase_order"] is True
     assert s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()["status"] == "converted_to_purchase"
     first_po = purchase_orders[0]
     detail = s.get(f"{API}/purchase-orders/{first_po['id']}", headers=responsible_headers)
@@ -3081,7 +3097,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     assert receiving.json()["purchase_order"]["receipt_summary"]["received_quantity"] == 0
     assert s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()["status"] == "converted_to_purchase"
     completed_receiving = s.post(f"{API}/purchase-orders/{first_po['id']}/receipts", json={
         "receipt_type": "full", "idempotency_key": "confirmed-po-receiving-002",
@@ -3091,7 +3107,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     assert completed_receiving.json()["purchase_order"]["status"] == "completed"
     assert s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()["status"] == "converted_to_purchase"
     cancelled_po = purchase_orders[1]
     cancelled = s.patch(
@@ -3110,7 +3126,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     ).json()["status"] == "cancelled"
     completed_request = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()
     assert completed_request["status"] == "completed"
     assert [row["to_status"] for row in completed_request["status_history"]][-4:] == [
@@ -3118,7 +3134,7 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s):
     ]
     hub = s.get(
         f"{API}/workflow/projects/{project['id']}/procurement-hub",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     )
     assert hub.status_code == 200, hub.text
     request_chain = next(
@@ -3174,10 +3190,10 @@ def test_purchase_orders_use_approved_snapshot_after_comparison_changes(s, admin
             review_status="approved", reviewed_by="engineer", reviewed_at=timestamp,
         ))
 
-    project = s.get(f"{API}/projects").json()[0]
+    project = s.get(f"{API}/projects", headers=admin_headers).json()[0]
     linked = s.post(
         f"{API}/workflow/incoming-purchase-requests/{request_id}/link-project",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
         json={"project_id": project["id"], "actor": "engineer"},
     )
     assert linked.status_code == 200, linked.text
@@ -3191,8 +3207,8 @@ def test_purchase_orders_use_approved_snapshot_after_comparison_changes(s, admin
     )
     assert reviewed.status_code == 200, reviewed.text
 
-    items = s.get(f"{API}/items").json()[:3]
-    suppliers = s.get(f"{API}/suppliers").json()[:2]
+    items = s.get(f"{API}/items", headers=admin_headers).json()[:3]
+    suppliers = s.get(f"{API}/suppliers", headers=admin_headers).json()[:2]
     original_rows = [{
         "item_id": items[0]["id"], "supplier_id": suppliers[0]["id"],
         "quantity": 3, "unit": items[0]["unit"], "unit_price": 100,
@@ -3479,7 +3495,7 @@ def test_site_receiving_is_transactional_idempotent_and_closes_only_when_complet
     assert completed["receipt_summary"]["latest_receipt_date"]
     completed_request = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()
     assert completed_request["status"] == "completed"
     assert [row["to_status"] for row in completed_request["status_history"]] == ["completed"]
@@ -3491,7 +3507,7 @@ def test_site_receiving_is_transactional_idempotent_and_closes_only_when_complet
     }, headers=admin_headers).status_code == 409
     assert s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()["status"] == "completed"
 
 
@@ -3533,7 +3549,7 @@ def test_request_completes_only_after_all_formal_purchase_orders(s, admin_header
     assert first_receipt.json()["purchase_order"]["status"] == "completed"
     assert s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()["status"] == "converted_to_purchase"
 
     second_receipt_body = {
@@ -3545,7 +3561,7 @@ def test_request_completes_only_after_all_formal_purchase_orders(s, admin_header
     assert second_receipt.json()["purchase_order"]["status"] == "completed"
     completed_request = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()
     assert completed_request["status"] == "completed"
     assert completed_request["status_history"][-1]["to_status"] == "completed"
@@ -3558,7 +3574,7 @@ def test_request_completes_only_after_all_formal_purchase_orders(s, admin_header
     assert repeated.json()["already_recorded"] is True
     repeated_request = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()
     assert repeated_request["status"] == "completed"
     assert [
@@ -4115,7 +4131,7 @@ def _manual_item(name="صنف يدوي اختبار", unit="قطعة", quantity=
     return {"product_name": name, "unit": unit, "quantity": quantity, "note": note}
 
 
-def test_partial_item_review_progresses_only_approved_subset_and_creates_linked_correction(s):
+def test_partial_item_review_progresses_only_approved_subset_and_creates_linked_correction(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         project_id = _make_project_for_portal(session, suffix)
@@ -4133,7 +4149,7 @@ def test_partial_item_review_progresses_only_approved_subset_and_creates_linked_
     request_id = created["request_id"]
     detail = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
-        headers=INTERNAL_HEADERS,
+        headers={**INTERNAL_HEADERS, **admin_headers},
     ).json()
     decisions = [
         (detail["items"][0]["id"], "approved", ""),
@@ -4472,7 +4488,7 @@ def test_portal_invalid_delivery_destination_rejected(s):
     assert response.status_code == 422
 
 
-def test_portal_submitted_request_preserves_existing_req_workflow(s):
+def test_portal_submitted_request_preserves_existing_req_workflow(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         sup_before = session.scalar(select(func.count()).select_from(Supplier))
@@ -4489,7 +4505,7 @@ def test_portal_submitted_request_preserves_existing_req_workflow(s):
     request_number = response.json()["request_number"]
     assert re.fullmatch(r"REQ-\d{8}-[0-9A-F]{10}", request_number)
 
-    listing = s.get(f"{API}/internal/incoming-purchase-requests", headers=INTERNAL_HEADERS)
+    listing = s.get(f"{API}/internal/incoming-purchase-requests", headers={**INTERNAL_HEADERS, **admin_headers})
     assert listing.status_code == 200
     numbers = [row["request_number"] for row in listing.json()]
     assert request_number in numbers
@@ -5088,14 +5104,14 @@ def test_deactivated_erp_user_loses_workflow_access_immediately(s):
     assert revoked.status_code == 401
 
 
-def test_commercial_manager_cannot_prepare_price_comparisons(s):
+def test_commercial_manager_cannot_prepare_price_comparisons(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"sprint23-mgr-cmp-{suffix}", role="commercial_manager")
     manager_headers = _login_headers(s, f"sprint23-mgr-cmp-{suffix}")
-    project = s.get(f"{API}/projects").json()[0]
-    item = s.get(f"{API}/items").json()[0]
-    supplier = s.get(f"{API}/suppliers").json()[0]
+    project = s.get(f"{API}/projects", headers=admin_headers).json()[0]
+    item = s.get(f"{API}/items", headers=admin_headers).json()[0]
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
 
     response = s.post(f"{API}/price-comparisons", headers=manager_headers, json={
         "project_id": project["id"], "project_name": project["name"],
@@ -5121,14 +5137,14 @@ def test_procurement_responsible_cannot_confirm_funds_release(s):
     assert response.status_code == 403
 
 
-def test_site_portal_account_is_forbidden_from_internal_workflow_mutation(s):
+def test_site_portal_account_is_forbidden_from_internal_workflow_mutation(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         portal_username, _, _ = _portal_setup(session, f"sprint23-portal-{suffix}")
     portal_headers = _login_headers(s, portal_username)
-    project = s.get(f"{API}/projects").json()[0]
-    item = s.get(f"{API}/items").json()[0]
-    supplier = s.get(f"{API}/suppliers").json()[0]
+    project = s.get(f"{API}/projects", headers=admin_headers).json()[0]
+    item = s.get(f"{API}/items", headers=admin_headers).json()[0]
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
 
     response = s.post(f"{API}/price-comparisons", headers=portal_headers, json={
         "project_id": project["id"], "project_name": project["name"],
@@ -5216,10 +5232,10 @@ def _make_pricing_request(client, suffix, manual_item=False):
         ))
         session.commit()
     admin_headers = _login_headers(client, admin_username)
-    project = client.get(f"{API}/projects").json()[0]
+    project = client.get(f"{API}/projects", headers=admin_headers).json()[0]
     linked = client.post(
         f"{API}/workflow/incoming-purchase-requests/{request_id}/link-project",
-        headers=INTERNAL_HEADERS, json={"project_id": project["id"], "actor": "tester"},
+        headers={**INTERNAL_HEADERS, **admin_headers}, json={"project_id": project["id"], "actor": "tester"},
     )
     assert linked.status_code == 200, linked.text
     decision = client.post(
@@ -5405,7 +5421,7 @@ def _rfq_with_supplier(client, suffix, responsible_headers):
         RFQ_API, headers={**INTERNAL_HEADERS, **responsible_headers},
         json={"source_request_id": request_id},
     ).json()["rfq"]
-    supplier = client.get(f"{API}/suppliers").json()[0]
+    supplier = client.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
     added = client.post(
         f"{RFQ_API}/{rfq['id']}/suppliers", headers={**INTERNAL_HEADERS, **responsible_headers},
         json={"supplier_id": supplier["id"]},
@@ -5447,11 +5463,11 @@ def test_rfq_supplier_addition_does_not_modify_supplier_row(s):
     with SessionLocal() as session:
         _make_user(session, username=f"rfq-supsafe-resp-{suffix}", role="procurement_responsible")
     responsible_headers = _login_headers(s, f"rfq-supsafe-resp-{suffix}")
-    supplier_before = s.get(f"{API}/suppliers").json()[0]
+    supplier_before = s.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
     _rfq_id, supplier, _rfq = _rfq_with_supplier(s, suffix, responsible_headers)
     assert supplier["id"] == supplier_before["id"]
     supplier_after = next(
-        row for row in s.get(f"{API}/suppliers").json() if row["id"] == supplier["id"]
+        row for row in s.get(f"{API}/suppliers", headers=responsible_headers).json() if row["id"] == supplier["id"]
     )
     assert supplier_after["name"] == supplier_before["name"]
     assert supplier_after["code"] == supplier_before["code"]
@@ -5502,7 +5518,7 @@ def test_quotation_lines_remain_linked_to_source_ids(s):
         RFQ_API, headers={**INTERNAL_HEADERS, **responsible_headers},
         json={"source_request_id": request_id},
     ).json()["rfq"]
-    supplier = s.get(f"{API}/suppliers").json()[0]
+    supplier = s.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
     s.post(
         f"{RFQ_API}/{rfq['id']}/suppliers", headers={**INTERNAL_HEADERS, **responsible_headers},
         json={"supplier_id": supplier["id"]},
@@ -5746,9 +5762,9 @@ def test_comparison_delete_enforces_role_and_allows_only_safe_draft(s):
         _make_user(session, username=f"delete-eng-{suffix}", role="procurement_engineer")
     responsible_headers = _login_headers(s, f"delete-resp-{suffix}")
     engineer_headers = _login_headers(s, f"delete-eng-{suffix}")
-    project = s.get(f"{API}/projects").json()[0]
-    item = s.get(f"{API}/items").json()[0]
-    supplier = s.get(f"{API}/suppliers").json()[0]
+    project = s.get(f"{API}/projects", headers=responsible_headers).json()[0]
+    item = s.get(f"{API}/items", headers=responsible_headers).json()[0]
+    supplier = s.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
     created = s.post(
         f"{API}/price-comparisons", headers=responsible_headers,
         json={
@@ -5769,7 +5785,7 @@ def test_comparison_delete_enforces_role_and_allows_only_safe_draft(s):
         f"{API}/price-comparisons/{comparison_id}", headers=responsible_headers,
     )
     assert deleted.status_code == 200, deleted.text
-    assert s.get(f"{API}/price-comparisons/{comparison_id}").status_code == 404
+    assert s.get(f"{API}/price-comparisons/{comparison_id}", headers=responsible_headers).status_code == 404
 
 
 # ---------------- Sprint 3.2: Comparison + Approval Review Workspace ----------------
@@ -5784,9 +5800,9 @@ def _make_approval_with_comparison(client, suffix, admin_headers, manual_item=Fa
     request_id, request_number, project_id, item_id, _resp_headers = _make_pricing_request(
         client, suffix, manual_item=manual_item,
     )
-    item = client.get(f"{API}/items").json()[0]
-    supplier = client.get(f"{API}/suppliers").json()[0]
-    project = next(p for p in client.get(f"{API}/projects").json() if p["id"] == project_id)
+    item = client.get(f"{API}/items", headers=admin_headers).json()[0]
+    supplier = client.get(f"{API}/suppliers", headers=admin_headers).json()[0]
+    project = next(p for p in client.get(f"{API}/projects", headers=admin_headers).json() if p["id"] == project_id)
     comparison = client.post(f"{API}/price-comparisons", json={
         "project_id": project_id, "project_name": project["name"],
         "source_request_id": request_id, "source_request_number": request_number,
@@ -5899,7 +5915,7 @@ def test_review_workspace_includes_rfq_and_supplier_quotations_when_present(s, a
     # "pricing" (RFQ creation requires that status), *then* create the CMP
     # and approval, which advances the REQ to "waiting_for_approval".
     request_id, request_number, project_id, _item_id, _resp_headers = _make_pricing_request(s, suffix)
-    supplier = s.get(f"{API}/suppliers").json()[0]
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
     rfq = s.post(
         RFQ_API, headers={**INTERNAL_HEADERS, **responsible_headers},
         json={"source_request_id": request_id},
@@ -5929,8 +5945,8 @@ def test_review_workspace_includes_rfq_and_supplier_quotations_when_present(s, a
         files=[("files", ("quote.pdf", b"%PDF-1.4 test quotation", "application/pdf"))],
     )
 
-    item = s.get(f"{API}/items").json()[0]
-    project = next(p for p in s.get(f"{API}/projects").json() if p["id"] == project_id)
+    item = s.get(f"{API}/items", headers=admin_headers).json()[0]
+    project = next(p for p in s.get(f"{API}/projects", headers=admin_headers).json() if p["id"] == project_id)
     comparison = s.post(f"{API}/price-comparisons", json={
         "project_id": project_id, "project_name": project["name"],
         "source_request_id": request_id, "source_request_number": request_number,
@@ -6585,12 +6601,12 @@ def test_po_payment_ledger_isolated_from_legacy_and_approval_payments(s, admin_h
 
     # A legacy Direct Purchase payment - keyed by purchase_id, never
     # purchase_order_id - must never be visible in the PO ledger.
-    legacy_purchases = s.get(f"{API}/purchases").json()
+    legacy_purchases = s.get(f"{API}/purchases", headers=admin_headers).json()
     assert legacy_purchases, "fixture data should include at least one legacy purchase"
     s.post(f"{API}/payments", json={
         "purchase_id": legacy_purchases[0]["purchase_id"], "payment_date": "2026-08-25",
         "amount_paid": 1, "payment_method": "cash", "notes": "",
-    })
+    }, headers=admin_headers)
 
     with SessionLocal() as session:
         po_payment_count_after = session.scalar(
@@ -6953,7 +6969,7 @@ def test_dashboard_formal_po_value_ignores_legacy_direct_purchases(s, admin_head
     assert round(after_po["summary"]["formal_po_value"] - before["summary"]["formal_po_value"], 2) == po["final_total"]
     assert after_po["payment_intelligence"]["total_formal_po_value"] == after_po["summary"]["formal_po_value"]
 
-    legacy = s.post(f"{API}/purchases", json=_payload(ids, f"DASH-LEGACY-{suffix}", qty=1, price=500, disc=0, vat=0))
+    legacy = s.post(f"{API}/purchases", json=_payload(ids, f"DASH-LEGACY-{suffix}", qty=1, price=500, disc=0, vat=0), headers=admin_headers)
     assert legacy.status_code == 200, legacy.text
     after_legacy = _dashboard(s, admin_headers)
     assert after_legacy["direct_purchase_total"] > after_po["direct_purchase_total"]
@@ -6974,11 +6990,11 @@ def test_dashboard_actual_paid_outstanding_overdue_and_void_match_po_payment_led
     assert after_funds["summary"]["actual_paid"] == before_funds["summary"]["actual_paid"]
 
     # A legacy Direct Purchase payment must not move Actual Paid either.
-    legacy = s.post(f"{API}/purchases", json=_payload(ids, f"DASH-PAY-LEGACY-{suffix}", qty=1, price=200, disc=0, vat=0)).json()
+    legacy = s.post(f"{API}/purchases", json=_payload(ids, f"DASH-PAY-LEGACY-{suffix}", qty=1, price=200, disc=0, vat=0), headers=admin_headers).json()
     s.post(f"{API}/payments", json={
         "purchase_id": legacy["purchase_id"], "payment_date": "2026-08-20",
         "amount_paid": 50, "submission_token": f"dash-legacy-pay-{suffix}",
-    })
+    }, headers=admin_headers)
     after_legacy_payment = _dashboard(s, admin_headers)
     assert after_legacy_payment["summary"]["actual_paid"] == after_funds["summary"]["actual_paid"]
 
@@ -7092,7 +7108,7 @@ def test_dashboard_sourcing_attention_flags_missing_and_late_rfq_responses(s, ad
     with SessionLocal() as session:
         _make_user(session, username=f"dash-rfq-resp-{suffix}", role="procurement_responsible")
     responsible_headers = _login_headers(s, f"dash-rfq-resp-{suffix}")
-    supplier = s.get(f"{API}/suppliers").json()[0]
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
     before = _dashboard(s, admin_headers)
 
     request_id, *_rest = _make_pricing_request(s, f"{suffix}-zero")
@@ -7141,6 +7157,59 @@ def test_dashboard_pending_approval_appears_under_correct_stage_only(s, admin_he
         assert stages_after[key]["count"] == stages_before[key]["count"]
 
 
+def test_dashboard_attention_items_are_filtered_by_role_ownership(s, admin_headers):
+    """Needs My Attention is role-scoped using the same responsible_role
+    values the backend already enforces for real actions (EngineerApproval.
+    responsible_role, and the static per-type ownership used elsewhere) -
+    admin always sees everything, every other role sees only its own."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"dash-role-eng-{suffix}", role="procurement_engineer")
+        _make_user(session, username=f"dash-role-mgr-{suffix}", role="commercial_manager")
+        _make_user(session, username=f"dash-role-resp-{suffix}", role="procurement_responsible")
+    engineer_headers = _login_headers(s, f"dash-role-eng-{suffix}")
+    manager_headers = _login_headers(s, f"dash-role-mgr-{suffix}")
+    responsible_headers = _login_headers(s, f"dash-role-resp-{suffix}")
+
+    # sourcing_required is a static procurement_responsible-owned type.
+    request_id, request_number, *_rest = _make_pricing_request(s, suffix)
+
+    def has_item(dash, item_type, reference):
+        return any(
+            item["type"] == item_type and item["reference"] == reference
+            for item in dash["attention_items"]
+        )
+
+    assert has_item(_dashboard(s, responsible_headers), "sourcing_required", request_number) is True
+    assert has_item(_dashboard(s, engineer_headers), "sourcing_required", request_number) is False
+    assert has_item(_dashboard(s, manager_headers), "sourcing_required", request_number) is False
+    assert has_item(_dashboard(s, admin_headers), "sourcing_required", request_number) is True
+
+    # pending_approval ownership is dynamic - it follows the specific
+    # approval's own responsible_role column, not a fixed type mapping.
+    approval, *_rest = _make_approval_with_comparison(s, uuid.uuid4().hex[:8], admin_headers)
+
+    def has_pending_approval(dash):
+        return has_item(dash, "pending_approval", approval["approval_number"])
+
+    assert has_pending_approval(_dashboard(s, engineer_headers)) is True
+    assert has_pending_approval(_dashboard(s, manager_headers)) is False
+    assert has_pending_approval(_dashboard(s, responsible_headers)) is False
+    assert has_pending_approval(_dashboard(s, admin_headers)) is True
+
+    decision = s.post(
+        f"{API}/workflow/approvals/{approval['id']}/decision",
+        headers={**INTERNAL_HEADERS, **engineer_headers},
+        json={"decision": "approved", "actor": "engineer"},
+    )
+    assert decision.status_code == 200, decision.text
+
+    # Ownership now follows the same approval's updated responsible_role
+    # (commercial_manager, per the fund_release stage transition).
+    assert has_pending_approval(_dashboard(s, manager_headers)) is True
+    assert has_pending_approval(_dashboard(s, engineer_headers)) is False
+
+
 def test_dashboard_project_summary_uses_formal_po_totals_only(s, admin_headers, ids):
     """Also stands in for the multi-PO/project safety guarantee, whose core
     invariant (a REQ only completes once ALL its formal POs are completed)
@@ -7156,7 +7225,7 @@ def test_dashboard_project_summary_uses_formal_po_totals_only(s, admin_headers, 
 
     legacy_payload = _payload(ids, f"DASH-PROJ-LEGACY-{suffix}", qty=1, price=999, disc=0, vat=0)
     legacy_payload["project_id"] = project_id
-    legacy = s.post(f"{API}/purchases", json=legacy_payload)
+    legacy = s.post(f"{API}/purchases", json=legacy_payload, headers=admin_headers)
     assert legacy.status_code == 200, legacy.text
     dash_after = _dashboard(s, admin_headers)
     row_after = next(p for p in dash_after["project_procurement_summary"] if p["project_id"] == project_id)

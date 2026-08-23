@@ -129,11 +129,13 @@ test("renders empty formal states safely", async () => {
   container.remove();
 });
 
-test("keeps legacy direct purchases separate and collapsed", async () => {
+test("never renders the legacy direct-purchase KPI summary, even collapsed", async () => {
   const { container, root } = await renderDashboard();
+  expect(container.querySelector('[data-testid="legacy-direct-purchases"]')).toBeFalsy();
+  expect(container.querySelector('[data-testid="legacy-direct-purchases-toggle"]')).toBeFalsy();
   expect(container.querySelector('[data-testid="kpi-total-purchases"]')).toBeFalsy();
-  await act(async () => container.querySelector('[data-testid="legacy-direct-purchases-toggle"]').click());
-  expect(container.querySelector('[data-testid="legacy-direct-purchases"]').textContent).toContain("250 ج.م");
+  expect(container.textContent).not.toContain("بيانات الشراء المباشر القديمة");
+  expect(container.textContent).not.toContain("250 ج.م");
   await act(async () => root.unmount());
   container.remove();
 });

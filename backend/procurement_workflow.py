@@ -584,7 +584,7 @@ def _link_request(session, request_row: IncomingPurchaseRequest, project: Projec
 
 
 @internal_workflow_router.get("/incoming-purchase-requests/{request_id}/project-suggestions")
-def project_suggestions(request_id: str):
+def project_suggestions(request_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         request_row = session.get(IncomingPurchaseRequest, request_id)
         if not request_row:
@@ -593,7 +593,10 @@ def project_suggestions(request_id: str):
 
 
 @internal_workflow_router.post("/incoming-purchase-requests/{request_id}/link-project")
-def link_existing_project(request_id: str, body: LinkProjectIn):
+def link_existing_project(
+    request_id: str, body: LinkProjectIn,
+    current_user: User = Depends(require_erp_role("procurement_responsible")),
+):
     with SessionLocal.begin() as session:
         request_row = session.get(IncomingPurchaseRequest, request_id)
         project = session.get(Project, body.project_id)
@@ -610,7 +613,10 @@ def link_existing_project(request_id: str, body: LinkProjectIn):
 
 
 @internal_workflow_router.post("/incoming-purchase-requests/{request_id}/create-project")
-def create_project_from_request(request_id: str, body: CreateProjectIn):
+def create_project_from_request(
+    request_id: str, body: CreateProjectIn,
+    current_user: User = Depends(require_erp_role("procurement_responsible")),
+):
     with SessionLocal.begin() as session:
         request_row = session.get(IncomingPurchaseRequest, request_id)
         if not request_row:
@@ -823,7 +829,10 @@ def _approval_detail(session, approval: EngineerApproval, *, include_token: bool
 
 
 @internal_workflow_router.get("/approvals")
-def list_approvals(status: str = "", payment_status: str = "", project_id: str = "", search: str = ""):
+def list_approvals(
+    status: str = "", payment_status: str = "", project_id: str = "", search: str = "",
+    current_user: User = Depends(require_erp_role()),
+):
     with SessionLocal() as session:
         statement = select(EngineerApproval).order_by(EngineerApproval.updated_at.desc())
         if status:
@@ -858,7 +867,7 @@ def list_approvals(status: str = "", payment_status: str = "", project_id: str =
 
 
 @internal_workflow_router.get("/action-summary")
-def workflow_action_summary():
+def workflow_action_summary(current_user: User = Depends(require_erp_role())):
     """Small, persisted work queue for the roles in the procurement flow."""
     with SessionLocal() as session:
         requests = session.scalars(select(IncomingPurchaseRequest)).all()
@@ -870,7 +879,7 @@ def workflow_action_summary():
 
 
 @internal_workflow_router.get("/approvals/{approval_id}")
-def get_approval(approval_id: str):
+def get_approval(approval_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         approval = session.get(EngineerApproval, approval_id)
         if not approval:
@@ -1568,7 +1577,7 @@ class PaymentReviewIn(BaseModel):
 
 
 @internal_workflow_router.get("/payments/{payment_id}/proof")
-def get_payment_proof(payment_id: str):
+def get_payment_proof(payment_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         payment = session.get(ApprovalPayment, payment_id)
         if not payment or not payment.proof_storage_key:
@@ -1671,7 +1680,7 @@ def confirm_cash(
 
 
 @internal_workflow_router.get("/projects/{project_id}/procurement-hub")
-def project_procurement_hub(project_id: str):
+def project_procurement_hub(project_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         project = session.get(Project, project_id)
         if not project:
