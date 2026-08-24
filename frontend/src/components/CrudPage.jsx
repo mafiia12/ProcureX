@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { Plus, Pencil, Trash2, ChevronDown, Eye } from "lucide-react";
 import api, { errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
+  Collapsible, CollapsibleContent, CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  Sheet, SheetContent, SheetHeader, SheetTitle,
+} from "@/components/ui/sheet";
+import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
@@ -21,12 +27,16 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ActionMenu, EmptyState, PageHeader, SearchInput } from "@/components/procurement-ui";
 import { usePreferences } from "@/contexts/PreferencesContext";
+import { cn } from "@/lib/utils";
 
 export default function CrudPage({
   title,
   endpoint,
   columns,
   fields,
+  advancedFields = [],
+  filters = [],
+  renderDrawer = null,
   testPrefix,
   primaryField = "name",
   rowAction = null,
@@ -43,13 +53,18 @@ export default function CrudPage({
   const direction = preferences.direction || (language === "en" ? "ltr" : "rtl");
   const [rows, setRows] = useState([]);
   const [search, setSearch] = useState("");
+  const [filterValues, setFilterValues] = useState({});
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [deleting, setDeleting] = useState(null);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState({});
+  const [drawerRow, setDrawerRow] = useState(null);
   const fieldRefs = useRef({});
+  const allFields = useMemo(() => [...fields, ...advancedFields], [fields, advancedFields]);
+  const advancedKeys = useMemo(() => new Set(advancedFields.map((f) => f.key)), [advancedFields]);
 
   const load = async () => {
     try {
@@ -63,27 +78,53 @@ export default function CrudPage({
   };
   useEffect(() => { load(); }, []); // eslint-disable-line
 
+  const filterOptions = useMemo(() => {
+    const map = {};
+    filters.forEach((filter) => {
+      if (filter.options) {
+        map[filter.key] = filter.options;
+        return;
+      }
+      const unique = Array.from(
+        new Set(rows.map((r) => String(r[filter.key] ?? "").trim()).filter(Boolean)),
+      ).sort();
+      map[filter.key] = unique.map((v) => ({ value: v, label: v }));
+    });
+    return map;
+  }, [filters, rows]);
+
   const filtered = useMemo(() => {
-    if (!search.trim()) return rows;
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) =>
-      columns.some((c) => String(r[c.key] ?? "").toLowerCase().includes(q))
-    );
-  }, [rows, search, columns]);
+    let result = rows;
+    const activeFilters = filters.filter((f) => filterValues[f.key]);
+    if (activeFilters.length) {
+      result = result.filter((r) =>
+        activeFilters.every((f) => String(r[f.key] ?? "") === filterValues[f.key])
+      );
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter((r) =>
+        columns.some((c) => String(r[c.key] ?? "").toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }, [rows, search, columns, filters, filterValues]);
 
   const openNew = () => {
     setEditing(null);
-    setForm(Object.fromEntries(fields.map((f) => [f.key, f.default ?? ""])));
+    setForm(Object.fromEntries(allFields.map((f) => [f.key, f.default ?? ""])));
     setErrors({});
+    setAdvancedOpen(false);
     setOpen(true);
   };
   const openEdit = (row) => {
     setEditing(row);
     setForm({
       code: row.code ?? "",
-      ...Object.fromEntries(fields.map((f) => [f.key, row[f.key] ?? ""])),
+      ...Object.fromEntries(allFields.map((f) => [f.key, row[f.key] ?? ""])),
     });
     setErrors({});
+    setAdvancedOpen(advancedFields.some((f) => String(row[f.key] ?? "").trim() !== ""));
     setOpen(true);
   };
 
@@ -103,19 +144,23 @@ export default function CrudPage({
   };
   const validate = () => {
     const nextErrors = {};
-    fields.forEach((field) => {
+    allFields.forEach((field) => {
       const message = validateField(field, form[field.key]);
       if (message) nextErrors[field.key] = message;
     });
     setErrors(nextErrors);
-    const firstInvalid = fields.find((field) => nextErrors[field.key]);
-    fieldRefs.current[firstInvalid?.key]?.focus();
+    const firstInvalid = allFields.find((field) => nextErrors[field.key]);
+    if (firstInvalid && advancedKeys.has(firstInvalid.key)) {
+      setAdvancedOpen(true);
+    } else {
+      fieldRefs.current[firstInvalid?.key]?.focus();
+    }
     return Object.keys(nextErrors).length === 0;
   };
 
   const save = async () => {
     if (!validate()) {
-      const field = fields.find((item) => validateField(item, form[item.key]));
+      const field = allFields.find((item) => validateField(item, form[item.key]));
       toast.error(field ? requiredMessage(field) : tr("يرجى مراجعة الحقول المطلوبة", "Review the required fields"));
       return;
     }
@@ -155,6 +200,94 @@ export default function CrudPage({
     }
   };
 
+  const renderField = (f) => (
+    <div key={f.key} className={f.type === "textarea" ? "md:col-span-2 space-y-1.5" : "space-y-1.5"}>
+      <Label htmlFor={`${testPrefix}-form-${f.key}`} className="text-xs">
+        {fieldLabel(f)}{f.required ? " *" : ""}
+      </Label>
+      {f.type === "select" ? (
+        <Select value={String(form[f.key] || "")} onValueChange={(value) => updateField(f, value)}>
+          <SelectTrigger
+            id={`${testPrefix}-form-${f.key}`}
+            ref={(node) => { fieldRefs.current[f.key] = node; }}
+            data-testid={`${testPrefix}-form-${f.key}`}
+            aria-required={f.required || undefined}
+            aria-invalid={!!errors[f.key]}
+            aria-describedby={errors[f.key] ? `${testPrefix}-form-${f.key}-error` : undefined}
+            className={errors[f.key] ? "border-red-500 focus:ring-red-500" : undefined}
+            onBlur={() => {
+              const message = validateField(f, form[f.key]);
+              if (message) setErrors((current) => ({ ...current, [f.key]: message }));
+            }}
+          >
+            <SelectValue placeholder={fieldLabel(f)} />
+          </SelectTrigger>
+          <SelectContent dir={direction}>
+            {(f.options || []).map((o) => (
+              <SelectItem key={o} value={String(o)}>{o}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : f.type === "textarea" ? (
+        <Textarea
+          id={`${testPrefix}-form-${f.key}`}
+          ref={(node) => { fieldRefs.current[f.key] = node; }}
+          data-testid={`${testPrefix}-form-${f.key}`}
+          value={form[f.key] || ""}
+          aria-required={f.required || undefined}
+          aria-invalid={!!errors[f.key]}
+          aria-describedby={errors[f.key] ? `${testPrefix}-form-${f.key}-error` : undefined}
+          className={errors[f.key] ? "border-red-500 focus-visible:ring-red-500" : undefined}
+          onChange={(event) => updateField(f, event.target.value)}
+          onBlur={() => {
+            const message = validateField(f, form[f.key]);
+            if (message) setErrors((current) => ({ ...current, [f.key]: message }));
+          }}
+          rows={2}
+        />
+      ) : (
+        <Input
+          id={`${testPrefix}-form-${f.key}`}
+          ref={(node) => { fieldRefs.current[f.key] = node; }}
+          data-testid={`${testPrefix}-form-${f.key}`}
+          type={f.type || "text"}
+          value={form[f.key] || ""}
+          readOnly={f.readOnly}
+          tabIndex={f.readOnly ? -1 : undefined}
+          aria-required={f.required || undefined}
+          aria-invalid={!!errors[f.key]}
+          aria-describedby={errors[f.key] ? `${testPrefix}-form-${f.key}-error` : undefined}
+          className={f.readOnly
+            ? "bg-muted text-muted-foreground"
+            : errors[f.key] ? "border-red-500 focus-visible:ring-red-500" : undefined}
+          onChange={(event) => updateField(f, event.target.value)}
+          onBlur={() => {
+            const message = validateField(f, form[f.key]);
+            if (message) setErrors((current) => ({ ...current, [f.key]: message }));
+          }}
+        />
+      )}
+      {errors[f.key] && (
+        <p
+          id={`${testPrefix}-form-${f.key}-error`}
+          className="text-xs text-red-600 text-start"
+          role="alert"
+        >
+          {errors[f.key]}
+        </p>
+      )}
+    </div>
+  );
+
+  const closeDrawer = () => setDrawerRow(null);
+  const drawerHelpers = {
+    tr,
+    direction,
+    close: closeDrawer,
+    edit: (row) => { closeDrawer(); openEdit(row); },
+    reload: load,
+  };
+
   return (
     <div className="space-y-4" data-testid={`${testPrefix}-page`}>
       <PageHeader
@@ -162,14 +295,33 @@ export default function CrudPage({
         description={description}
         actions={<Button data-testid={`${testPrefix}-add-button`} onClick={openNew} className="gap-2"><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>}
       />
-      <SearchInput data-testid={`${testPrefix}-search-input`} className="w-full sm:w-80" placeholder={searchPlaceholder} value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div className="flex flex-wrap items-center gap-2">
+        <SearchInput data-testid={`${testPrefix}-search-input`} className="w-full sm:w-80" placeholder={searchPlaceholder} value={search} onChange={(e) => setSearch(e.target.value)} />
+        {filters.map((filter) => (
+          <select
+            key={filter.key}
+            data-testid={`${testPrefix}-filter-${filter.key}`}
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+            value={filterValues[filter.key] || ""}
+            onChange={(e) => setFilterValues((current) => ({ ...current, [filter.key]: e.target.value }))}
+          >
+            <option value="">{filter.allLabel || tr("الكل", "All")}</option>
+            {(filterOptions[filter.key] || []).map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        ))}
+      </div>
 
       <div className="max-h-[calc(100vh-240px)] overflow-auto rounded-lg border bg-card">
         <Table>
           <TableHeader className="sticky top-0 z-10">
             <TableRow className="bg-muted/90">
               {columns.map((c) => (
-                <TableHead key={c.key} className="whitespace-nowrap text-start text-xs font-bold text-muted-foreground">
+                <TableHead
+                  key={c.key}
+                  className={cn("whitespace-nowrap text-start text-xs font-bold text-muted-foreground", c.hideOnMobile && "hidden md:table-cell")}
+                >
                   {c.label}
                 </TableHead>
               ))}
@@ -183,16 +335,35 @@ export default function CrudPage({
               </TableRow>
             ) : (
               filtered.map((row) => (
-                <TableRow key={row.id} className="hover:bg-muted/50" data-testid={`${testPrefix}-row`}>
-                  {columns.map((c) => (
-                    <TableCell key={c.key} className="py-2 text-sm whitespace-nowrap">
-                      {c.render ? c.render(row) : (row[c.key] ?? "-") || "-"}
-                    </TableCell>
-                  ))}
-                  <TableCell className="py-2">
+                <TableRow
+                  key={row.id}
+                  className={cn("h-11 hover:bg-muted/50", renderDrawer && "cursor-pointer")}
+                  data-testid={`${testPrefix}-row`}
+                  onClick={renderDrawer ? () => setDrawerRow(row) : undefined}
+                >
+                  {columns.map((c) => {
+                    const value = c.render ? c.render(row) : (row[c.key] ?? "-") || "-";
+                    return (
+                      <TableCell
+                        key={c.key}
+                        className={cn(
+                          "py-1.5 text-sm",
+                          c.hideOnMobile && "hidden md:table-cell",
+                          c.truncate ? "max-w-[220px] truncate" : "whitespace-nowrap",
+                          c.className,
+                        )}
+                        dir={c.ltr ? "ltr" : undefined}
+                        title={c.truncate && typeof value === "string" ? value : undefined}
+                      >
+                        {value}
+                      </TableCell>
+                    );
+                  })}
+                  <TableCell className="py-1.5" onClick={(e) => e.stopPropagation()}>
                     <ActionMenu
                       testId={`${testPrefix}-actions`}
                       actions={[
+                        renderDrawer && { label: tr("عرض التفاصيل", "View details"), icon: <Eye className="me-2 h-3.5 w-3.5" />, onSelect: () => setDrawerRow(row), testId: `${testPrefix}-view-button` },
                         rowAction && { label: rowAction.label, onSelect: () => rowAction.onClick(row), testId: `${testPrefix}-row-action` },
                         { label: tr("تعديل", "Edit"), icon: <Pencil className="me-2 h-3.5 w-3.5" />, onSelect: () => openEdit(row), testId: `${testPrefix}-edit-button` },
                         { label: tr("حذف", "Delete"), icon: <Trash2 className="me-2 h-3.5 w-3.5" />, destructive: true, onSelect: () => setDeleting(row), testId: `${testPrefix}-delete-button` },
@@ -237,85 +408,25 @@ export default function CrudPage({
                 />
               </div>
             )}
-            {fields.map((f) => (
-              <div key={f.key} className={f.type === "textarea" ? "md:col-span-2 space-y-1.5" : "space-y-1.5"}>
-                <Label htmlFor={`${testPrefix}-form-${f.key}`} className="text-xs">
-                  {fieldLabel(f)}{f.required ? " *" : ""}
-                </Label>
-                {f.type === "select" ? (
-                  <Select value={String(form[f.key] || "")} onValueChange={(value) => updateField(f, value)}>
-                    <SelectTrigger
-                      id={`${testPrefix}-form-${f.key}`}
-                      ref={(node) => { fieldRefs.current[f.key] = node; }}
-                      data-testid={`${testPrefix}-form-${f.key}`}
-                      aria-required={f.required || undefined}
-                      aria-invalid={!!errors[f.key]}
-                      aria-describedby={errors[f.key] ? `${testPrefix}-form-${f.key}-error` : undefined}
-                      className={errors[f.key] ? "border-red-500 focus:ring-red-500" : undefined}
-                      onBlur={() => {
-                        const message = validateField(f, form[f.key]);
-                        if (message) setErrors((current) => ({ ...current, [f.key]: message }));
-                      }}
-                    >
-                      <SelectValue placeholder={fieldLabel(f)} />
-                    </SelectTrigger>
-                    <SelectContent dir={direction}>
-                      {(f.options || []).map((o) => (
-                        <SelectItem key={o} value={String(o)}>{o}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : f.type === "textarea" ? (
-                  <Textarea
-                    id={`${testPrefix}-form-${f.key}`}
-                    ref={(node) => { fieldRefs.current[f.key] = node; }}
-                    data-testid={`${testPrefix}-form-${f.key}`}
-                    value={form[f.key] || ""}
-                    aria-required={f.required || undefined}
-                    aria-invalid={!!errors[f.key]}
-                    aria-describedby={errors[f.key] ? `${testPrefix}-form-${f.key}-error` : undefined}
-                    className={errors[f.key] ? "border-red-500 focus-visible:ring-red-500" : undefined}
-                    onChange={(event) => updateField(f, event.target.value)}
-                    onBlur={() => {
-                      const message = validateField(f, form[f.key]);
-                      if (message) setErrors((current) => ({ ...current, [f.key]: message }));
-                    }}
-                    rows={2}
-                  />
-                ) : (
-                  <Input
-                    id={`${testPrefix}-form-${f.key}`}
-                    ref={(node) => { fieldRefs.current[f.key] = node; }}
-                    data-testid={`${testPrefix}-form-${f.key}`}
-                    type={f.type || "text"}
-                    value={form[f.key] || ""}
-                    readOnly={f.readOnly}
-                    tabIndex={f.readOnly ? -1 : undefined}
-                    aria-required={f.required || undefined}
-                    aria-invalid={!!errors[f.key]}
-                    aria-describedby={errors[f.key] ? `${testPrefix}-form-${f.key}-error` : undefined}
-                    className={f.readOnly
-                      ? "bg-muted text-muted-foreground"
-                      : errors[f.key] ? "border-red-500 focus-visible:ring-red-500" : undefined}
-                    onChange={(event) => updateField(f, event.target.value)}
-                    onBlur={() => {
-                      const message = validateField(f, form[f.key]);
-                      if (message) setErrors((current) => ({ ...current, [f.key]: message }));
-                    }}
-                  />
-                )}
-                {errors[f.key] && (
-                  <p
-                    id={`${testPrefix}-form-${f.key}-error`}
-                    className="text-xs text-red-600 text-start"
-                    role="alert"
-                  >
-                    {errors[f.key]}
-                  </p>
-                )}
-              </div>
-            ))}
+            {fields.map(renderField)}
           </div>
+          {advancedFields.length > 0 && (
+            <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  data-testid={`${testPrefix}-advanced-toggle`}
+                  className="flex w-full items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+                >
+                  {tr("بيانات إضافية", "Additional details")}
+                  <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOpen && "rotate-180")} />
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                {advancedFields.map(renderField)}
+              </CollapsibleContent>
+            </Collapsible>
+          )}
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setOpen(false)}>{tr("إلغاء", "Cancel")}</Button>
             <Button data-testid={`${testPrefix}-save-button`} onClick={save} disabled={saving}>
@@ -340,6 +451,22 @@ export default function CrudPage({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {renderDrawer && (
+        <Sheet open={!!drawerRow} onOpenChange={(v) => !v && closeDrawer()}>
+          <SheetContent
+            side={direction === "rtl" ? "left" : "right"}
+            dir={direction}
+            className="w-full overflow-y-auto sm:max-w-md"
+            data-testid={`${testPrefix}-drawer`}
+          >
+            <SheetHeader className="text-start">
+              <SheetTitle className="sr-only">{drawerRow ? (drawerRow[primaryField] || title) : title}</SheetTitle>
+            </SheetHeader>
+            {drawerRow && renderDrawer(drawerRow, drawerHelpers)}
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }
