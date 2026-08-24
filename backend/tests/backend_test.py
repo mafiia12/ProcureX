@@ -36,7 +36,9 @@ os.environ["PROCUREX_BACKUP_DIR"] = str(Path(TEST_DIR.name) / "backups")
 os.environ["PROCUREX_LOG_DIR"] = str(Path(TEST_DIR.name) / "logs")
 
 from database import db, engine, init_db  # noqa: E402
-from attachment_storage import build_attachment_storage  # noqa: E402
+from attachment_storage import (  # noqa: E402
+    ROOT_DIR, LocalAttachmentStorage, build_attachment_storage,
+)
 from business_codes import next_business_code  # noqa: E402
 from db_migrations import (  # noqa: E402
     BUSINESS_CODE_SCHEMA_VERSION,
@@ -2170,18 +2172,102 @@ def test_development_full_surface_configuration_is_unaffected(monkeypatch):
     assert any(route.path == "/api/purchases" for route in full_app.routes)
 
 
-def test_staging_refuses_filesystem_attachment_storage(monkeypatch):
+def test_staging_public_surface_refuses_filesystem_attachment_storage(monkeypatch):
+    """Existing production public-surface S3 requirement remains unchanged."""
     monkeypatch.setenv("APP_ENV", "staging")
+    monkeypatch.setenv("APP_SURFACE", "public")
     monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "local")
-    with pytest.raises(RuntimeError, match="Staging requires"):
+    with pytest.raises(RuntimeError, match="Staging public-surface deployments require"):
         build_attachment_storage()
 
 
-def test_production_refuses_filesystem_attachment_storage(monkeypatch):
+def test_production_public_surface_refuses_filesystem_attachment_storage(monkeypatch):
+    """Existing production public-surface S3 requirement remains unchanged."""
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_SURFACE", "public")
     monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "local")
-    with pytest.raises(RuntimeError, match="Production requires"):
+    with pytest.raises(RuntimeError, match="Production public-surface deployments require"):
         build_attachment_storage()
+
+
+# ---------- Full-ERP-surface local attachment storage in staging/production ----------
+
+def _set_full_surface_env(monkeypatch, environment="production"):
+    monkeypatch.setenv("APP_ENV", environment)
+    monkeypatch.setenv("APP_SURFACE", "full")
+    monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "local")
+    monkeypatch.delenv("PROCUREX_DATA_ROOT", raising=False)
+    monkeypatch.delenv("INCOMING_REQUEST_UPLOAD_DIR", raising=False)
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_hosted_full_surface_allows_explicit_persistent_local_storage(monkeypatch, environment, tmp_path):
+    """production + full + explicit persistent filesystem storage => allowed."""
+    _set_full_surface_env(monkeypatch, environment)
+    persistent_root = tmp_path / "procurex-attachments"
+    monkeypatch.setenv("INCOMING_REQUEST_UPLOAD_DIR", str(persistent_root))
+    storage = build_attachment_storage()
+    assert isinstance(storage, LocalAttachmentStorage)
+    assert storage.root == persistent_root.resolve()
+
+
+def test_hosted_full_surface_allows_persistent_storage_via_data_root(monkeypatch, tmp_path):
+    """PROCUREX_DATA_ROOT is also an accepted explicit persistent-path source,
+    and must resolve to the same attachment path server.py's diagnostics use."""
+    _set_full_surface_env(monkeypatch)
+    data_root = tmp_path / "procurex-data"
+    monkeypatch.setenv("PROCUREX_DATA_ROOT", str(data_root))
+    storage = build_attachment_storage()
+    assert isinstance(storage, LocalAttachmentStorage)
+    assert storage.root == (data_root.resolve() / "data" / "attachments" / "incoming_requests")
+
+
+def test_hosted_full_surface_rejects_unconfigured_local_storage(monkeypatch):
+    """production + full + filesystem storage without required persistent
+    config => rejected, rather than silently defaulting into the application
+    directory."""
+    _set_full_surface_env(monkeypatch)
+    with pytest.raises(RuntimeError, match="requires an explicit persistent path"):
+        build_attachment_storage()
+
+
+def test_hosted_full_surface_rejects_persistent_path_inside_app_directory(monkeypatch):
+    _set_full_surface_env(monkeypatch)
+    monkeypatch.setenv("INCOMING_REQUEST_UPLOAD_DIR", str(ROOT_DIR / "storage" / "incoming_requests"))
+    with pytest.raises(RuntimeError, match="must be outside the application directory"):
+        build_attachment_storage()
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_hosted_full_surface_allows_s3(monkeypatch, environment):
+    """production + full + s3 => allowed (S3 remains supported for the full
+    surface, not just public). boto3 is a production-only dependency and
+    isn't installed in this dev/test environment, so success here is
+    verified by confirming the surface/environment gate lets the call reach
+    S3 construction (rather than rejecting it outright), not by a live S3
+    round-trip."""
+    monkeypatch.setenv("APP_ENV", environment)
+    monkeypatch.setenv("APP_SURFACE", "full")
+    monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("R2_ENDPOINT_URL", "https://account.r2.cloudflarestorage.com")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "test-access-key")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "test-secret-key")
+    monkeypatch.setenv("R2_BUCKET_NAME", f"procurex-{environment}-attachments")
+    with pytest.raises(RuntimeError, match="boto3 is required"):
+        build_attachment_storage()
+
+
+def test_development_local_attachment_storage_is_unaffected(monkeypatch, tmp_path):
+    """Existing development configuration remains unaffected - no explicit
+    persistent path is required outside staging/production."""
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("APP_SURFACE", raising=False)
+    monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "local")
+    monkeypatch.delenv("PROCUREX_DATA_ROOT", raising=False)
+    monkeypatch.delenv("INCOMING_REQUEST_UPLOAD_DIR", raising=False)
+    storage = build_attachment_storage()
+    assert isinstance(storage, LocalAttachmentStorage)
+    assert storage.root == (ROOT_DIR / "storage" / "incoming_requests").resolve()
 
 
 def test_public_surface_rejects_oversized_http_body_before_form_parsing(monkeypatch):

@@ -1,0 +1,110 @@
+{
+  "theme": "light",
+  "direction": "rtl",
+  "branding": {
+    "name": "RE DECOR & MORE",
+    "industry": "Interior Decoration & Finishing",
+    "currency": "EGP",
+    "language": "Arabic"
+  },
+  "typography": {
+    "font_family": {
+      "headings": "'Cairo', sans-serif",
+      "body": "'Tajawal', sans-serif"
+    },
+    "hierarchy": {
+      "h1": "text-2xl font-bold tracking-tight text-slate-900",
+      "h2": "text-xl font-semibold tracking-tight text-slate-800",
+      "h3": "text-lg font-medium text-slate-800",
+      "body": "text-sm text-slate-600 leading-relaxed",
+      "small": "text-xs text-slate-500",
+      "metric": "text-3xl font-bold text-slate-900"
+    },
+    "instructions": "Import 'Cairo' and 'Tajawal' from Google Fonts in index.css. Arabic fonts generally need slightly larger base sizes or specific line heights for optical balance."
+  },
+  "colors": {
+    "primary": {
+      "DEFAULT": "hsl(217, 91%, 35%)", 
+      "foreground": "hsl(0, 0%, 100%)",
+      "description": "Professional deep corporate blue"
+    },
+    "background": "hsl(210, 40%, 98%)",
+    "card": "hsl(0, 0%, 100%)",
+    "border": "hsl(214, 32%, 91%)",
+    "muted": "hsl(210, 40%, 96%)",
+    "muted_foreground": "hsl(215, 16%, 47%)",
+    "destructive": "hsl(0, 84%, 60%)",
+    "success": "hsl(142, 71%, 45%)",
+    "archetype": "Swiss & High-Contrast adapted for Corporate Blue/Gray (Authority, Clarity, Trust)"
+  },
+  "visual_enhancers": {
+    "shadows": "Ambient diffuse shadows for floating panels (`shadow-sm`, `shadow-md`), but prefer flat, bordered cards (`border border-slate-200`) for the primary data-heavy ERP look.",
+    "borders": "1px crisp borders on cards, inputs, and tables.",
+    "radius": "Small border radius (`rounded-md` or `rounded-lg`) to maintain a serious structural software feel, avoid overly pill-shaped elements except for specific status badges."
+  },
+  "components": {
+    "Sidebar": "Fixed RTL aligned (right side). Use `border-l border-slate-200` (or `border-e`). High density, small font (`text-sm`), muted icons.",
+    "Header": "Sticky top, white background, bottom border (`border-b`). Contains global search, user profile, and current active project context.",
+    "KPI_Card": "Flat background, 1px border. Value on top, small descriptive label below. Subtle blue or gray icon aligned to the start/end logically.",
+    "DataTable": "Use Shadcn Table. Dense padding (`py-2 px-3`) for ERP data density. Striped rows optionally. Include sticky header. Add robust filtering/search header above the table.",
+    "Fast_Purchase_Entry_Form": "High-density multi-row grid layout (Bento dense). Inputs should not be huge. Use a dedicated 'live summary' sticky panel showing Subtotal, Discount, VAT, Shipping, Final Total in EGP.",
+    "Status_Badges": "Small pill-shaped spans with soft backgrounds (e.g., green-100 text-green-800 for 'Paid', red-100 text-red-800 for 'Outstanding')."
+  },
+  "grids": {
+    "dashboard_grid": "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 for top-level KPIs.",
+    "charts_grid": "grid-cols-1 lg:grid-cols-2 gap-6 for analytical charts.",
+    "form_grid": "grid-cols-1 md:grid-cols-12 gap-4. Form fields should span specific columns (e.g. col-span-3 for item name, col-span-2 for quantity)."
+  },
+  "layouts": {
+    "shell": "Standard Dashboard Shell adapted for RTL. Sidebar on the right, Main content on the left.",
+    "page_container": "px-4 md:px-8 py-6 space-y-6 max-w-[1600px] mx-auto."
+  },
+  "motion": {
+    "hover": "Subtle border color darkening or slight bg-color shift (e.g., hover:bg-slate-50).",
+    "transitions": "transition-colors duration-200 ease-in-out for interactive elements.",
+    "toast": "Use Sonner, slide in from the bottom-left (due to RTL, bottom-left is the natural reading end)."
+  },
+  "accessibility": {
+    "contrast": "Strict adherence to text contrast. Dark slate text on white/gray backgrounds.",
+    "focus": "Visible focus rings on all form inputs and buttons (`focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none`).",
+    "rtl": "Use Tailwind logical properties heavily (`ms-`, `me-`, `ps-`, `pe-`, `text-start`, `text-end`, `border-s`, `border-e`)."
+  },
+  "media": {
+    "images": [
+      {
+        "url": "https://images.pexels.com/photos/36356065/pexels-photo-36356065.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "category": "background_placeholder",
+        "description": "Modern abstract office atmosphere for empty states or login screens."
+      },
+      {
+        "url": "https://images.pexels.com/photos/5511098/pexels-photo-5511098.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "category": "project_thumbnail",
+        "description": "Spacious modern interior design suitable for project visual references or headers."
+      }
+    ],
+    "3d_libraries": null
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: Inject `dir=\"rtl\" lang=\"ar\"` into the main HTML `<html>` or body tag. The entire layout must flow right-to-left.",
+    "All interface text, labels, and placeholders MUST be in Arabic.",
+    "Apply `font-family: 'Cairo', sans-serif;` globally for headings and `font-family: 'Tajawal', sans-serif;` for body text. Add to index.css and index.html.",
+    "Update `tailwind.config.js` to override primary colors to the corporate blue specified in guidelines, and background to a very light slate/gray.",
+    "Construct the 'Fast Purchase Entry' form using Shadcn forms and dynamic arrays. It must compute financial totals (Subtotal, VAT, Discount, Shipping) live in EGP.",
+    "Use Recharts for the KPI charts (purchases by supplier, projects, monthly trend, payment status). Ensure charts render appropriately in RTL context.",
+    "Use Shadcn UI tables for CRUD operations (Suppliers, Items, Projects, Customers, Payments, Purchase Register). Make them dense and searchable.",
+    "Include a 'Settings' page with lists management.",
+    "Make sure all interactive elements include a `data-testid` attribute (e.g., `data-testid='purchase-submit-button'`).",
+    "Implement logical spacing (`ps-4`, `me-2`) to avoid layout breaking in RTL."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Do not converge toward generic outputs. Avoid the 'AI slop' aesthetic.",
+    "Avoid generic centered layouts. Opt for asymmetrical or structured grid designs with depth.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects carefully; prefer crisp solid colors for data-heavy ERPs to maintain readability.",
+    "You MUST NOT apply universal transitions like `transition: all`. Target specific properties.",
+    "NEVER use emojis as icons. Use a professional library like Lucide React.",
+    "Every interaction needs micro-animations (hover states, focus rings, active states).",
+    "Use sonner for toast notifications.",
+    "Prioritize reusing and customizing Shadcn components located in `frontend/src/components/ui/`."
+  ]
+}

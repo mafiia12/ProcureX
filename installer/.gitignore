@@ -1,0 +1,5 @@
+.build/
+staging/
+output/*.exe
+output/*.sha256
+output/*.json

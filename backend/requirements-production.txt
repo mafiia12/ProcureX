@@ -1,0 +1,4 @@
+-r requirements.txt
+alembic==1.16.5
+boto3==1.40.45
+psycopg[binary]==3.2.10

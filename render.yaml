@@ -1,0 +1,118 @@
+databases:
+  - name: procurex-public-postgres
+    databaseName: procurex
+    user: procurex_public
+    plan: basic-256mb
+    ipAllowList: []
+
+services:
+  - type: web
+    name: procurex-public-api
+    runtime: python
+    rootDir: backend
+    plan: starter
+    autoDeployTrigger: checksPass
+    buildCommand: pip install -r requirements-production.txt
+    # Production schema changes run only through verified_production_migration.py.
+    # Deployment is read-only with respect to schema and fails if migration is pending.
+    preDeployCommand: python scripts/assert_schema_current.py
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /api/public/purchase-requests/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: APP_ENV
+        value: production
+      - key: APP_SURFACE
+        value: public
+      - key: DATABASE_URL
+        fromDatabase:
+          name: procurex-public-postgres
+          property: connectionString
+      - key: ATTACHMENT_STORAGE_BACKEND
+        value: s3
+      - key: CORS_ORIGINS
+        sync: false
+      - key: TRUSTED_HOSTS
+        sync: false
+      - key: FORCE_HTTPS
+        value: "true"
+      - key: TRUST_PROXY_HEADERS
+        value: "false"
+      - key: REQUEST_PRIVACY_SALT
+        generateValue: true
+      - key: PUBLIC_REQUEST_RATE_LIMIT
+        value: "5"
+      - key: PUBLIC_REQUEST_RATE_WINDOW_SECONDS
+        value: "900"
+      - key: PUBLIC_MAX_UPLOAD_BYTES
+        value: "5242880"
+      - key: PUBLIC_MAX_TOTAL_UPLOAD_BYTES
+        value: "26214400"
+      - key: PUBLIC_MAX_REQUEST_ITEMS
+        value: "20"
+      - key: PUBLIC_MAX_HTTP_BODY_BYTES
+        value: "28311552"
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_REGION
+        value: auto
+
+  - type: web
+    name: procurex-public-form
+    runtime: static
+    rootDir: frontend
+    autoDeployTrigger: checksPass
+    buildCommand: npm install --package-lock=false --no-audit --no-fund && npm run build:public && npm run verify:public-build
+    staticPublishPath: build
+    envVars:
+      - key: REACT_APP_PUBLIC_API_URL
+        sync: false
+      - key: GENERATE_SOURCEMAP
+        value: "false"
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+
+  - type: cron
+    name: procurex-postgres-backup
+    runtime: docker
+    plan: starter
+    schedule: "17 23 * * *"
+    dockerfilePath: ./deploy/backup/Dockerfile
+    dockerCommand: /usr/local/bin/procurex-backup
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: procurex-public-postgres
+          property: connectionString
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_BACKUP_BUCKET
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_DEFAULT_REGION
+        value: auto
