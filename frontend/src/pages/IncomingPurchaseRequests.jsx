@@ -109,9 +109,9 @@ const Info = ({ label, value }) => (
   </div>
 );
 
-function InfoStrip({ cells }) {
+function InfoStrip({ cells, bordered = true }) {
   return (
-    <div className="grid grid-cols-2 border bg-card sm:grid-cols-3 lg:grid-cols-5 [&>*]:border-b [&>*]:border-border sm:[&>*]:border-b-0 sm:[&>*:not(:nth-child(3n))]:border-e lg:[&>*:not(:nth-child(5n))]:border-e">
+    <div className={cn("grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 [&>*]:border-b [&>*]:border-border sm:[&>*]:border-b-0 sm:[&>*:not(:nth-child(3n))]:border-e lg:[&>*:not(:nth-child(5n))]:border-e", bordered && "border bg-card")}>
       {cells.map((cell, index) => (
         <div key={index} className="min-w-0 px-3 py-2">
           <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">{cell.label}</div>
@@ -123,9 +123,9 @@ function InfoStrip({ cells }) {
   );
 }
 
-function RequestStageStrip({ currentIndex, tr }) {
+function RequestStageStrip({ currentIndex, tr, bordered = true }) {
   return (
-    <div className="flex items-center gap-0 overflow-x-auto border bg-card px-3 py-2">
+    <div className={cn("flex items-center gap-0 overflow-x-auto px-3 py-2", bordered ? "border bg-card" : "border-t")}>
       {REQUEST_STAGE_LABELS.map(([ar, en], index) => (
         <div key={ar} className="flex shrink-0 items-center">
           {index > 0 && <span className={cn("h-px w-4 shrink-0 sm:w-8", index <= currentIndex ? "bg-primary/50" : "bg-border")} />}
@@ -569,10 +569,9 @@ export default function IncomingPurchaseRequests() {
                   { label: tr("وجهة التسليم", "Destination"), value: selected.delivery_location || selected.project_location, helper: selected.project_location },
                   { label: tr("الأصناف", "Items"), value: tr(`${selected.items.length} صنفًا`, `${selected.items.length} items`), helper: tr(`${approvedItemCount} معتمد · ${returnedItemCount} مرتجع`, `${approvedItemCount} approved · ${returnedItemCount} returned`) },
                   { label: tr("الإجراء التالي", "Next action"), value: nextActionLabel(selected.status, tr), accent: "text-primary" },
-                ]} />
+                ]} bordered={false} />
+                <RequestStageStrip currentIndex={requestStageIndex(selected.status)} tr={tr} bordered={false} />
               </div>
-
-              <RequestStageStrip currentIndex={requestStageIndex(selected.status)} tr={tr} />
 
               {selected.status === "need_clarification" && (
                 <Callout tone="warning" testId="clarification-summary" title={tr("الطلب يحتاج توضيحًا", "Request needs clarification")} className="block">
@@ -611,12 +610,12 @@ export default function IncomingPurchaseRequests() {
                 <Table>
                   <TableHeader>
                     <TableRow className="h-8">
-                      <TableHead className="text-[10.5px]">{tr("الصنف", "Item")}</TableHead>
-                      <TableHead className="w-14 text-end text-[10.5px]">{tr("الكمية", "Qty")}</TableHead>
-                      <TableHead className="w-16 text-[10.5px]">{tr("الوحدة", "Unit")}</TableHead>
-                      <TableHead className="w-32 text-[10.5px]">{tr("الحالة الفنية", "Status")}</TableHead>
-                      <TableHead className="text-[10.5px]">{tr("السبب / التوضيح", "Reason / clarification")}</TableHead>
-                      <TableHead className="w-52 text-[10.5px]">{tr("إجراء", "Action")}</TableHead>
+                      <TableHead className="text-[10px] font-bold uppercase tracking-wide">{tr("الصنف", "Item")}</TableHead>
+                      <TableHead className="w-14 text-end text-[10px] font-bold uppercase tracking-wide">{tr("الكمية", "Qty")}</TableHead>
+                      <TableHead className="w-16 text-[10px] font-bold uppercase tracking-wide">{tr("الوحدة", "Unit")}</TableHead>
+                      <TableHead className="w-32 text-[10px] font-bold uppercase tracking-wide">{tr("الحالة الفنية", "Status")}</TableHead>
+                      <TableHead className="text-[10px] font-bold uppercase tracking-wide">{tr("السبب / التوضيح", "Reason / clarification")}</TableHead>
+                      <TableHead className="w-52 text-[10px] font-bold uppercase tracking-wide">{tr("إجراء", "Action")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
