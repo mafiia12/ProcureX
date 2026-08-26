@@ -618,8 +618,20 @@ test("adds, edits, and deletes a manual offer without saving master data", async
   expect(container.textContent).toContain("مورد يدوي");
   expect(mockPost).not.toHaveBeenCalled();
 
-  const manualRow = [...container.querySelectorAll('[data-testid="comparison-row"]')]
-    .find((row) => row.textContent.includes("منتج يدوي"));
+  // In the true matrix, the item name lives once in the shared item column
+  // (not repeated inside every supplier cell); find the manual item's row
+  // by its grid row index, then locate its cell among the supplier columns.
+  const findRowByItemName = (name) => {
+    const matrix = container.querySelector('[data-testid="comparison-matrix"]');
+    const itemCell = [...matrix.children[0].children]
+      .find((el) => el.textContent.includes(name) && el.style.gridColumn === "1");
+    const gridRow = itemCell?.style.gridRow;
+    return [...matrix.querySelectorAll('[data-testid="comparison-row"]')]
+      .find((cell) => cell.style.gridRow === gridRow);
+  };
+
+  const manualRow = findRowByItemName("منتج يدوي");
+  expect(manualRow).toBeTruthy();
   await act(async () => manualRow.querySelector('[title="تعديل"]').click());
   await act(async () => {
     setNativeValue(
@@ -630,12 +642,11 @@ test("adds, edits, and deletes a manual offer without saving master data", async
   });
   expect(container.textContent).toContain("225.00");
 
-  const editedManualRow = [...container.querySelectorAll('[data-testid="comparison-row"]')]
-    .find((row) => row.textContent.includes("منتج يدوي"));
+  const editedManualRow = findRowByItemName("منتج يدوي");
+  expect(editedManualRow).toBeTruthy();
   await act(async () => editedManualRow.querySelector('[title="حذف"]').click());
   expect(container.querySelectorAll('[data-testid="comparison-row"]')).toHaveLength(2);
-  expect([...container.querySelectorAll('[data-testid="comparison-row"]')]
-    .some((row) => row.textContent.includes("منتج يدوي"))).toBe(false);
+  expect(container.textContent).not.toContain("منتج يدوي");
 
   await act(async () => root.unmount());
   container.remove();
