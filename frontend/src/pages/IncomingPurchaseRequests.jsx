@@ -7,7 +7,6 @@ import {
 } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,14 +14,17 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
 import { internalRequestApi, requestError } from "@/lib/requestApi";
 import { PRIORITY_OPTIONS } from "@/lib/requestValidation";
 import { internalDocumentApi } from "@/lib/documentCaptureApi";
 import api, { errMsg } from "@/lib/api";
-import ProcurementProgress from "@/components/ProcurementProgress";
 import { Callout, EmptyState, PageHeader, Panel, StatusBadge } from "@/components/procurement-ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
+import { cn } from "@/lib/utils";
 
 export const REQUEST_STATUSES = [
   ["new", "جديد", "New"],
@@ -55,11 +57,36 @@ const statusTone = (status) => ({
   cancelled: "neutral",
 }[status] || "neutral");
 
-const workflowStage = (status) => ({
-  new: 0, under_review: 1, need_clarification: 1, hold: 1,
-  pricing: 2, waiting_for_approval: 3, approved: 4,
-  converted_to_purchase: 6, completed: 9,
+const REQUEST_STAGE_LABELS = [
+  ["الطلب", "Request"],
+  ["المراجعة الفنية", "Technical review"],
+  ["طلب التسعير", "Sourcing / RFQ"],
+  ["المقارنة", "Comparison"],
+  ["الاعتماد", "Approval"],
+  ["أمر الشراء", "Purchase order"],
+];
+const requestStageIndex = (status) => ({
+  new: 0, under_review: 1, need_clarification: 1, hold: 1, rejected: 1,
+  pricing: 2, waiting_for_approval: 4, approved: 4,
+  converted_to_purchase: 5, completed: 5, cancelled: 0,
 }[status] ?? 0);
+
+const ITEM_REVIEW_LABEL = {
+  pending: ["قيد المراجعة", "Pending review"],
+  approved: ["معتمد", "Approved"],
+  rejected: ["مرفوض", "Rejected"],
+  need_clarification: ["يحتاج استكمال", "Needs clarification"],
+  hold: ["معلّق", "On hold"],
+};
+const ITEM_REVIEW_TONE = { pending: "neutral", approved: "success", rejected: "danger", need_clarification: "warning", hold: "neutral" };
+
+const daysUntil = (dateStr) => {
+  if (!dateStr) return null;
+  const target = new Date(dateStr);
+  if (Number.isNaN(target.getTime())) return null;
+  const startOfToday = new Date(new Date().toDateString());
+  return Math.round((target - startOfToday) / 86400000);
+};
 
 const nextActionLabel = (status, tr) => tr(({
   new: "بدء المراجعة الفنية", under_review: "اتخاذ قرار المراجعة الفنية",
@@ -81,6 +108,44 @@ const Info = ({ label, value }) => (
     <div className="mt-0.5 break-words text-sm font-medium text-foreground">{value || "-"}</div>
   </div>
 );
+
+function InfoStrip({ cells }) {
+  return (
+    <div className="grid grid-cols-2 border bg-card sm:grid-cols-3 lg:grid-cols-5 [&>*]:border-b [&>*]:border-border sm:[&>*]:border-b-0 sm:[&>*:not(:nth-child(3n))]:border-e lg:[&>*:not(:nth-child(5n))]:border-e">
+      {cells.map((cell, index) => (
+        <div key={index} className="min-w-0 px-3 py-2">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">{cell.label}</div>
+          <div className={cn("mt-0.5 truncate text-[12.5px] font-bold", cell.accent || "text-foreground")} title={typeof cell.value === "string" ? cell.value : undefined}>{cell.value ?? "-"}</div>
+          {cell.helper && <div className={cn("mt-0.5 truncate text-[10.5px] text-muted-foreground", cell.helperAccent)}>{cell.helper}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RequestStageStrip({ currentIndex, tr }) {
+  return (
+    <div className="flex items-center gap-0 overflow-x-auto border bg-card px-3 py-2">
+      {REQUEST_STAGE_LABELS.map(([ar, en], index) => (
+        <div key={ar} className="flex shrink-0 items-center">
+          {index > 0 && <span className={cn("h-px w-4 shrink-0 sm:w-8", index <= currentIndex ? "bg-primary/50" : "bg-border")} />}
+          <span
+            className={cn(
+              "shrink-0 whitespace-nowrap border px-2 py-0.5 text-[10.5px] font-bold",
+              index === currentIndex
+                ? "border-primary bg-primary text-primary-foreground"
+                : index < currentIndex
+                  ? "border-emerald-600/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : "border-border bg-muted text-muted-foreground",
+            )}
+          >
+            {index + 1} · {tr(ar, en)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function IncomingPurchaseRequests() {
   const navigate = useNavigate();
@@ -414,81 +479,100 @@ export default function IncomingPurchaseRequests() {
     .find((entry) => entry.to_status === "need_clarification");
 
   return (
-    <div className="space-y-4" data-testid="incoming-purchase-requests-page">
+    <div className="space-y-3" data-testid="incoming-purchase-requests-page">
       <PageHeader
         title={tr("طلبات الشراء الواردة", "Incoming Purchase Requests")}
         description={tr("راجع الطلب وحدد الإجراء التالي بأقل تمرير ممكن.", "Review each request and identify its next action with minimal scrolling.")}
         actions={<div className="flex items-center gap-2">
-          <Badge className="gap-1 bg-destructive/10 text-destructive hover:bg-destructive/10"><Bell className="h-3.5 w-3.5" /> {tr(`${unreadCount} جديد`, `${unreadCount} new`)}</Badge>
+          {!!unreadCount && <StatusBadge tone="danger"><Bell className="h-3 w-3" /> {tr(`${unreadCount} جديد`, `${unreadCount} new`)}</StatusBadge>}
           <Button variant="outline" size="sm" onClick={() => loadList()}><RefreshCw className="ms-1 h-4 w-4" />{tr("تحديث", "Refresh")}</Button>
         </div>}
       />
 
-      <div className="border bg-card p-2.5">
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(220px,1fr)_180px_160px_auto]">
-          <div className="relative">
-            <Search className="absolute start-3 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input className="ps-9" placeholder={tr("بحث بالرقم أو الاسم أو الهاتف أو المشروع", "Search number, requester, phone, or project")} value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} />
+      <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-[300px_minmax(0,1fr)]">
+        <section className="sticky top-3 border bg-card">
+          <div className="grid gap-1.5 border-b p-2.5">
+            <div className="relative">
+              <Search className="absolute start-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input className="h-8 ps-9" placeholder={tr("بحث بالرقم أو المشروع أو مقدم الطلب", "Search number, project, or requester")} value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
+                <option value="">{tr("كل الحالات", "All statuses")}</option>
+                {REQUEST_STATUSES.map(([value, ar, en]) => <option key={value} value={value}>{language === "en" ? en : ar}</option>)}
+              </select>
+              <select className="h-8 rounded-md border border-input bg-background px-2 text-xs" value={filters.priority} onChange={(event) => setFilters((current) => ({ ...current, priority: event.target.value }))}>
+                <option value="">{tr("كل الأولويات", "All priorities")}</option>
+                {PRIORITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{priorityLabel(option.value, language)}</option>)}
+              </select>
+            </div>
+            <Button size="sm" className="h-8 w-full" variant="outline" onClick={() => loadList(filters)}><Filter className="ms-1 h-4 w-4" />{tr("تطبيق الفلاتر", "Apply filters")}</Button>
           </div>
-          <select className="h-8 rounded-md border border-input bg-background px-2.5 text-sm" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
-            <option value="">{tr("كل الحالات", "All statuses")}</option>
-            {REQUEST_STATUSES.map(([value, ar, en]) => <option key={value} value={value}>{language === "en" ? en : ar}</option>)}
-          </select>
-          <select className="h-8 rounded-md border border-input bg-background px-2.5 text-sm" value={filters.priority} onChange={(event) => setFilters((current) => ({ ...current, priority: event.target.value }))}>
-            <option value="">{tr("كل الأولويات", "All priorities")}</option>
-            {PRIORITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{priorityLabel(option.value, language)}</option>)}
-          </select>
-          <Button size="sm" className="h-8" onClick={() => loadList(filters)}><Filter className="ms-1 h-4 w-4" />{tr("تطبيق", "Apply")}</Button>
-        </div>
-      </div>
-
-      <div className="grid min-h-[560px] grid-cols-1 gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(520px,1.5fr)]">
-        <section className="overflow-hidden border bg-card">
-          <div className="border-b px-3 py-2 text-sm font-bold text-foreground">{tr(`الطلبات (${requests.length})`, `Requests (${requests.length})`)}</div>
-          <div className="max-h-[690px] divide-y divide-border overflow-y-auto">
+          <div className="flex items-center justify-between border-b bg-muted/60 px-2.5 py-1.5 text-[10.5px] font-bold uppercase tracking-wide text-muted-foreground">
+            <span>{tr(`${requests.length} طلبات`, `${requests.length} requests`)}</span>
+            <span>{tr("الأحدث أولًا", "Newest first")}</span>
+          </div>
+          <div className="max-h-[calc(100vh-230px)] divide-y divide-border overflow-y-auto">
             {loading && <div className="p-8 text-center text-sm text-muted-foreground">{tr("جارٍ التحميل...", "Loading...")}</div>}
             {!loading && !requests.length && <EmptyState icon={ClipboardList} title={tr("لا توجد طلبات مطابقة", "No matching requests")} description={tr("غيّر عوامل البحث أو انتظر وصول طلب شراء جديد من الموقع.", "Adjust the filters or wait for a new site request.")} className="border-0 py-8" />}
             {requests.map((request) => (
-              <button key={request.id} type="button" onClick={() => loadDetail(request.id)} className={`block w-full px-4 py-3 text-start transition-colors hover:bg-muted/50 ${selected?.id === request.id ? "bg-primary/5" : ""}`}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-bold text-foreground" dir="ltr">{request.request_number}</div>
-                    <div className="mt-1 truncate text-sm text-foreground">{request.requester_name} — {request.project_name}</div>
-                  </div>
-                  <StatusBadge tone={statusTone(request.status)}>{statusLabel(request.status, language)}</StatusBadge>
+              <button key={request.id} type="button" onClick={() => loadDetail(request.id)} className={`block w-full px-2.5 py-2 text-start text-xs transition-colors hover:bg-muted/50 ${selected?.id === request.id ? "bg-primary/5" : ""}`} data-testid="incoming-request-list-item">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-xs font-bold text-foreground" dir="ltr">{request.request_number}</span>
+                  <StatusBadge tone={request.priority === "urgent" || request.priority === "high" ? "danger" : request.priority === "normal" ? "warning" : "neutral"}>{priorityLabel(request.priority, language)}</StatusBadge>
                 </div>
-                <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-                  <span>{tr(`${request.item_count} صنف`, `${request.item_count} items`)}</span>
-                  <span className="text-center">{priorityLabel(request.priority, language)}</span>
-                  <span className="text-end">{request.required_delivery_date || new Date(request.created_at).toLocaleDateString(locale)}</span>
+                <div className="mt-1 truncate font-semibold text-foreground">{request.project_name || tr("بدون مشروع", "No project")}</div>
+                <div className="mt-1 flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground">
+                  <span className="truncate">{tr(`${request.item_count} صنف`, `${request.item_count} items`)}{request.requester_name ? ` · ${request.requester_name}` : ""}</span>
+                  <StatusBadge tone={statusTone(request.status)}>{statusLabel(request.status, language)}</StatusBadge>
                 </div>
               </button>
             ))}
           </div>
         </section>
 
-        <section className="border bg-card p-4">
+        <section className="space-y-3">
           {!selected ? (
-            <div className="flex min-h-[520px] flex-col items-center justify-center text-center text-muted-foreground">
-              <ClipboardList className="h-12 w-12" />
+            <div className="flex min-h-[300px] flex-col items-center justify-center border bg-card text-center text-muted-foreground">
+              <ClipboardList className="h-10 w-10" />
               <p className="mt-3 text-sm">{tr("اختر طلباً لعرض التفاصيل والإجراءات.", "Select a request to view details and actions.")}</p>
             </div>
           ) : (
-            <div className="space-y-5" data-testid="incoming-request-detail">
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
-                <div>
-                  <div className="text-lg font-bold text-foreground" dir="ltr">{selected.request_number}</div>
-                  <div className="text-xs text-muted-foreground">{tr("تم الاستلام", "Received")} {new Date(selected.created_at).toLocaleString(locale)}</div>
+            <div className="space-y-3" data-testid="incoming-request-detail">
+              <div className="border bg-card">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b px-3 py-2.5">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-[15px] font-extrabold text-foreground" dir="ltr">{selected.request_number}</span>
+                      <StatusBadge tone={statusTone(selected.status)}>{statusLabel(selected.status, language)}</StatusBadge>
+                      <StatusBadge tone={selected.priority === "urgent" || selected.priority === "high" ? "danger" : selected.priority === "normal" ? "warning" : "neutral"}>{priorityLabel(selected.priority, language)}</StatusBadge>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">{selected.project_name || tr("بدون مشروع", "No project")} · {tr("تم الاستلام", "Received")} {new Date(selected.created_at).toLocaleString(locale)}</div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Button asChild variant="outline" size="icon" className="h-8 w-8" title={tr("اتصال", "Call")}><a href={`tel:${selected.phone_number}`}><Phone className="h-4 w-4" /></a></Button>
+                    {selected.whatsapp_number && <Button asChild variant="outline" size="icon" className="h-8 w-8" title="WhatsApp"><a href={`https://wa.me/${selected.whatsapp_number.replace(/\D/g, "")}`} target="_blank" rel="noreferrer"><MessageCircle className="h-4 w-4" /></a></Button>}
+                    {selected.email && <Button asChild variant="outline" size="icon" className="h-8 w-8" title={tr("بريد إلكتروني", "Email")}><a href={`mailto:${selected.email}`}><Mail className="h-4 w-4" /></a></Button>}
+                  </div>
                 </div>
-                <StatusBadge tone={statusTone(selected.status)}>{statusLabel(selected.status, language)}</StatusBadge>
+                <InfoStrip cells={[
+                  { label: tr("مقدم الطلب", "Requester"), value: selected.requester_name, helper: selected.company_name },
+                  ...(() => {
+                    const remaining = daysUntil(selected.required_delivery_date);
+                    return [{
+                      label: tr("التسليم المطلوب", "Required delivery"),
+                      value: selected.required_delivery_date || "-",
+                      helper: remaining == null ? null : remaining < 0 ? tr(`متأخر ${Math.abs(remaining)} يوم`, `${Math.abs(remaining)} days late`) : remaining === 0 ? tr("اليوم", "Today") : tr(`بعد ${remaining} يوم`, `in ${remaining} days`),
+                      helperAccent: remaining != null && remaining <= 2 ? "!text-destructive font-semibold" : undefined,
+                    }];
+                  })(),
+                  { label: tr("وجهة التسليم", "Destination"), value: selected.delivery_location || selected.project_location, helper: selected.project_location },
+                  { label: tr("الأصناف", "Items"), value: tr(`${selected.items.length} صنفًا`, `${selected.items.length} items`), helper: tr(`${approvedItemCount} معتمد · ${returnedItemCount} مرتجع`, `${approvedItemCount} approved · ${returnedItemCount} returned`) },
+                  { label: tr("الإجراء التالي", "Next action"), value: nextActionLabel(selected.status, tr), accent: "text-primary" },
+                ]} />
               </div>
 
-              <ProcurementProgress currentStage={workflowStage(selected.status)} />
-
-              <div className="grid gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:grid-cols-2">
-                <div><div className="text-[11px] text-muted-foreground">{tr("المرحلة الحالية", "Current stage")}</div><div className="mt-1 text-sm font-semibold text-foreground">{statusLabel(selected.status, language)}</div></div>
-                <div><div className="text-[11px] text-muted-foreground">{tr("الإجراء التالي المطلوب", "Next required action")}</div><div className="mt-1 text-sm font-semibold text-primary">{nextActionLabel(selected.status, tr)}</div></div>
-              </div>
+              <RequestStageStrip currentIndex={requestStageIndex(selected.status)} tr={tr} />
 
               {selected.status === "need_clarification" && (
                 <Callout tone="warning" testId="clarification-summary" title={tr("الطلب يحتاج توضيحًا", "Request needs clarification")} className="block">
@@ -499,24 +583,6 @@ export default function IncomingPurchaseRequests() {
                   </div>
                 </Callout>
               )}
-
-              <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
-                <Info label={tr("مقدم الطلب", "Requester")} value={selected.requester_name} />
-                <Info label={tr("الشركة", "Company")} value={selected.company_name} />
-                <Info label={tr("الهاتف", "Phone")} value={selected.phone_number} />
-                <Info label={tr("المشروع", "Project")} value={selected.project_name} />
-                <Info label={tr("موقع المشروع", "Project location")} value={selected.project_location} />
-                <Info label={tr("مكان التسليم", "Delivery location")} value={selected.delivery_location} />
-                <Info label={tr("التسليم المطلوب", "Required date")} value={selected.required_delivery_date} />
-                <Info label={tr("الأولوية", "Priority")} value={priorityLabel(selected.priority, language)} />
-                <Info label={tr("الموظف المسؤول", "Assigned employee")} value={selected.assigned_employee} />
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Button asChild variant="outline" size="sm"><a href={`tel:${selected.phone_number}`}><Phone className="ms-1 h-4 w-4" />{tr("اتصال", "Call")}</a></Button>
-                {selected.whatsapp_number && <Button asChild variant="outline" size="sm"><a href={`https://wa.me/${selected.whatsapp_number.replace(/\D/g, "")}`} target="_blank" rel="noreferrer"><MessageCircle className="ms-1 h-4 w-4" />WhatsApp</a></Button>}
-                {selected.email && <Button asChild variant="outline" size="sm"><a href={`mailto:${selected.email}`}><Mail className="ms-1 h-4 w-4" />{tr("بريد إلكتروني", "Email")}</a></Button>}
-              </div>
 
               {selected.project_id ? (
                 <Callout tone="success" action={<Button type="button" size="sm" onClick={() => navigate(`/projects/${selected.project_id}/purchases`)}>{tr("فتح مركز المشروع", "Open project center")}</Button>}>
@@ -537,148 +603,108 @@ export default function IncomingPurchaseRequests() {
                 {["create", "similar"].includes(projectMode) && <div className="grid gap-2 md:grid-cols-2"><Input value={projectDraft.name} onChange={(e) => setProjectDraft((x) => ({ ...x, name: e.target.value }))} placeholder={tr("اسم المشروع *", "Project name *")} /><Input value={projectDraft.customer_name} onChange={(e) => setProjectDraft((x) => ({ ...x, customer_name: e.target.value }))} placeholder={tr("العميل", "Client")} /><Input value={projectDraft.governorate} onChange={(e) => setProjectDraft((x) => ({ ...x, governorate: e.target.value }))} placeholder={tr("المحافظة", "Governorate")} /><Input value={projectDraft.city} onChange={(e) => setProjectDraft((x) => ({ ...x, city: e.target.value }))} placeholder={tr("المدينة / الموقع", "City / location")} /><Input value={projectDraft.address} onChange={(e) => setProjectDraft((x) => ({ ...x, address: e.target.value }))} placeholder={tr("العنوان", "Address")} /><Input value={projectDraft.engineer} onChange={(e) => setProjectDraft((x) => ({ ...x, engineer: e.target.value }))} placeholder={tr("المهندس / المسؤول", "Engineer / owner")} /><Textarea className="md:col-span-2" value={projectDraft.notes} onChange={(e) => setProjectDraft((x) => ({ ...x, notes: e.target.value }))} placeholder={tr("ملاحظات", "Notes")} /><div className="flex justify-end md:col-span-2"><Button onClick={() => createAndLinkProject(projectMode === "similar")}>{tr("إنشاء وربط المشروع", "Create and link project")}</Button></div></div>}
               </Panel>}
 
-              <div>
-                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("الأصناف المطلوبة", "Requested items")}</h3>
-                <div className="space-y-2">
-                  {selected.items.map((item) => (
-                    <div key={item.id} className="border p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                            {item.position}. {item.product_name}
-                            {!item.item_id && (
-                              <>
-                                <StatusBadge tone="warning">{tr("صنف يدوي", "Manual item")}</StatusBadge>
-                                {canConvertManualItem && (
-                                  <Button
-                                    variant="outline" size="sm" className="h-6 px-2 text-[11px]"
-                                    data-testid="convert-manual-item-button"
-                                    onClick={() => openConvert(item)}
-                                  >
+              <Panel
+                title={tr("الأصناف المطلوبة", "Requested items")}
+                description={tr(`${selected.items.length} صنفًا`, `${selected.items.length} items`)}
+                bodyClassName="p-0"
+              >
+                <Table>
+                  <TableHeader>
+                    <TableRow className="h-8">
+                      <TableHead className="text-[10.5px]">{tr("الصنف", "Item")}</TableHead>
+                      <TableHead className="w-14 text-end text-[10.5px]">{tr("الكمية", "Qty")}</TableHead>
+                      <TableHead className="w-16 text-[10.5px]">{tr("الوحدة", "Unit")}</TableHead>
+                      <TableHead className="w-32 text-[10.5px]">{tr("الحالة الفنية", "Status")}</TableHead>
+                      <TableHead className="text-[10.5px]">{tr("السبب / التوضيح", "Reason / clarification")}</TableHead>
+                      <TableHead className="w-52 text-[10.5px]">{tr("إجراء", "Action")}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selected.items.map((item) => {
+                      const draft = itemReviewDrafts[item.id] || { status: item.review_status || "pending", reason: item.review_reason || "" };
+                      return (
+                        <TableRow key={item.id} className={cn("align-top", item.review_status === "rejected" && "opacity-60")} data-testid="incoming-request-item-row">
+                          <TableCell className="py-1.5">
+                            <div className="flex flex-wrap items-center gap-1.5 font-semibold text-foreground">
+                              <span>{item.position}. {item.product_name}</span>
+                              {!item.item_id && <StatusBadge tone="warning">{tr("صنف يدوي", "Manual item")}</StatusBadge>}
+                            </div>
+                            <div className="mt-0.5 truncate text-[10.5px] text-muted-foreground">{[item.main_category, item.subcategory, item.preferred_brand].filter(Boolean).join(" · ") || item.specifications || tr("بدون تصنيف أو علامة مفضلة", "No category or preferred brand")}</div>
+                            {(item.attachment || (!item.item_id && canConvertManualItem)) && (
+                              <div className="mt-1 flex flex-wrap items-center gap-2">
+                                {!item.item_id && canConvertManualItem && (
+                                  <Button variant="outline" size="sm" className="h-6 px-2 text-[10.5px]" data-testid="convert-manual-item-button" onClick={() => openConvert(item)}>
                                     {tr("إضافة إلى الأصناف", "Add to Item Master")}
                                   </Button>
                                 )}
-                              </>
+                                {item.attachment && <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-[10.5px] text-primary" onClick={() => openAttachment(item)}><Download className="h-3 w-3" /> {item.attachment.original_filename}</Button>}
+                              </div>
                             )}
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground">{[item.main_category, item.subcategory, item.preferred_brand].filter(Boolean).join(" / ") || tr("بدون تصنيف أو علامة مفضلة", "No category or preferred brand")}</div>
-                        </div>
-                        <div className="whitespace-nowrap rounded-md bg-blue-50 px-2 py-1 text-sm font-bold text-primary">{item.quantity} {item.unit}</div>
-                      </div>
-                      {item.specifications && <p className="mt-2 text-sm leading-5 text-muted-foreground">{item.specifications}</p>}
-                      <div className="mt-3 grid gap-2 rounded-md bg-muted/50 p-3 md:grid-cols-[180px_1fr_auto]">
-                        <select
-                          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                          value={
-                            itemReviewDrafts[item.id]?.status
-                            ?? item.review_status
-                            ?? "pending"
-                          }
-                          onChange={(event) =>
-                            setItemReviewDrafts((current) => ({
-                              ...current,
-                              [item.id]: {
-                                status: event.target.value,
-                                reason:
-                                  current[item.id]?.reason
-                                  ?? item.review_reason
-                                  ?? "",
-                              },
-                            }))
-                          }
-                        >
-                          <option value="pending">{tr("قيد المراجعة", "Under review")}</option>
-                          <option value="approved">{tr("معتمد", "Approved")}</option>
-                          <option value="rejected">{tr("مرفوض", "Rejected")}</option>
-                          <option value="need_clarification">{tr("يحتاج استكمال", "Needs clarification")}</option>
-                          <option value="hold">{tr("معلّق", "On hold")}</option>
-                        </select>
+                          </TableCell>
+                          <TableCell className="py-1.5 text-end tabular-nums">{item.quantity}</TableCell>
+                          <TableCell className="py-1.5">{item.unit}</TableCell>
+                          <TableCell className="py-1.5"><StatusBadge tone={ITEM_REVIEW_TONE[item.review_status] || "neutral"}>{tr(...(ITEM_REVIEW_LABEL[item.review_status] || ITEM_REVIEW_LABEL.pending))}</StatusBadge></TableCell>
+                          <TableCell className="py-1.5">
+                            <Input
+                              className="h-7 text-xs"
+                              value={draft.reason}
+                              onChange={(event) => setItemReviewDrafts((current) => ({ ...current, [item.id]: { status: current[item.id]?.status ?? item.review_status ?? "pending", reason: event.target.value } }))}
+                              placeholder={tr("سبب الرفض أو طلب الاستكمال", "Reason for rejection or clarification")}
+                            />
+                          </TableCell>
+                          <TableCell className="py-1.5">
+                            <div className="flex items-center gap-1">
+                              <select
+                                className="h-7 flex-1 rounded-md border border-input bg-background px-1.5 text-[11px]"
+                                value={draft.status}
+                                onChange={(event) => setItemReviewDrafts((current) => ({ ...current, [item.id]: { status: event.target.value, reason: current[item.id]?.reason ?? item.review_reason ?? "" } }))}
+                              >
+                                <option value="pending">{tr("قيد المراجعة", "Under review")}</option>
+                                <option value="approved">{tr("معتمد", "Approved")}</option>
+                                <option value="rejected">{tr("مرفوض", "Rejected")}</option>
+                                <option value="need_clarification">{tr("يحتاج استكمال", "Needs clarification")}</option>
+                                <option value="hold">{tr("معلّق", "On hold")}</option>
+                              </select>
+                              <Button type="button" size="sm" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => saveItemReview(item)}>
+                                {tr("حفظ حالة الصنف", "Save item review")}
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </Panel>
 
-                        <Input
-                          value={
-                            itemReviewDrafts[item.id]?.reason
-                            ?? item.review_reason
-                            ?? ""
-                          }
-                          onChange={(event) =>
-                            setItemReviewDrafts((current) => ({
-                              ...current,
-                              [item.id]: {
-                                status:
-                                  current[item.id]?.status
-                                  ?? item.review_status
-                                  ?? "pending",
-                                reason: event.target.value,
-                              },
-                            }))
-                          }
-                          placeholder={tr("سبب الرفض أو طلب الاستكمال", "Reason for rejection or clarification")}
-                        />
-
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => saveItemReview(item)}
-                        >
-                          {tr("حفظ حالة الصنف", "Save item review")}
-                        </Button>
-                      </div>
-                      {item.attachment && <Button variant="ghost" size="sm" className="mt-2 h-7 gap-1 px-2 text-primary" onClick={() => openAttachment(item)}><Download className="h-3.5 w-3.5" /> {item.attachment.original_filename}</Button>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {!!documents.length && <div>
-                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("المستندات المرفوعة للمراجعة", "Documents submitted for review")}</h3>
-                <div className="space-y-2">{documents.map((document) => <div key={document.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"><div><div className="text-sm font-bold">{document.document_type}</div><div className="mt-1 text-xs text-muted-foreground">{document.status} · {document.page_count || 0} {tr("صفحة", "pages")}</div></div><Button asChild size="sm" variant="outline"><Link to={`/incoming-requests/${selected.id}/documents/${document.id}/review`}><ScanText className="ms-1 h-4 w-4" /> {tr("مراجعة الاستخراج", "Review extraction")}</Link></Button></div>)}</div>
-              </div>}
-
-              {selected.notes && <div><h3 className="mb-1 text-sm font-bold text-foreground">{tr("ملاحظات مقدم الطلب", "Requester notes")}</h3><p className="rounded-md bg-muted/60 p-3 text-sm leading-6 text-muted-foreground">{selected.notes}</p></div>}
-
-              <div className="grid grid-cols-1 gap-3 border-t pt-4 lg:grid-cols-2">
-                <div className="space-y-2">
-                  <Label className="text-xs">{tr("الموظف المسؤول", "Assigned employee")}</Label>
-                  <div className="flex gap-2"><Input value={assignment} onChange={(event) => setAssignment(event.target.value)} placeholder={tr("اسم الموظف", "Employee name")} /><Button variant="outline" onClick={saveAssignment}>{tr("حفظ", "Save")}</Button></div>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs">{tr("اسم منفذ الإجراء", "Action owner")}</Label>
-                  <Input value={author} onChange={(event) => setAuthor(event.target.value)} placeholder={tr("اسم الموظف", "Employee name")} />
-                </div>
-                {selected.status === "pricing" ? (
-                  <Callout tone="success" testId="technical-review-complete" className="lg:col-span-2">
-                    <div className="flex items-center gap-3"><CheckCircle2 className="h-6 w-6 shrink-0 text-emerald-700 dark:text-emerald-300" /><div><div className="font-bold text-foreground">{tr("تمت المراجعة الفنية", "Technical review completed")}</div><p className="text-sm text-muted-foreground">{tr("جاهز للتسعير والمقارنة", "Ready for pricing and comparison")}</p></div></div>
-                  </Callout>
-                ) : ["rejected", "completed", "cancelled"].includes(selected.status) ? (
-                  <Callout tone="danger" className="lg:col-span-2"><span className="text-sm font-bold text-destructive">{tr("انتهت المراجعة بحالة", "Review ended with status")}: {statusLabel(selected.status, language)}</span></Callout>
-                ) : canReviewTechnical ? (
-                  <Callout tone="primary" testId="technical-review-actions" className="block lg:col-span-2">
-                    <div className="text-xs font-bold text-primary">{tr("الإجراء المسؤول: مهندس المشتريات", "Action owner: Procurement Engineer")}</div>
-                    <h3 className="font-bold text-foreground">{tr("قرار المراجعة الفنية لطلب الشراء", "Purchase request technical decision")}</h3>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-3" data-testid="partial-review-summary">
-                      <Info label={tr("مؤهل للتسعير", "Eligible for sourcing")} value={approvedItemCount} />
-                      <Info label={tr("سيعود لمقدم الطلب", "Returned to requester")} value={returnedItemCount} />
-                      <Info label={tr("لم يُحسم بعد", "Not decided yet")} value={pendingItemCount} />
-                    </div>
-                    <Input className="mt-3" value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder={tr("ملاحظة القرار (اختياري)", "Decision note (optional)")} />
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Button
-                        onClick={() => setProgressConfirmOpen(true)}
-                        disabled={approvedItemCount === 0}
-                        className="bg-emerald-700 text-white hover:bg-emerald-800"
-                        data-testid="approve-eligible-items"
-                      >{tr("اعتماد الأصناف المؤهلة للتسعير", "Approve eligible items for sourcing")}</Button>
-                      <Button variant="outline" onClick={() => technicalDecision("hold")}>{tr("تعليق", "Place on hold")}</Button>
-                      <Button variant="destructive" onClick={() => technicalDecision("rejected")}>{tr("رفض", "Reject")}</Button>
-                    </div>
-                  </Callout>
-                ) : null}
-                <div className="space-y-2 lg:col-span-2">
-                  <Label className="text-xs">{tr("إضافة ملاحظة داخلية", "Add internal note")}</Label>
-                  <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("هذه الملاحظة داخلية ولا تظهر لمقدم الطلب", "This note is internal and is not shown to the requester")} rows={2} />
-                  <Button variant="outline" size="sm" onClick={addNote}>{tr("إضافة الملاحظة", "Add note")}</Button>
-                </div>
-              </div>
+              {selected.status === "pricing" ? (
+                <Callout tone="success" testId="technical-review-complete">
+                  <div className="flex items-center gap-3"><CheckCircle2 className="h-6 w-6 shrink-0 text-emerald-700 dark:text-emerald-300" /><div><div className="font-bold text-foreground">{tr("تمت المراجعة الفنية", "Technical review completed")}</div><p className="text-sm text-muted-foreground">{tr("جاهز للتسعير والمقارنة", "Ready for pricing and comparison")}</p></div></div>
+                </Callout>
+              ) : ["rejected", "completed", "cancelled"].includes(selected.status) ? (
+                <Callout tone="danger"><span className="text-sm font-bold text-destructive">{tr("انتهت المراجعة بحالة", "Review ended with status")}: {statusLabel(selected.status, language)}</span></Callout>
+              ) : canReviewTechnical ? (
+                <Callout tone="primary" testId="technical-review-actions" className="block">
+                  <div className="text-xs font-bold text-primary">{tr("الإجراء المسؤول: مهندس المشتريات", "Action owner: Procurement Engineer")}</div>
+                  <h3 className="font-bold text-foreground">{tr("قرار المراجعة الفنية لطلب الشراء", "Purchase request technical decision")}</h3>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3" data-testid="partial-review-summary">
+                    <Info label={tr("مؤهل للتسعير", "Eligible for sourcing")} value={approvedItemCount} />
+                    <Info label={tr("سيعود لمقدم الطلب", "Returned to requester")} value={returnedItemCount} />
+                    <Info label={tr("لم يُحسم بعد", "Not decided yet")} value={pendingItemCount} />
+                  </div>
+                  <Input className="mt-3" value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder={tr("ملاحظة القرار (اختياري)", "Decision note (optional)")} />
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      onClick={() => setProgressConfirmOpen(true)}
+                      disabled={approvedItemCount === 0}
+                      className="bg-emerald-700 text-white hover:bg-emerald-800"
+                      data-testid="approve-eligible-items"
+                    >{tr("اعتماد الأصناف المؤهلة للتسعير", "Approve eligible items for sourcing")}</Button>
+                    <Button variant="outline" onClick={() => technicalDecision("hold")}>{tr("تعليق", "Place on hold")}</Button>
+                    <Button variant="destructive" onClick={() => technicalDecision("rejected")}>{tr("رفض", "Reject")}</Button>
+                  </div>
+                </Callout>
+              ) : null}
 
               {(rfq || (canManageRFQ && selected.status === "pricing" && selected.project_id)) && (
                 rfq ? (
@@ -697,10 +723,8 @@ export default function IncomingPurchaseRequests() {
                 )
               )}
 
-              <div className="border-t pt-4">
-                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("الإجراءات التالية", "Next actions")}</h3>
+              <Panel title={tr("الإجراءات التالية", "Next actions")}>
                 <div className="flex flex-wrap gap-2">
-
                   <Button
                     variant="default"
                     size="sm"
@@ -713,21 +737,41 @@ export default function IncomingPurchaseRequests() {
                   <Button variant="outline" size="sm" onClick={() => convertDocument("internal_request")} disabled={Boolean(selected.converted_document)}><FileText className="ms-1 h-4 w-4" /> {tr("طلب شراء داخلي", "Internal purchase request")}</Button>
                   <Button variant="outline" size="sm" onClick={() => convertDocument("purchase_draft")} disabled={Boolean(selected.converted_document)}><ClipboardList className="ms-1 h-4 w-4" /> {tr("مسودة شراء", "Purchase draft")}</Button>
                 </div>
-                {(selected.status !== "pricing" || !selected.project_id) && <p className="mt-2 text-xs text-amber-700">{tr("يتاح بدء المقارنة بعد الاعتماد الفني وربط الطلب بالمشروع.", "Supplier comparison becomes available after technical approval and project linking.")}</p>}
-                {selected.converted_document && <div className="mt-2 flex items-center gap-2 rounded-md bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" /> {tr(`تم إنشاء ${selected.converted_document.document_number} كمسودة داخلية، وليس عملية شراء مكتملة.`, `${selected.converted_document.document_number} was created as an internal draft, not a completed purchase.`)}</div>}
-              </div>
+                {(selected.status !== "pricing" || !selected.project_id) && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{tr("يتاح بدء المقارنة بعد الاعتماد الفني وربط الطلب بالمشروع.", "Supplier comparison becomes available after technical approval and project linking.")}</p>}
+                {selected.converted_document && <div className="mt-2 flex items-center gap-2 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" /> {tr(`تم إنشاء ${selected.converted_document.document_number} كمسودة داخلية، وليس عملية شراء مكتملة.`, `${selected.converted_document.document_number} was created as an internal draft, not a completed purchase.`)}</div>}
+              </Panel>
 
-              <div className="border-t pt-4">
-                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("سجل الحالة", "Status history")}</h3>
-                <div className="space-y-2">
-                  {[...selected.status_history].reverse().map((entry) => <div key={entry.id} className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground"><b>{statusLabel(entry.to_status, language)}</b> — {new Date(entry.created_at).toLocaleString(locale)} {entry.changed_by && `— ${entry.changed_by}`} {entry.note && <div className="mt-1">{entry.note}</div>}</div>)}
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="space-y-1.5 border bg-card p-3">
+                  <Label className="text-xs">{tr("الموظف المسؤول", "Assigned employee")}</Label>
+                  <div className="flex gap-2"><Input className="h-8" value={assignment} onChange={(event) => setAssignment(event.target.value)} placeholder={tr("اسم الموظف", "Employee name")} /><Button size="sm" variant="outline" onClick={saveAssignment}>{tr("حفظ", "Save")}</Button></div>
+                </div>
+                <div className="space-y-1.5 border bg-card p-3">
+                  <Label className="text-xs">{tr("اسم منفذ الإجراء", "Action owner")}</Label>
+                  <Input className="h-8" value={author} onChange={(event) => setAuthor(event.target.value)} placeholder={tr("اسم الموظف", "Employee name")} />
                 </div>
               </div>
 
-              <div>
-                <h3 className="mb-2 text-sm font-bold text-foreground">{tr("الملاحظات الداخلية", "Internal notes")}</h3>
-                <div className="space-y-2">{selected.internal_notes.length ? selected.internal_notes.map((entry) => <div key={entry.id} className="rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-foreground">{entry.note}<div className="mt-1 text-[11px] text-muted-foreground">{entry.author || tr("بدون اسم", "No name")} — {new Date(entry.created_at).toLocaleString(locale)}</div></div>) : <div className="text-xs text-muted-foreground">{tr("لا توجد ملاحظات داخلية.", "No internal notes.")}</div>}</div>
-              </div>
+              {!!documents.length && <Panel title={tr("المستندات المرفوعة للمراجعة", "Documents submitted for review")}>
+                <div className="space-y-2">{documents.map((document) => <div key={document.id} className="flex flex-wrap items-center justify-between gap-3 border p-2.5"><div><div className="text-sm font-bold">{document.document_type}</div><div className="mt-1 text-xs text-muted-foreground">{document.status} · {document.page_count || 0} {tr("صفحة", "pages")}</div></div><Button asChild size="sm" variant="outline"><Link to={`/incoming-requests/${selected.id}/documents/${document.id}/review`}><ScanText className="ms-1 h-4 w-4" /> {tr("مراجعة الاستخراج", "Review extraction")}</Link></Button></div>)}</div>
+              </Panel>}
+
+              {selected.notes && <Panel title={tr("ملاحظات مقدم الطلب", "Requester notes")}><p className="text-sm leading-6 text-muted-foreground">{selected.notes}</p></Panel>}
+
+              <Panel title={tr("إضافة ملاحظة داخلية", "Add internal note")}>
+                <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("هذه الملاحظة داخلية ولا تظهر لمقدم الطلب", "This note is internal and is not shown to the requester")} rows={2} />
+                <Button className="mt-2" variant="outline" size="sm" onClick={addNote}>{tr("إضافة الملاحظة", "Add note")}</Button>
+              </Panel>
+
+              <Panel title={tr("سجل الحالة", "Status history")}>
+                <div className="space-y-1.5">
+                  {[...selected.status_history].reverse().map((entry) => <div key={entry.id} className="bg-muted/50 px-2.5 py-1.5 text-xs text-muted-foreground"><b>{statusLabel(entry.to_status, language)}</b> — {new Date(entry.created_at).toLocaleString(locale)} {entry.changed_by && `— ${entry.changed_by}`} {entry.note && <div className="mt-1">{entry.note}</div>}</div>)}
+                </div>
+              </Panel>
+
+              <Panel title={tr("الملاحظات الداخلية", "Internal notes")}>
+                <div className="space-y-1.5">{selected.internal_notes.length ? selected.internal_notes.map((entry) => <div key={entry.id} className="border border-amber-500/20 bg-amber-500/10 px-2.5 py-1.5 text-sm text-foreground">{entry.note}<div className="mt-1 text-[11px] text-muted-foreground">{entry.author || tr("بدون اسم", "No name")} — {new Date(entry.created_at).toLocaleString(locale)}</div></div>) : <div className="text-xs text-muted-foreground">{tr("لا توجد ملاحظات داخلية.", "No internal notes.")}</div>}</div>
+              </Panel>
             </div>
           )}
         </section>

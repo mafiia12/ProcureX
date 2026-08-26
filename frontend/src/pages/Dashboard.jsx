@@ -4,14 +4,12 @@ import {
   AlertCircle, CircleDollarSign, ClipboardCheck, FileCheck2,
   Inbox, PackageCheck, Receipt, ShoppingCart, Truck, Wallet,
 } from "lucide-react";
-import {
-  Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
-} from "recharts";
 
 import {
-  EmptyState, KpiStrip, Panel, PageHeader, SectionHeader, StatusBadge,
+  EmptyState, KpiStrip, Panel, PageHeader, StatusBadge,
 } from "@/components/procurement-ui";
 import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import api, { fmtEGP } from "@/lib/api";
 
@@ -86,8 +84,11 @@ export default function Dashboard() {
   const receiving = dashboard.receiving || {};
   const maxPipelineCount = Math.max(...pipeline.map((item) => Number(item.count || 0)), 1);
 
+  const totalProjectValue = projects.reduce((total, row) => total + Number(row.formal_po_value || 0), 0);
+  const maxProjectValue = Math.max(...projects.map((row) => Number(row.formal_po_value || 0)), 1);
+
   return (
-    <div className="space-y-5" data-testid="dashboard-page">
+    <div className="space-y-3" data-testid="dashboard-page">
       <PageHeader
         title={tr("ما يحتاج انتباهك اليوم", "What needs your attention today")}
         description={tr("ملخص تشغيلي للمسار الرسمي فقط؛ افتح السجل المطلوب مباشرة.", "An operational view of the formal procurement workflow with direct next actions.")}
@@ -116,29 +117,45 @@ export default function Dashboard() {
         title={tr("يحتاج متابعتي", "Needs my attention")}
         description={tr("مرتّب حسب أولوية المتابعة الفعلية.", "Prioritized by operational urgency.")}
         action={<span className="border bg-muted px-2 py-0.5 text-xs font-bold text-muted-foreground">{tr(`${attentionItems.length} سجلات`, `${attentionItems.length} records`)}</span>}
+        bodyClassName="p-0"
       >
         {attentionItems.length ? (
-          <div className="divide-y divide-border">
-            {attentionItems.slice(0, 10).map((item, index) => {
-              const meta = ATTENTION_META[item.type] || { label: [item.type, item.type], tone: "neutral", action: ["فتح", "Open"] };
-              return (
-                <div key={`${item.type}-${item.reference}-${index}`} className="grid items-center gap-3 py-2.5 md:grid-cols-[minmax(150px,0.8fr)_minmax(150px,1fr)_minmax(220px,1.6fr)_auto]" data-testid={`attention-item-${item.type}`}>
-                  <div className="min-w-0"><div className="font-mono text-sm font-bold text-foreground" dir="ltr">{item.reference}</div><StatusBadge tone={meta.tone}>{tr(...meta.label)}</StatusBadge></div>
-                  <div className="min-w-0 text-sm"><div className="truncate font-medium text-foreground">{item.project_name || tr("بدون مشروع", "No project")}</div>{supplierByReference[item.reference] && <div className="truncate text-xs text-muted-foreground">{supplierByReference[item.reference]}</div>}</div>
-                  <div className="min-w-0"><div className="text-sm text-foreground">{ATTENTION_REASONS[item.type] ? tr(...ATTENTION_REASONS[item.type]) : item.reason}</div>{item.due_or_age && <div className="mt-0.5 text-xs text-muted-foreground" dir="auto">{item.due_or_age}</div>}</div>
-                  <Button type="button" size="sm" variant="outline" onClick={() => navigate(item.path)}>{tr(...meta.action)}</Button>
-                </div>
-              );
-            })}
-          </div>
+          <Table>
+            <TableBody>
+              {attentionItems.slice(0, 10).map((item, index) => {
+                const meta = ATTENTION_META[item.type] || { label: [item.type, item.type], tone: "neutral", action: ["فتح", "Open"] };
+                const reasonText = ATTENTION_REASONS[item.type] ? tr(...ATTENTION_REASONS[item.type]) : item.reason;
+                return (
+                  <TableRow key={`${item.type}-${item.reference}-${index}`} className="h-9" data-testid={`attention-item-${item.type}`}>
+                    <TableCell className="whitespace-nowrap py-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs font-bold text-foreground" dir="ltr">{item.reference}</span>
+                        <StatusBadge tone={meta.tone}>{tr(...meta.label)}</StatusBadge>
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-[160px] truncate py-1 text-xs text-muted-foreground" title={item.project_name}>
+                      {item.project_name || tr("بدون مشروع", "No project")}
+                      {supplierByReference[item.reference] && <span> · {supplierByReference[item.reference]}</span>}
+                    </TableCell>
+                    <TableCell className="max-w-[320px] truncate py-1 text-xs text-foreground" title={reasonText}>
+                      {reasonText}{item.due_or_age && <span className="text-muted-foreground"> · {item.due_or_age}</span>}
+                    </TableCell>
+                    <TableCell className="w-28 py-1 text-end">
+                      <Button type="button" size="sm" variant="outline" className="h-7" onClick={() => navigate(item.path)}>{tr(...meta.action)}</Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
         ) : (
           <EmptyState compact icon={ClipboardCheck} title={tr("لا توجد إجراءات عاجلة حاليًا", "Nothing needs action right now")} description={tr("ستظهر هنا السجلات التي تحتاج قرارًا أو متابعة.", "Records requiring a decision or follow-up will appear here.")} />
         )}
       </Panel>
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr]">
+      <div className="grid gap-3 xl:grid-cols-[1fr_1.35fr]">
         <Panel testId="request-pipeline" title={tr("الحركة الحالية", "Active workflow")} description={tr("توزيع الطلبات عبر مراحل العمل.", "Requests currently moving through the workflow.")}>
-          <div className="space-y-2.5">
+          <div className="space-y-2">
             {pipeline.filter((row) => row.count > 0).map((row) => (
               <div key={row.key}><div className="mb-1 flex items-center justify-between gap-3 text-xs"><span className="text-muted-foreground">{PIPELINE_LABELS[row.key] ? tr(...PIPELINE_LABELS[row.key]) : row.label}</span><b className="tabular-nums text-foreground">{row.count}</b></div><div className="h-1 overflow-hidden bg-muted"><div className="h-full bg-primary/70" style={{ width: `${Math.max(8, Number(row.count || 0) / maxPipelineCount * 100)}%` }} /></div></div>
             ))}
@@ -147,7 +164,21 @@ export default function Dashboard() {
         </Panel>
 
         <Panel testId="chart-project-value" title={tr("قيمة أوامر الشراء حسب المشروع", "PO value by project")} description={tr("أعلى المشاريع من حيث الالتزام المالي الرسمي.", "Projects with the highest formal procurement commitment.")}>
-          {projects.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={projects.slice(0, 8)} layout="vertical" margin={{ left: 12, right: 12 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" /><XAxis type="number" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} /><YAxis type="category" dataKey="project_name" width={100} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} /><Tooltip formatter={(value) => fmtEGP(value)} contentStyle={{ background: "hsl(var(--popover))", borderColor: "hsl(var(--border))", color: "hsl(var(--popover-foreground))" }} /><Bar dataKey="formal_po_value" name={tr("قيمة أوامر الشراء", "Purchase order value")} fill="hsl(var(--primary))" radius={[0, 0, 0, 0]} /></BarChart></ResponsiveContainer></div> : <EmptyState compact title={tr("لا توجد قيم مشاريع", "No project values yet")} description={tr("تظهر المقارنة بعد إصدار أول أمر شراء رسمي.", "This view appears after the first formal PO is issued.")} />}
+          {projects.length ? (
+            <div className="space-y-1.5">
+              {projects.slice(0, 6).map((row) => (
+                <div key={row.project_name} className="flex items-center gap-2 text-xs">
+                  <span className="w-28 shrink-0 truncate text-muted-foreground" title={row.project_name}>{row.project_name}</span>
+                  <div className="h-1.5 flex-1 overflow-hidden bg-muted"><div className="h-full bg-primary" style={{ width: `${Math.max(4, Number(row.formal_po_value || 0) / maxProjectValue * 100)}%` }} /></div>
+                  <span className="w-24 shrink-0 text-end font-bold tabular-nums" dir="ltr">{fmtEGP(row.formal_po_value)}</span>
+                </div>
+              ))}
+              <div className="flex items-center justify-between border-t pt-1.5 text-xs font-bold text-foreground">
+                <span>{tr("الإجمالي", "Total")}</span>
+                <span dir="ltr">{fmtEGP(totalProjectValue)}</span>
+              </div>
+            </div>
+          ) : <EmptyState compact title={tr("لا توجد قيم مشاريع", "No project values yet")} description={tr("تظهر المقارنة بعد إصدار أول أمر شراء رسمي.", "This view appears after the first formal PO is issued.")} />}
         </Panel>
       </div>
 
