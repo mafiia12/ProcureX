@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Bell, CheckCircle2, ClipboardList, Download, FileText, Filter,
-  Mail, MessageCircle, Phone, RefreshCw, Search, UserPlus,
-  ScanText,
+  Mail, MessageCircle, MoreHorizontal, Phone, RefreshCw, Search, UserPlus,
+  ScanText, X,
   FolderKanban, PlusCircle,
 } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -170,6 +170,7 @@ export default function IncomingPurchaseRequests() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [documents, setDocuments] = useState([]);
   const [itemReviewDrafts, setItemReviewDrafts] = useState({});
+  const [editingItemId, setEditingItemId] = useState("");
   const [projectMode, setProjectMode] = useState("");
   const [projects, setProjects] = useState([]);
   const [projectSuggestions, setProjectSuggestions] = useState([]);
@@ -253,6 +254,7 @@ export default function IncomingPurchaseRequests() {
       setSelected(data);
       setDocuments(documentResponse.data);
       setAssignment(data.assigned_employee || "");
+      setEditingItemId("");
     } catch (error) { toast.error(requestError(error)); }
   };
   useEffect(() => {
@@ -409,6 +411,7 @@ export default function IncomingPurchaseRequests() {
       );
 
       toast.success("تم تحديث حالة الصنف");
+      setEditingItemId("");
       await loadDetail(selected.id);
     } catch (error) {
       toast.error(errMsg(error));
@@ -550,6 +553,20 @@ export default function IncomingPurchaseRequests() {
                     <div className="mt-1 text-xs text-muted-foreground">{selected.project_name || tr("بدون مشروع", "No project")} · {tr("تم الاستلام", "Received")} {new Date(selected.created_at).toLocaleString(locale)}</div>
                   </div>
                   <div className="flex items-center gap-1.5">
+                    {selected.project_id ? (
+                      <Button variant="outline" size="sm" className="h-8 gap-1.5 border-emerald-600/30 text-emerald-700 dark:text-emerald-300" onClick={() => navigate(`/projects/${selected.project_id}/purchases`)} data-testid="open-project-center-button">
+                        <FolderKanban className="h-3.5 w-3.5" /> <span className="max-w-28 truncate">{selected.project_name}</span>
+                      </Button>
+                    ) : (
+                      <>
+                        <Button variant="outline" size="sm" className="h-8 gap-1.5 border-amber-600/30 text-amber-700 dark:text-amber-400" onClick={() => openProjectFlow("link")} data-testid="link-project-button">
+                          <FolderKanban className="h-3.5 w-3.5" /> {tr("ربط بمشروع", "Link project")}
+                        </Button>
+                        <Button variant="outline" size="icon" className="h-8 w-8" title={tr("إضافة مشروع جديد", "Add new project")} onClick={() => openProjectFlow("create")} data-testid="create-project-button">
+                          <PlusCircle className="h-4 w-4" />
+                        </Button>
+                      </>
+                    )}
                     <Button asChild variant="outline" size="icon" className="h-8 w-8" title={tr("اتصال", "Call")}><a href={`tel:${selected.phone_number}`}><Phone className="h-4 w-4" /></a></Button>
                     {selected.whatsapp_number && <Button asChild variant="outline" size="icon" className="h-8 w-8" title="WhatsApp"><a href={`https://wa.me/${selected.whatsapp_number.replace(/\D/g, "")}`} target="_blank" rel="noreferrer"><MessageCircle className="h-4 w-4" /></a></Button>}
                     {selected.email && <Button asChild variant="outline" size="icon" className="h-8 w-8" title={tr("بريد إلكتروني", "Email")}><a href={`mailto:${selected.email}`}><Mail className="h-4 w-4" /></a></Button>}
@@ -583,16 +600,6 @@ export default function IncomingPurchaseRequests() {
                 </Callout>
               )}
 
-              {selected.project_id ? (
-                <Callout tone="success" action={<Button type="button" size="sm" onClick={() => navigate(`/projects/${selected.project_id}/purchases`)}>{tr("فتح مركز المشروع", "Open project center")}</Button>}>
-                  <div className="flex items-center gap-3"><FolderKanban className="h-5 w-5 shrink-0 text-emerald-700 dark:text-emerald-300" /><div><div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">{tr("المشروع مربوط", "Project linked")}</div><div className="font-bold text-foreground">{selected.project_name}</div></div></div>
-                </Callout>
-              ) : (
-                <Callout tone="warning" action={<div className="flex gap-2"><Button type="button" size="sm" variant="outline" onClick={() => openProjectFlow("link")}><FolderKanban className="h-4 w-4" />{tr("ربط بمشروع موجود", "Link existing project")}</Button><Button type="button" size="sm" onClick={() => openProjectFlow("create")}><PlusCircle className="h-4 w-4" />{tr("إضافة مشروع جديد", "Add new project")}</Button></div>}>
-                  <div><div className="text-sm font-bold text-foreground">{tr("المشروع غير مربوط", "Project not linked")}</div><p className="mt-1 text-xs text-muted-foreground">{tr("اربط الطلب قبل متابعة المقارنة حتى تنتقل البيانات تلقائيًا.", "Link the request before comparison so workflow data carries forward correctly.")}</p></div>
-                </Callout>
-              )}
-
               {!!projectMode && <Panel
                 title={projectMode === "link" ? tr("ربط بمشروع موجود", "Link existing project") : projectMode === "similar" ? tr("وجدنا مشروعًا مشابهًا", "A similar project was found") : tr("إنشاء وربط المشروع", "Create and link project")}
                 action={<Button variant="ghost" size="sm" onClick={() => setProjectMode("")}>{tr("إغلاق", "Close")}</Button>}
@@ -621,8 +628,9 @@ export default function IncomingPurchaseRequests() {
                   <TableBody>
                     {selected.items.map((item) => {
                       const draft = itemReviewDrafts[item.id] || { status: item.review_status || "pending", reason: item.review_reason || "" };
+                      const isEditing = editingItemId === item.id;
                       return (
-                        <TableRow key={item.id} className={cn("align-top", item.review_status === "rejected" && "opacity-60")} data-testid="incoming-request-item-row">
+                        <TableRow key={item.id} className={cn("align-top", item.review_status === "rejected" && !isEditing && "opacity-60")} data-testid="incoming-request-item-row">
                           <TableCell className="py-1.5">
                             <div className="flex flex-wrap items-center gap-1.5 font-semibold text-foreground">
                               <span>{item.position}. {item.product_name}</span>
@@ -642,68 +650,88 @@ export default function IncomingPurchaseRequests() {
                           </TableCell>
                           <TableCell className="py-1.5 text-end tabular-nums">{item.quantity}</TableCell>
                           <TableCell className="py-1.5">{item.unit}</TableCell>
-                          <TableCell className="py-1.5"><StatusBadge tone={ITEM_REVIEW_TONE[item.review_status] || "neutral"}>{tr(...(ITEM_REVIEW_LABEL[item.review_status] || ITEM_REVIEW_LABEL.pending))}</StatusBadge></TableCell>
-                          <TableCell className="py-1.5">
-                            <Input
-                              className="h-7 text-xs"
-                              value={draft.reason}
-                              onChange={(event) => setItemReviewDrafts((current) => ({ ...current, [item.id]: { status: current[item.id]?.status ?? item.review_status ?? "pending", reason: event.target.value } }))}
-                              placeholder={tr("سبب الرفض أو طلب الاستكمال", "Reason for rejection or clarification")}
-                            />
-                          </TableCell>
-                          <TableCell className="py-1.5">
-                            <div className="flex items-center gap-1">
-                              <select
-                                className="h-7 flex-1 rounded-md border border-input bg-background px-1.5 text-[11px]"
-                                value={draft.status}
-                                onChange={(event) => setItemReviewDrafts((current) => ({ ...current, [item.id]: { status: event.target.value, reason: current[item.id]?.reason ?? item.review_reason ?? "" } }))}
-                              >
-                                <option value="pending">{tr("قيد المراجعة", "Under review")}</option>
-                                <option value="approved">{tr("معتمد", "Approved")}</option>
-                                <option value="rejected">{tr("مرفوض", "Rejected")}</option>
-                                <option value="need_clarification">{tr("يحتاج استكمال", "Needs clarification")}</option>
-                                <option value="hold">{tr("معلّق", "On hold")}</option>
-                              </select>
-                              <Button type="button" size="sm" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => saveItemReview(item)}>
-                                {tr("حفظ حالة الصنف", "Save item review")}
-                              </Button>
-                            </div>
-                          </TableCell>
+                          {isEditing ? (
+                            <>
+                              <TableCell className="py-1.5">
+                                <select
+                                  className="h-7 w-full rounded-md border border-input bg-background px-1.5 text-[11px]"
+                                  value={draft.status}
+                                  onChange={(event) => setItemReviewDrafts((current) => ({ ...current, [item.id]: { status: event.target.value, reason: current[item.id]?.reason ?? item.review_reason ?? "" } }))}
+                                  data-testid="item-review-status-select"
+                                >
+                                  <option value="pending">{tr("قيد المراجعة", "Under review")}</option>
+                                  <option value="approved">{tr("معتمد", "Approved")}</option>
+                                  <option value="rejected">{tr("مرفوض", "Rejected")}</option>
+                                  <option value="need_clarification">{tr("يحتاج استكمال", "Needs clarification")}</option>
+                                  <option value="hold">{tr("معلّق", "On hold")}</option>
+                                </select>
+                              </TableCell>
+                              <TableCell className="py-1.5">
+                                <Input
+                                  className="h-7 text-xs"
+                                  value={draft.reason}
+                                  onChange={(event) => setItemReviewDrafts((current) => ({ ...current, [item.id]: { status: current[item.id]?.status ?? item.review_status ?? "pending", reason: event.target.value } }))}
+                                  placeholder={tr("سبب الرفض أو طلب الاستكمال", "Reason for rejection or clarification")}
+                                />
+                              </TableCell>
+                              <TableCell className="py-1.5">
+                                <div className="flex items-center gap-1">
+                                  <Button type="button" size="sm" className="h-7 shrink-0 px-2 text-[11px]" onClick={() => saveItemReview(item)}>
+                                    {tr("حفظ حالة الصنف", "Save item review")}
+                                  </Button>
+                                  <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" title={tr("إلغاء", "Cancel")} onClick={() => setEditingItemId("")}>
+                                    <X className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </>
+                          ) : (
+                            <>
+                              <TableCell className="py-1.5"><StatusBadge tone={ITEM_REVIEW_TONE[item.review_status] || "neutral"}>{tr(...(ITEM_REVIEW_LABEL[item.review_status] || ITEM_REVIEW_LABEL.pending))}</StatusBadge></TableCell>
+                              <TableCell className="truncate py-1.5 text-xs text-muted-foreground" title={item.review_reason || undefined}>{item.review_reason || "—"}</TableCell>
+                              <TableCell className="py-1.5">
+                                <Button type="button" variant="ghost" size="icon" className="h-7 w-7" title={tr("مراجعة الصنف", "Review item")} data-testid="item-review-menu" onClick={() => setEditingItemId(item.id)}>
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </TableCell>
+                            </>
+                          )}
                         </TableRow>
                       );
                     })}
                   </TableBody>
                 </Table>
-              </Panel>
 
-              {selected.status === "pricing" ? (
-                <Callout tone="success" testId="technical-review-complete">
-                  <div className="flex items-center gap-3"><CheckCircle2 className="h-6 w-6 shrink-0 text-emerald-700 dark:text-emerald-300" /><div><div className="font-bold text-foreground">{tr("تمت المراجعة الفنية", "Technical review completed")}</div><p className="text-sm text-muted-foreground">{tr("جاهز للتسعير والمقارنة", "Ready for pricing and comparison")}</p></div></div>
-                </Callout>
-              ) : ["rejected", "completed", "cancelled"].includes(selected.status) ? (
-                <Callout tone="danger"><span className="text-sm font-bold text-destructive">{tr("انتهت المراجعة بحالة", "Review ended with status")}: {statusLabel(selected.status, language)}</span></Callout>
-              ) : canReviewTechnical ? (
-                <Callout tone="primary" testId="technical-review-actions" className="block">
-                  <div className="text-xs font-bold text-primary">{tr("الإجراء المسؤول: مهندس المشتريات", "Action owner: Procurement Engineer")}</div>
-                  <h3 className="font-bold text-foreground">{tr("قرار المراجعة الفنية لطلب الشراء", "Purchase request technical decision")}</h3>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-3" data-testid="partial-review-summary">
-                    <Info label={tr("مؤهل للتسعير", "Eligible for sourcing")} value={approvedItemCount} />
-                    <Info label={tr("سيعود لمقدم الطلب", "Returned to requester")} value={returnedItemCount} />
-                    <Info label={tr("لم يُحسم بعد", "Not decided yet")} value={pendingItemCount} />
+                {selected.status === "pricing" ? (
+                  <div className="flex items-center gap-2 border-t border-s-2 border-s-emerald-600 px-3 py-2.5" data-testid="technical-review-complete">
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-300" />
+                    <span className="text-sm font-bold text-foreground">{tr("تمت المراجعة الفنية", "Technical review completed")}</span>
+                    <span className="text-xs text-muted-foreground">— {tr("جاهز للتسعير والمقارنة", "Ready for pricing and comparison")}</span>
                   </div>
-                  <Input className="mt-3" value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder={tr("ملاحظة القرار (اختياري)", "Decision note (optional)")} />
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button
-                      onClick={() => setProgressConfirmOpen(true)}
-                      disabled={approvedItemCount === 0}
-                      className="bg-emerald-700 text-white hover:bg-emerald-800"
-                      data-testid="approve-eligible-items"
-                    >{tr("اعتماد الأصناف المؤهلة للتسعير", "Approve eligible items for sourcing")}</Button>
-                    <Button variant="outline" onClick={() => technicalDecision("hold")}>{tr("تعليق", "Place on hold")}</Button>
-                    <Button variant="destructive" onClick={() => technicalDecision("rejected")}>{tr("رفض", "Reject")}</Button>
+                ) : ["rejected", "completed", "cancelled"].includes(selected.status) ? (
+                  <div className="border-t border-s-2 border-s-destructive px-3 py-2.5"><span className="text-sm font-bold text-destructive">{tr("انتهت المراجعة بحالة", "Review ended with status")}: {statusLabel(selected.status, language)}</span></div>
+                ) : canReviewTechnical ? (
+                  <div className="border-t border-s-2 border-s-primary p-3" data-testid="technical-review-actions">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs text-muted-foreground" data-testid="partial-review-summary">
+                        <b className="text-foreground">{approvedItemCount}</b> {tr("مؤهل للتسعير", "eligible for sourcing")} · <b className="text-foreground">{returnedItemCount}</b> {tr("سيعود لمقدم الطلب", "returned")} · <b className="text-foreground">{pendingItemCount}</b> {tr("لم يُحسم بعد", "not decided yet")}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Input className="h-8 w-44 sm:w-56" value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder={tr("ملاحظة القرار (اختياري)", "Decision note (optional)")} />
+                        <Button
+                          size="sm"
+                          onClick={() => setProgressConfirmOpen(true)}
+                          disabled={approvedItemCount === 0}
+                          className="bg-emerald-700 text-white hover:bg-emerald-800"
+                          data-testid="approve-eligible-items"
+                        >{tr("اعتماد الأصناف المؤهلة للتسعير", "Approve eligible items for sourcing")}</Button>
+                        <Button size="sm" variant="outline" onClick={() => technicalDecision("hold")}>{tr("تعليق", "Place on hold")}</Button>
+                        <Button size="sm" variant="destructive" onClick={() => technicalDecision("rejected")}>{tr("رفض", "Reject")}</Button>
+                      </div>
+                    </div>
                   </div>
-                </Callout>
-              ) : null}
+                ) : null}
+              </Panel>
 
               {(rfq || (canManageRFQ && selected.status === "pricing" && selected.project_id)) && (
                 rfq ? (

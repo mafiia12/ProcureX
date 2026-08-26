@@ -283,6 +283,7 @@ test("saving an item's review status goes through the authenticated API client, 
   mockApiPatch.mockResolvedValue({ data: { ...detail } });
   const { container, root } = await renderWithDetail(detail);
 
+  await click(container.querySelector('[data-testid="item-review-menu"]'));
   const saveButton = [...container.querySelectorAll("button")]
     .find((button) => button.textContent.includes("حفظ حالة الصنف"));
   await click(saveButton);
@@ -304,6 +305,7 @@ test("a valid procurement_engineer session saves the item review successfully wi
   mockApiPatch.mockResolvedValue({ data: { ...detail } });
   const { container, root } = await renderWithDetail(detail);
 
+  await click(container.querySelector('[data-testid="item-review-menu"]'));
   const saveButton = [...container.querySelectorAll("button")]
     .find((button) => button.textContent.includes("حفظ حالة الصنف"));
   await click(saveButton);
