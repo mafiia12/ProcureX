@@ -8,6 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
+import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import ProcurementProgress from "@/components/ProcurementProgress";
@@ -310,20 +313,30 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
           <div>{tr("وجهة التسليم", "Delivery destination")}<br /><b>{request.delivery_destination || "-"}</b></div>
         </div>
         {request.notes && <div className="mt-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">{request.notes}</div>}
-        <div className="mt-3 space-y-1.5">
-          {items.map((item) => <div key={item.id} className="rounded-md border p-2 text-sm" data-testid="review-workspace-request-item">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5">
-                <b>{item.product_name}</b>
-                {item.is_manual
+        <div className="mt-3 border">
+          <Table>
+            <TableHeader>
+              <TableRow className="h-8">
+                <TableHead className="text-[10px] font-bold uppercase tracking-wide">{tr("الصنف", "Item")}</TableHead>
+                <TableHead className="w-20 text-end text-[10px] font-bold uppercase tracking-wide">{tr("الكمية", "Qty")}</TableHead>
+                <TableHead className="w-28 text-[10px] font-bold uppercase tracking-wide">{tr("المصدر", "Source")}</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-wide">{tr("الحالة الفنية", "Technical status")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((item) => <TableRow key={item.id} data-testid="review-workspace-request-item">
+                <TableCell className="py-1.5">
+                  <div className="font-semibold text-foreground">{item.product_name}</div>
+                  {item.specifications && <div className="truncate text-[10.5px] text-muted-foreground">{item.specifications}</div>}
+                </TableCell>
+                <TableCell className="py-1.5 text-end tabular-nums">{item.quantity} {item.unit}</TableCell>
+                <TableCell className="py-1.5">{item.is_manual
                   ? <StatusBadge tone="warning">{tr("يدوي", "Manual")}</StatusBadge>
-                  : <StatusBadge tone="info">{tr("دليل الأصناف", "Item master")}</StatusBadge>}
-              </div>
-              <span className="text-xs text-muted-foreground">{item.quantity} {item.unit}</span>
-            </div>
-            {item.specifications && <div className="mt-1 text-xs text-muted-foreground">{item.specifications}</div>}
-            <div className="mt-1 text-xs text-muted-foreground">{tr("حالة المراجعة الفنية", "Technical review status")}: <b>{item.review_status}</b>{item.review_reason && <> — {item.review_reason}</>}</div>
-          </div>)}
+                  : <StatusBadge tone="info">{tr("دليل الأصناف", "Item master")}</StatusBadge>}</TableCell>
+                <TableCell className="py-1.5 text-xs text-muted-foreground"><b className="text-foreground">{item.review_status}</b>{item.review_reason && <> — {item.review_reason}</>}</TableCell>
+              </TableRow>)}
+            </TableBody>
+          </Table>
         </div>
       </>}
     </section></TabsContent>

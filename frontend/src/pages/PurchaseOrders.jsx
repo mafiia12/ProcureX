@@ -54,6 +54,15 @@ export default function PurchaseOrders() {
       && (!query || [order.po_number, order.project_name, order.supplier_name].some((value) => String(value || "").toLocaleLowerCase("ar").includes(query)));
   }), [orders, projectFilter, supplierFilter, statusFilter, paymentStatusFilter, receivingStatusFilter, search]);
 
+  const totals = useMemo(() => filteredOrders.reduce((sum, order) => {
+    const paid = Number(order.payment_summary?.paid_amount || 0);
+    const total = Number(order.final_total || 0);
+    sum.value += total;
+    sum.paid += paid;
+    sum.outstanding += Math.max(0, total - paid);
+    return sum;
+  }, { value: 0, paid: 0, outstanding: 0 }), [filteredOrders]);
+
   const clearFilters = () => { setProjectFilter(""); setSupplierFilter(""); setStatusFilter(""); setPaymentStatusFilter(""); setReceivingStatusFilter(""); setSearch(""); };
   const deleteOrder = async (order) => {
     if (!["draft", "cancelled"].includes(order.status)) return toast.error(tr("الحذف متاح للمسودة أو أمر الشراء الملغي فقط", "Only draft or cancelled purchase orders can be deleted"));
@@ -85,7 +94,15 @@ export default function PurchaseOrders() {
         <select value={paymentStatusFilter} onChange={(event) => setPaymentStatusFilter(event.target.value)} className="h-8 rounded-md border bg-background px-2.5 text-sm" data-testid="purchase-order-payment-filter"><option value="">{tr("كل حالات السداد", "All payment statuses")}</option><option value="unpaid">{tr("غير مدفوع", "Unpaid")}</option><option value="partially_paid">{tr("مدفوع جزئيًا", "Partially paid")}</option><option value="paid">{tr("مدفوع بالكامل", "Paid in full")}</option></select>
         <select value={receivingStatusFilter} onChange={(event) => setReceivingStatusFilter(event.target.value)} className="h-8 rounded-md border bg-background px-2.5 text-sm" data-testid="purchase-order-receiving-filter"><option value="">{tr("كل حالات الاستلام", "All receiving statuses")}</option>{Object.entries(PO_RECEIVING_STATUS_LABEL).map(([value, label]) => <option key={value} value={value}>{tr(label, { not_started: "Not started", in_delivery: "In delivery", partially_received: "Partial receipt", delivery_problem: "Receiving problem", fully_received: "Completed" }[value])}</option>)}</select>
       </FilterBar>
-      {loading ? <div className="border bg-card p-8 text-center text-sm text-muted-foreground">{tr("جارٍ تحميل أوامر الشراء...", "Loading purchase orders...")}</div> : <DataTable columns={columns} rows={filteredOrders} rowTestId="purchase-order-row" tableClassName="min-w-[1040px]" empty={<EmptyState title={tr("لا توجد أوامر شراء", "No purchase orders")} description={tr("أنشئ أمر الشراء من مقارنة أسعار معتمدة؛ سيظهر هنا تلقائيًا.", "Create a PO from an approved comparison; it will appear here automatically.")} />} />}
+      {loading ? <div className="border bg-card p-8 text-center text-sm text-muted-foreground">{tr("جارٍ تحميل أوامر الشراء...", "Loading purchase orders...")}</div> : <>
+        <DataTable columns={columns} rows={filteredOrders} rowTestId="purchase-order-row" tableClassName="min-w-[1040px]" empty={<EmptyState title={tr("لا توجد أوامر شراء", "No purchase orders")} description={tr("أنشئ أمر الشراء من مقارنة أسعار معتمدة؛ سيظهر هنا تلقائيًا.", "Create a PO from an approved comparison; it will appear here automatically.")} />} />
+        {!!filteredOrders.length && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border border-t-0 bg-muted/60 px-3 py-2 text-xs" data-testid="purchase-order-totals">
+            <span className="font-bold text-foreground">{tr("إجمالي قيمة أوامر الشراء المعروضة", "Total value of listed purchase orders")}: <span dir="ltr">{fmtEGP(totals.value)}</span></span>
+            <span className="text-muted-foreground">{tr("مدفوع", "Paid")} <b className="text-foreground" dir="ltr">{fmtEGP(totals.paid)}</b> · {tr("متبقي", "Outstanding")} <b className="text-foreground" dir="ltr">{fmtEGP(totals.outstanding)}</b></span>
+          </div>
+        )}
+      </>}
     </div>
   );
 }

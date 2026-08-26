@@ -1338,6 +1338,7 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
           {selectedSupplierName && <><span className="text-muted-foreground">|</span><span className="text-foreground">{tr("المختار:", "Selected:")} <b>{selectedSupplierName}</b></span></>}
           {selectedPurchaseSupplierCount > 1 && <><span className="text-muted-foreground">|</span><span className="text-foreground">{tr(`اختيار مختلط — ${selectedPurchaseSupplierCount} موردين`, `Mixed selection — ${selectedPurchaseSupplierCount} suppliers`)}</span></>}
           {!!selectedPurchaseRows.length && <><span className="text-muted-foreground">|</span><span className="font-bold text-emerald-700">{tr("الإجمالي:", "Total:")} {formatMoney(selectedPurchaseTotal)}</span></>}
+          {!!selectedPurchaseRows.length && !!cheapestSelectableGroup && cheapestSelectableGroup.summary.final_offer_total !== selectedPurchaseTotal && <><span className="text-muted-foreground">|</span><span className={Number(cheapestSelectableGroup.summary.final_offer_total) - selectedPurchaseTotal >= 0 ? "text-emerald-700" : "text-amber-700"}>{tr("فرق عن أرخص عرض كامل:", "vs. cheapest complete offer:")} {formatMoney(Number(cheapestSelectableGroup.summary.final_offer_total) - selectedPurchaseTotal)}</span></>}
           {!!unselectedPurchaseItemCount && <><span className="text-muted-foreground">|</span><span className="text-amber-700">{tr(`${unselectedPurchaseItemCount} بدون اختيار`, `${unselectedPurchaseItemCount} unselected`)}</span></>}
         </div>
       )}
