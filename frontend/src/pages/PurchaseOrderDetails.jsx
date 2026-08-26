@@ -259,7 +259,7 @@ export default function PurchaseOrderDetails() {
     </ActionBar>}
 
     <Tabs defaultValue="overview" dir={direction}>
-      <TabsList className="flex h-auto w-full justify-start overflow-x-auto bg-muted p-1">
+      <TabsList className="flex h-auto w-full justify-start overflow-x-auto">
         {[
           ["overview", tr("نظرة عامة", "Overview")],
           ["items", tr("البنود", "Items")],

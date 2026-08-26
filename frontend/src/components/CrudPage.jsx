@@ -301,7 +301,7 @@ export default function CrudPage({
           <select
             key={filter.key}
             data-testid={`${testPrefix}-filter-${filter.key}`}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+            className="h-8 rounded-md border border-input bg-background px-2.5 text-sm text-foreground"
             value={filterValues[filter.key] || ""}
             onChange={(e) => setFilterValues((current) => ({ ...current, [filter.key]: e.target.value }))}
           >
@@ -320,12 +320,12 @@ export default function CrudPage({
               {columns.map((c) => (
                 <TableHead
                   key={c.key}
-                  className={cn("whitespace-nowrap text-start text-xs font-bold text-muted-foreground", c.hideOnMobile && "hidden md:table-cell")}
+                  className={cn("whitespace-nowrap text-start text-[11px] font-bold uppercase tracking-wide text-muted-foreground", c.hideOnMobile && "hidden md:table-cell")}
                 >
                   {c.label}
                 </TableHead>
               ))}
-              <TableHead className="w-24 text-start text-xs font-bold text-muted-foreground">{tr("إجراءات", "Actions")}</TableHead>
+              <TableHead className="w-24 text-start text-[11px] font-bold uppercase tracking-wide text-muted-foreground">{tr("إجراءات", "Actions")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -337,7 +337,7 @@ export default function CrudPage({
               filtered.map((row) => (
                 <TableRow
                   key={row.id}
-                  className={cn("h-11 hover:bg-muted/50", renderDrawer && "cursor-pointer")}
+                  className={cn("h-9 hover:bg-muted/50", renderDrawer && "cursor-pointer")}
                   data-testid={`${testPrefix}-row`}
                   onClick={renderDrawer ? () => setDrawerRow(row) : undefined}
                 >
@@ -347,7 +347,7 @@ export default function CrudPage({
                       <TableCell
                         key={c.key}
                         className={cn(
-                          "py-1.5 text-sm",
+                          "py-1 text-sm",
                           c.hideOnMobile && "hidden md:table-cell",
                           c.truncate ? "max-w-[220px] truncate" : "whitespace-nowrap",
                           c.className,

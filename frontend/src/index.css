@@ -101,7 +101,7 @@ h6 {
     --chart-3: 215 16% 47%;
     --chart-4: 142 71% 45%;
     --chart-5: 38 92% 50%;
-    --radius: 0.5rem;
+    --radius: 0rem;
   }
   .dark {
     --background: 222 47% 8%;

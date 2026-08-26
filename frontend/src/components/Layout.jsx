@@ -125,7 +125,7 @@ export default function Layout() {
             sidebarCollapsed ? "justify-center px-2" : "gap-3 px-4"
           }`}
         >
-          <div className="h-10 w-10 rounded-md bg-primary flex items-center justify-center">
+          <div className="h-9 w-9 bg-primary flex items-center justify-center">
             <Building2 className="h-5 w-5 text-white" />
           </div>
           {!sidebarCollapsed && <div>
@@ -144,7 +144,7 @@ export default function Layout() {
             data-testid="sidebar-user"
           >
             <div className={`flex items-center min-w-0 ${sidebarCollapsed ? "justify-center" : "gap-2"}`}>
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center border bg-muted">
                 <UserRound className="h-4 w-4 text-muted-foreground" />
               </div>
               {!sidebarCollapsed && <div className="min-w-0">
@@ -182,11 +182,11 @@ export default function Layout() {
               title={sidebarCollapsed ? t(`nav.${key}`) : undefined}
               aria-label={t(`nav.${key}`)}
               className={({ isActive }) =>
-                `flex items-center rounded-md py-2 text-sm transition-colors duration-200 ${
+                `flex items-center py-1.5 text-sm transition-colors duration-200 ${
                   sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"
                 } ${
                   isActive
-                    ? "bg-primary/10 text-primary font-semibold ring-1 ring-inset ring-primary/15"
+                    ? "bg-primary text-primary-foreground font-bold"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`
               }
