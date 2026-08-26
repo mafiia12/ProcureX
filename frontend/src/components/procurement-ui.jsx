@@ -58,6 +58,59 @@ export function SectionHeader({ title, description, action, className }) {
   );
 }
 
+export function Panel({ title, description, action, children, className, bodyClassName, testId }) {
+  return (
+    <section className={cn("border bg-card", className)} data-testid={testId}>
+      {(title || action) && (
+        <div className="flex min-h-9 items-center justify-between gap-3 border-b px-3 py-2">
+          <div className="min-w-0">
+            {title && <h3 className="truncate text-[13px] font-bold text-foreground">{title}</h3>}
+            {description && <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>}
+          </div>
+          {action}
+        </div>
+      )}
+      <div className={cn("p-3", bodyClassName)}>{children}</div>
+    </section>
+  );
+}
+
+export function KpiStrip({ items, className }) {
+  return (
+    <div className={cn("flex flex-wrap border bg-card", className)}>
+      {items.map((item, index) => (
+        <article key={item.testId || item.label || index} className="min-w-[150px] flex-1 border-border px-3 py-2 [&:not(:first-child)]:border-s" data-testid={item.testId}>
+          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            {item.icon && <item.icon className="h-3.5 w-3.5 shrink-0" />}
+            <span className="truncate">{item.label}</span>
+          </div>
+          <div className={cn("mt-0.5 truncate text-lg font-extrabold tabular-nums", KPI_TONE_TEXT[item.tone] || "text-foreground")} dir="auto">{item.value}</div>
+          {item.helper && <div className="mt-0.5 truncate text-[10.5px] text-muted-foreground">{item.helper}</div>}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+export function Callout({ tone = "neutral", title, children, action, className, testId }) {
+  const toneBorder = {
+    neutral: "border-s-border",
+    primary: "border-s-primary",
+    success: "border-s-emerald-600",
+    warning: "border-s-amber-600",
+    danger: "border-s-destructive",
+    info: "border-s-blue-600",
+  }[tone] || "border-s-border";
+  return (
+    <div className={cn("border border-s-2 bg-card p-3", toneBorder, className)} data-testid={testId}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">{title && <div className="text-sm font-bold text-foreground">{title}</div>}{children}</div>
+        {action}
+      </div>
+    </div>
+  );
+}
+
 const KPI_TONES = {
   neutral: "bg-muted text-muted-foreground",
   primary: "bg-primary/10 text-primary",
@@ -65,6 +118,15 @@ const KPI_TONES = {
   warning: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
   danger: "bg-destructive/10 text-destructive",
   info: "bg-blue-500/10 text-blue-700 dark:text-blue-300",
+};
+
+const KPI_TONE_TEXT = {
+  neutral: "text-foreground",
+  primary: "text-primary",
+  success: "text-emerald-700 dark:text-emerald-300",
+  warning: "text-amber-700 dark:text-amber-300",
+  danger: "text-destructive",
+  info: "text-blue-700 dark:text-blue-300",
 };
 
 export function KpiCard({ label, value, helper, icon: Icon, tone = "neutral", testId }) {

@@ -27,7 +27,7 @@ import {
 } from "@/lib/priceComparison";
 import ProcurementProgress from "@/components/ProcurementProgress";
 import {
-  AttachmentBlock, EmptyState, StatusBadge, SupplierCard,
+  AttachmentBlock, Callout, EmptyState, StatusBadge, SupplierCard,
 } from "@/components/procurement-ui";
 import { useOptionalAuth } from "@/contexts/AuthContext";
 
@@ -1323,10 +1323,10 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
         </div>
       </section>
       <ProcurementProgress currentStage={2} />
-      {sourceRequestId && <section className="rounded-lg border-2 border-blue-500/20 bg-blue-500/10 p-4" data-testid="source-request-attachments">
-        <div className="mb-3 flex items-center gap-2"><Paperclip className="h-5 w-5 text-blue-700 dark:text-blue-300" /><div><h3 className="font-bold text-foreground">{tr("مرفقات طلب الشراء", "Purchase request attachments")}</h3><p className="text-xs text-muted-foreground">{tr("اعرض المستند أثناء إدخال الأصناف والأسعار يدويًا.", "Keep the document visible while entering items and prices manually.")}</p></div></div>
-        {sourceAttachments.length ? <div className="grid gap-3 lg:grid-cols-2">{sourceAttachments.map((attachment) => <RequestAttachmentCard key={attachment.id} attachment={attachment} tr={tr} />)}</div> : <div className="rounded-md border border-dashed bg-card/70 p-4 text-center text-sm text-muted-foreground">{tr("لا توجد مرفقات محفوظة لهذا الطلب.", "No saved attachments for this request.")}</div>}
-      </section>}
+      {sourceRequestId && <Callout tone="info" testId="source-request-attachments" className="block">
+        <div className="mb-3 flex items-center gap-2"><Paperclip className="h-5 w-5 shrink-0 text-blue-700 dark:text-blue-300" /><div><h3 className="font-bold text-foreground">{tr("مرفقات طلب الشراء", "Purchase request attachments")}</h3><p className="text-xs text-muted-foreground">{tr("اعرض المستند أثناء إدخال الأصناف والأسعار يدويًا.", "Keep the document visible while entering items and prices manually.")}</p></div></div>
+        {sourceAttachments.length ? <div className="grid gap-3 lg:grid-cols-2">{sourceAttachments.map((attachment) => <RequestAttachmentCard key={attachment.id} attachment={attachment} tr={tr} />)}</div> : <div className="border border-dashed bg-card/70 p-4 text-center text-sm text-muted-foreground">{tr("لا توجد مرفقات محفوظة لهذا الطلب.", "No saved attachments for this request.")}</div>}
+      </Callout>}
       {!!rows.length && (
         <div
           className="sticky top-[3.7rem] z-10 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border bg-card/95 px-3 py-2 text-xs shadow-sm backdrop-blur comparison-print-hidden"

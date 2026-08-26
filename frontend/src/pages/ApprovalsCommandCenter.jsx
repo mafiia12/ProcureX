@@ -14,21 +14,17 @@ import ProcurementProgress from "@/components/ProcurementProgress";
 import { buildApprovalUrl, buildEmailUrl, buildWhatsAppUrl } from "@/lib/approvalSharing";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
-import { EmptyState, KpiCard, PageHeader, StatusBadge, Timeline } from "@/components/procurement-ui";
+import { Callout, EmptyState, KpiStrip, PageHeader, StatusBadge, Timeline } from "@/components/procurement-ui";
 import {
   APPROVAL_STAGES, APPROVAL_STAGE_LABELS, approvalProgressStage,
 } from "@/lib/approvalStages";
 
 const DECISION_LABELS = { approved: ["اعتماد", "Approve"], rejected: ["رفض", "Reject"], revision_requested: ["تعديل مطلوب", "Request revision"] };
 const QUOTATION_STATUS_LABEL = { draft: ["مسودة", "Draft"], received: ["تم الاستلام", "Received"], withdrawn: ["منسحب", "Withdrawn"] };
-const QUOTATION_STATUS_STYLE = {
-  draft: "bg-slate-100 text-slate-700",
-  received: "bg-emerald-100 text-emerald-800",
-  withdrawn: "bg-red-100 text-red-700",
-};
+const QUOTATION_STATUS_TONE = { draft: "neutral", received: "success", withdrawn: "danger" };
 
 const statusLabels = { draft: ["مسودة", "Draft"], ready_to_send: ["بانتظار الإرسال", "Ready to send"], sent: ["تم فتح المشاركة", "Shared"], pending_approval: ["بانتظار الاعتماد", "Pending approval"], approved: ["معتمد", "Approved"], rejected: ["مرفوض", "Rejected"], revision_requested: ["مطلوب تعديل", "Revision requested"], expired: ["منتهي", "Expired"], cancelled: ["ملغي", "Cancelled"] };
-const statusColors = { draft: "bg-slate-100 text-slate-700", ready_to_send: "bg-blue-100 text-blue-800", sent: "bg-indigo-100 text-indigo-800", pending_approval: "bg-amber-100 text-amber-900", approved: "bg-emerald-100 text-emerald-800", rejected: "bg-red-100 text-red-800", revision_requested: "bg-orange-100 text-orange-800" };
+const statusTones = { draft: "neutral", ready_to_send: "info", sent: "info", pending_approval: "warning", approved: "success", rejected: "danger", revision_requested: "warning" };
 const roleLabels = { procurement_officer: ["مسؤول المشتريات", "Procurement Officer"], procurement_engineer: ["مهندس المشتريات", "Procurement Engineer"], procurement_responsible: ["مسؤول المشتريات", "Procurement Lead"], commercial_manager: ["المدير التجاري", "Commercial Manager"], external_engineer: ["المهندس الخارجي", "External Engineer"], admin: ["المدير", "Administrator"] };
 const paymentLabels = { not_started: ["لم يبدأ", "Not started"], pending: ["بانتظار الدفع", "Pending payment"], proof_submitted: ["رُفع الإثبات", "Proof submitted"], under_review: ["تحت المراجعة", "Under review"], verified: ["مدفوع", "Verified"], rejected: ["مرفوض", "Rejected"], cancelled: ["ملغي", "Cancelled"] };
 const stageEnglish = {
@@ -134,18 +130,20 @@ export default function ApprovalsCommandCenter() {
   const currentStage = approvalProgressStage(selected?.approval_stage);
 
   return <div className="space-y-4" data-testid="approvals-command-center">
-    <PageHeader title={tr("مركز الاعتمادات", "Approval Center")} description={tr("راجع ملخص القرار أولًا ثم افتح التفاصيل التي تحتاجها فقط.", "Review the decision summary first, then open only the supporting detail you need.")} actions={<div className="rounded-lg border bg-card px-3 py-2"><div className="text-[11px] text-muted-foreground">{tr("دورك الحالي", "Your role")}</div><div className="text-sm font-bold">{dictionaryLabel(roleLabels, role, tr, role)}</div></div>} />
-    <div className="grid gap-3 sm:grid-cols-4">
-      <KpiCard label={tr("اعتماد المقارنة", "Comparison approval")} value={pendingTechnical} tone="info" />
-      <KpiCard label={tr("موافقة تجارية", "Commercial approval")} value={pendingFund} tone="warning" />
-      <KpiCard label={tr("إتاحة المبلغ", "Funds availability")} value={pendingRelease} tone="warning" />
-      <KpiCard label={tr("جاهز لأمر شراء", "Ready for PO")} value={internalItems.filter((item) => item.status === "approved" && item.approval_stage === APPROVAL_STAGES.PO_READY && !item.has_purchase_order).length} tone="success" />
-    </div>
-    <div className="grid gap-2 rounded-lg border bg-card p-3 md:grid-cols-[1fr_220px_1fr]"><Input placeholder={tr("رقم الاعتماد أو المشروع", "Approval number or project")} value={filters.search} onChange={(event) => setFilters((value) => ({ ...value, search: event.target.value }))} /><select className="h-10 rounded-md border bg-background px-3" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}><option value="">{tr("كل حالات الاعتماد", "All approval statuses")}</option>{Object.entries(statusLabels).map(([value, labels]) => <option key={value} value={value}>{tr(...labels)}</option>)}</select><Input placeholder={tr("اسم منفذ الإجراء", "Action owner name")} value={actor} onChange={(event) => setActor(event.target.value)} /></div>
+    <PageHeader title={tr("مركز الاعتمادات", "Approval Center")} description={tr("راجع ملخص القرار أولًا ثم افتح التفاصيل التي تحتاجها فقط.", "Review the decision summary first, then open only the supporting detail you need.")} actions={<div className="border bg-card px-3 py-1.5"><div className="text-[11px] text-muted-foreground">{tr("دورك الحالي", "Your role")}</div><div className="text-sm font-bold">{dictionaryLabel(roleLabels, role, tr, role)}</div></div>} />
+    <KpiStrip
+      items={[
+        { label: tr("اعتماد المقارنة", "Comparison approval"), value: pendingTechnical, tone: "info" },
+        { label: tr("موافقة تجارية", "Commercial approval"), value: pendingFund, tone: "warning" },
+        { label: tr("إتاحة المبلغ", "Funds availability"), value: pendingRelease, tone: "warning" },
+        { label: tr("جاهز لأمر شراء", "Ready for PO"), value: internalItems.filter((item) => item.status === "approved" && item.approval_stage === APPROVAL_STAGES.PO_READY && !item.has_purchase_order).length, tone: "success" },
+      ]}
+    />
+    <div className="grid gap-2 border bg-card p-2.5 md:grid-cols-[1fr_220px_1fr]"><Input placeholder={tr("رقم الاعتماد أو المشروع", "Approval number or project")} value={filters.search} onChange={(event) => setFilters((value) => ({ ...value, search: event.target.value }))} /><select className="h-9 rounded-md border bg-background px-3" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}><option value="">{tr("كل حالات الاعتماد", "All approval statuses")}</option>{Object.entries(statusLabels).map(([value, labels]) => <option key={value} value={value}>{tr(...labels)}</option>)}</select><Input placeholder={tr("اسم منفذ الإجراء", "Action owner name")} value={actor} onChange={(event) => setActor(event.target.value)} /></div>
     <div className="grid gap-4 xl:grid-cols-[minmax(280px,.72fr)_minmax(0,1.5fr)]">
-      <section className="space-y-2">{loading ? <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">{tr("جارٍ التحميل...", "Loading...")}</div> : !data.items.length ? <EmptyState compact title={tr("لا توجد اعتمادات مطابقة", "No matching approvals")} description={tr("ستظهر هنا الاعتمادات التي تدخل المسار الرسمي.", "Formal workflow approvals will appear here.")} /> : <>{internalItems.map((item) => <ApprovalCard key={item.id} item={item} selected={selected} onOpen={open} tr={tr} />)}{!!legacyItems.length && <details className="rounded-lg border bg-card p-3"><summary className="cursor-pointer font-bold text-muted-foreground">{tr(`المسار الخارجي القديم (${legacyItems.length})`, `Legacy external workflow (${legacyItems.length})`)}</summary><div className="mt-3 space-y-2">{legacyItems.map((item) => <ApprovalCard key={item.id} item={item} selected={selected} onOpen={open} tr={tr} />)}</div></details>}</>}</section>
-      <section className="min-h-[440px] rounded-lg border bg-card p-4">{!selected ? <EmptyState className="min-h-[400px]" title={tr("اختر اعتمادًا", "Select an approval")} description={tr("اعرض ملخص القرار والمستندات الداعمة هنا.", "Its decision summary and supporting documents will appear here.")} /> : <div className="space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-bold" dir="ltr">{selected.approval_number}</h3><p className="text-sm text-muted-foreground">{selected.project_name || tr("بدون مشروع", "No project")} · {tr(`الإصدار ${selected.revision_number + 1}`, `Revision ${selected.revision_number + 1}`)}</p></div><StatusBadge className={statusColors[selected.status]}>{dictionaryLabel(statusLabels, selected.status, tr, selected.status)}</StatusBadge></div>
+      <section className="space-y-2">{loading ? <div className="border bg-card p-8 text-center text-muted-foreground">{tr("جارٍ التحميل...", "Loading...")}</div> : !data.items.length ? <EmptyState compact title={tr("لا توجد اعتمادات مطابقة", "No matching approvals")} description={tr("ستظهر هنا الاعتمادات التي تدخل المسار الرسمي.", "Formal workflow approvals will appear here.")} /> : <>{internalItems.map((item) => <ApprovalCard key={item.id} item={item} selected={selected} onOpen={open} tr={tr} />)}{!!legacyItems.length && <details className="border bg-card p-3"><summary className="cursor-pointer font-bold text-muted-foreground">{tr(`المسار الخارجي القديم (${legacyItems.length})`, `Legacy external workflow (${legacyItems.length})`)}</summary><div className="mt-3 space-y-2">{legacyItems.map((item) => <ApprovalCard key={item.id} item={item} selected={selected} onOpen={open} tr={tr} />)}</div></details>}</>}</section>
+      <section className="min-h-[440px] border bg-card p-4">{!selected ? <EmptyState className="min-h-[400px]" title={tr("اختر اعتمادًا", "Select an approval")} description={tr("اعرض ملخص القرار والمستندات الداعمة هنا.", "Its decision summary and supporting documents will appear here.")} /> : <div className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-bold" dir="ltr">{selected.approval_number}</h3><p className="text-sm text-muted-foreground">{selected.project_name || tr("بدون مشروع", "No project")} · {tr(`الإصدار ${selected.revision_number + 1}`, `Revision ${selected.revision_number + 1}`)}</p></div><StatusBadge tone={statusTones[selected.status] || "neutral"}>{dictionaryLabel(statusLabels, selected.status, tr, selected.status)}</StatusBadge></div>
         <div className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/40 p-3 text-sm lg:grid-cols-4" data-testid="approval-decision-summary">
           {[["APR", selected.approval_number], [tr("المشروع", "Project"), selected.project_name || "-"], ["REQ", selected.source_request_number || "-"], ["CMP", selected.comparison_number || "-"], [tr("الإجمالي", "Total"), fmtEGP(selected.final_total)], [tr("المرحلة الحالية", "Current stage"), stageLabel(selected.approval_stage, tr)], [tr("المسؤول", "Responsible role"), dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)], [tr("القرار المطلوب", "Decision required"), stageLabel(selected.approval_stage, tr)]].map(([label, value]) => <div key={label}><div className="text-[11px] text-muted-foreground">{label}</div><div className="mt-0.5 font-semibold" dir={["APR", "REQ", "CMP"].includes(label) ? "ltr" : "auto"}>{value}</div></div>)}
         </div>
@@ -189,11 +187,11 @@ function InternalApproval({ selected, role, note, setNote, canAct, currentStage,
   const hasPurchaseOrders = readyForPO && linkedOrders.length > 0;
   const canReleaseFunds = role === "admin" || role === "commercial_manager";
   const canCreatePO = role === "admin" || role === "procurement_responsible";
-  return <><ProcurementProgress currentStage={currentStage} /><div className={`rounded-lg border p-3 ${readyForPO ? "bg-emerald-500/10" : "bg-blue-500/10"}`}><div className="text-xs font-bold text-muted-foreground">{tr("المطلوب الآن", "Decision required now")}</div><div className="mt-1 text-base font-bold">{hasPurchaseOrders ? tr("تم إنشاء أمر الشراء", "Purchase order created") : stageLabel(selected.approval_stage, tr)}</div><div className="mt-1 text-sm text-muted-foreground">{tr("المسؤول", "Responsible")}: {dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)}</div></div>
-    {selected.status === "pending_approval" && !isRelease && <div className="space-y-3">{canAct ? <div className="sticky bottom-3 z-10 flex flex-wrap gap-2 rounded-lg border bg-card/95 p-2 shadow-sm backdrop-blur"><Button onClick={() => requestDecision("approved")} className="bg-emerald-700 text-white hover:bg-emerald-800"><ShieldCheck className="h-4 w-4" /> {selected.approval_stage === APPROVAL_STAGES.COMPARISON_TECHNICAL ? tr("اعتماد المقارنة", "Approve comparison") : tr("موافقة تجارية / اعتماد الصرف", "Commercial / expenditure approval")}</Button><Button variant="outline" onClick={() => requestDecision("revision_requested")}><Undo2 className="h-4 w-4" />{tr("تعديل مطلوب", "Request revision")}</Button><Button variant="destructive" onClick={() => requestDecision("rejected")}><XCircle className="h-4 w-4" />{tr("رفض", "Reject")}</Button></div> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
-    {isRelease && <div className="space-y-3 rounded-lg border bg-violet-500/10 p-4"><div className="font-bold">{tr("الموافقة التجارية / اعتماد الصرف مكتمل — المبلغ لم يُتح بعد", "Commercial approval is complete — funds are not yet available")}</div><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={releaseMethod} onChange={(event) => setReleaseMethod(event.target.value)}><option value="">{tr("طريقة الإتاحة (اختياري)", "Availability method (optional)")}</option><option value="cash">{tr("نقدي", "Cash")}</option><option value="transfer">{tr("تحويل", "Transfer")}</option><option value="custody">{tr("عهدة", "Custody")}</option><option value="other">{tr("أخرى", "Other")}</option></select><Input value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("ملاحظة اختيارية", "Optional note")} />{canReleaseFunds ? <Button className="w-full" onClick={releaseFunds}><WalletCards className="h-5 w-5" />{tr("تأكيد إتاحة المبلغ لمسؤول المشتريات", "Confirm funds availability for procurement")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
+  return <><ProcurementProgress currentStage={currentStage} /><Callout tone={readyForPO ? "success" : "info"} className="block"><div className="text-xs font-bold text-muted-foreground">{tr("المطلوب الآن", "Decision required now")}</div><div className="mt-1 text-base font-bold">{hasPurchaseOrders ? tr("تم إنشاء أمر الشراء", "Purchase order created") : stageLabel(selected.approval_stage, tr)}</div><div className="mt-1 text-sm text-muted-foreground">{tr("المسؤول", "Responsible")}: {dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)}</div></Callout>
+    {selected.status === "pending_approval" && !isRelease && <div className="space-y-3">{canAct ? <div className="sticky bottom-3 z-10 flex flex-wrap gap-2 border bg-card/95 p-2 shadow-sm backdrop-blur"><Button onClick={() => requestDecision("approved")} className="bg-emerald-700 text-white hover:bg-emerald-800"><ShieldCheck className="h-4 w-4" /> {selected.approval_stage === APPROVAL_STAGES.COMPARISON_TECHNICAL ? tr("اعتماد المقارنة", "Approve comparison") : tr("موافقة تجارية / اعتماد الصرف", "Commercial / expenditure approval")}</Button><Button variant="outline" onClick={() => requestDecision("revision_requested")}><Undo2 className="h-4 w-4" />{tr("تعديل مطلوب", "Request revision")}</Button><Button variant="destructive" onClick={() => requestDecision("rejected")}><XCircle className="h-4 w-4" />{tr("رفض", "Reject")}</Button></div> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
+    {isRelease && <Callout tone="primary" className="block space-y-3"><div className="font-bold text-foreground">{tr("الموافقة التجارية / اعتماد الصرف مكتمل — المبلغ لم يُتح بعد", "Commercial approval is complete — funds are not yet available")}</div><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={releaseMethod} onChange={(event) => setReleaseMethod(event.target.value)}><option value="">{tr("طريقة الإتاحة (اختياري)", "Availability method (optional)")}</option><option value="cash">{tr("نقدي", "Cash")}</option><option value="transfer">{tr("تحويل", "Transfer")}</option><option value="custody">{tr("عهدة", "Custody")}</option><option value="other">{tr("أخرى", "Other")}</option></select><Input value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("ملاحظة اختيارية", "Optional note")} />{canReleaseFunds ? <Button className="w-full" onClick={releaseFunds}><WalletCards className="h-5 w-5" />{tr("تأكيد إتاحة المبلغ لمسؤول المشتريات", "Confirm funds availability for procurement")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</Callout>}
     {readyForPO && (hasPurchaseOrders
-      ? <div className="rounded-lg border bg-emerald-500/10 p-4" data-testid="po-created-state">
+      ? <Callout tone="success" testId="po-created-state" className="block">
           <div className="flex items-center gap-2 font-bold text-emerald-800 dark:text-emerald-300"><CheckCircle2 className="h-5 w-5" />{tr("تم إنشاء أمر الشراء", "Purchase order created")}</div>
           <div className="mt-1 text-sm text-muted-foreground">{linkedOrders.length > 1
             ? tr(`تم إنشاء ${linkedOrders.length} أوامر شراء لهذا الاعتماد.`, `${linkedOrders.length} purchase orders were created for this approval.`)
@@ -209,22 +207,22 @@ function InternalApproval({ selected, role, note, setNote, canAct, currentStage,
               ? tr("فتح أمر الشراء", "Open purchase order")
               : tr(`عرض أوامر الشراء (${linkedOrders.length})`, `View purchase orders (${linkedOrders.length})`)}
           </Button>
-        </div>
-      : <div className="rounded-lg border bg-emerald-500/10 p-4"><div className="font-bold text-emerald-800 dark:text-emerald-300">{tr("🟢 التمويل متاح", "Funds available")}</div><div className="mt-1 text-sm text-muted-foreground">{tr("جاهز لإصدار أمر شراء ومراجعته", "Ready to create and review a purchase order")}</div>{canCreatePO ? <Button className="mt-3 w-full" onClick={createDraftPO}><ShoppingCart className="h-5 w-5" />{tr("إنشاء أوامر الشراء للمراجعة", "Create purchase orders for review")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>
+        </Callout>
+      : <Callout tone="success" className="block"><div className="font-bold text-emerald-800 dark:text-emerald-300">{tr("🟢 التمويل متاح", "Funds available")}</div><div className="mt-1 text-sm text-muted-foreground">{tr("جاهز لإصدار أمر شراء ومراجعته", "Ready to create and review a purchase order")}</div>{canCreatePO ? <Button className="mt-3 w-full" onClick={createDraftPO}><ShoppingCart className="h-5 w-5" />{tr("إنشاء أوامر الشراء للمراجعة", "Create purchase orders for review")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</Callout>
     )}
     {selected.status === "revision_requested" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/revision`)}>{tr("إنشاء إصدار معدل", "Create revised version")}</Button>}</>;
 }
 
 function RoleNotice({ selected, role, tr }) {
-  return <div className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">{tr("يمكنك مشاهدة المسار، لكن الإجراء متاح الآن لـ", "You can view this workflow, but the action is currently assigned to")} {dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)} {tr("فقط. دورك الحالي:", "only. Your current role:")} {dictionaryLabel(roleLabels, role, tr, role)}.</div>;
+  return <Callout tone="warning"><span className="text-sm">{tr("يمكنك مشاهدة المسار، لكن الإجراء متاح الآن لـ", "You can view this workflow, but the action is currently assigned to")} {dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)} {tr("فقط. دورك الحالي:", "only. Your current role:")} {dictionaryLabel(roleLabels, role, tr, role)}.</span></Callout>;
 }
 
 function ApprovalCard({ item, selected, onOpen, tr }) {
-  return <button type="button" onClick={() => onOpen(item.id)} className={`w-full rounded-lg border bg-card p-3 text-start hover:border-primary/40 ${selected?.id === item.id ? "ring-2 ring-primary/50" : ""}`}><div className="flex items-start justify-between gap-3"><div><b dir="ltr">{item.approval_number}</b><div className="mt-1 text-sm text-muted-foreground">{item.project_name || tr("بدون مشروع", "No project")} · {tr(`الإصدار ${item.revision_number + 1}`, `Revision ${item.revision_number + 1}`)}</div></div><StatusBadge className={statusColors[item.status]}>{dictionaryLabel(statusLabels, item.status, tr, item.status)}</StatusBadge></div><div className="mt-2 flex items-end justify-between gap-2"><div className="text-xs text-muted-foreground">{stageLabel(item.approval_stage, tr)}<br/>{tr("المسؤول", "Responsible")}: {dictionaryLabel(roleLabels, item.responsible_role, tr, "-")}</div><b dir="ltr">{fmtEGP(item.final_total)}</b></div></button>;
+  return <button type="button" onClick={() => onOpen(item.id)} className={`w-full rounded-lg border bg-card p-3 text-start hover:border-primary/40 ${selected?.id === item.id ? "ring-2 ring-primary/50" : ""}`}><div className="flex items-start justify-between gap-3"><div><b dir="ltr">{item.approval_number}</b><div className="mt-1 text-sm text-muted-foreground">{item.project_name || tr("بدون مشروع", "No project")} · {tr(`الإصدار ${item.revision_number + 1}`, `Revision ${item.revision_number + 1}`)}</div></div><StatusBadge tone={statusTones[item.status] || "neutral"}>{dictionaryLabel(statusLabels, item.status, tr, item.status)}</StatusBadge></div><div className="mt-2 flex items-end justify-between gap-2"><div className="text-xs text-muted-foreground">{stageLabel(item.approval_stage, tr)}<br/>{tr("المسؤول", "Responsible")}: {dictionaryLabel(roleLabels, item.responsible_role, tr, "-")}</div><b dir="ltr">{fmtEGP(item.final_total)}</b></div></button>;
 }
 
 function LegacyApproval({ selected, actor, cashCode, setCashCode, action, share, tr }) {
-  return <div className="space-y-4"><div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">{tr("هذا اعتماد خارجي قديم؛ أدوات المشاركة محفوظة للتوافق ولا تختلط بمسار الاعتمادات الداخلي.", "This is a legacy external approval; sharing tools remain for compatibility and are separate from the internal workflow.")}</div><div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/50 p-3 text-sm"><div>{tr("المهندس", "Engineer")}<br/><b>{selected.engineer_name || "-"}</b></div><div>{tr("الإجمالي", "Total")}<br/><b>{fmtEGP(selected.final_total)}</b></div></div><div className="flex flex-wrap gap-2">{selected.status === "draft" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/ready`)}><CheckCircle2 className="h-4 w-4" />{tr("جاهز للإرسال", "Ready to send")}</Button>}{selected.status === "ready_to_send" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/sent`)}><ExternalLink className="h-4 w-4" />{tr("تسجيل فتح المشاركة", "Record share opened")}</Button>}{selected.status === "revision_requested" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/revision`)}>{tr("إنشاء الإصدار التالي", "Create next revision")}</Button>}<Button variant="outline" onClick={() => share("copy")}><ClipboardCopy className="h-4 w-4" />{tr("نسخ الرابط", "Copy link")}</Button><Button variant="outline" disabled={!selected.engineer_phone} onClick={() => share("whatsapp")}><MessageCircle className="h-4 w-4" />WhatsApp</Button><Button variant="outline" disabled={!selected.engineer_email} onClick={() => share("gmail")}><Mail className="h-4 w-4" />{tr("بريد", "Email")}</Button></div><details className="rounded-xl border p-3"><summary className="cursor-pointer font-bold">{tr("سجل المدفوعات المنفصل", "Separate legacy payment history")}</summary><div className="mt-3 space-y-2">{!selected.payments.length ? <div className="text-sm text-muted-foreground">{tr("لا توجد دفعات.", "No payments.")}</div> : selected.payments.map((payment) => <div key={payment.id} className="rounded-lg border p-3"><div className="flex justify-between"><b>{payment.method}</b><span>{dictionaryLabel(paymentLabels, payment.status, tr, payment.status)}</span></div><div className="mt-1 text-sm">{fmtEGP(payment.amount)}</div>{payment.status === "under_review" && <div className="mt-2 flex gap-2"><Button size="sm" onClick={() => action(`/workflow/payments/${payment.id}/verify`)}>{tr("تحقق", "Verify")}</Button><Button size="sm" variant="destructive" onClick={() => action(`/workflow/payments/${payment.id}/reject`)}>{tr("رفض", "Reject")}</Button></div>}{payment.method === "cash" && payment.status === "pending" && <div className="mt-2 flex gap-2"><Input value={cashCode} onChange={(event) => setCashCode(event.target.value.toUpperCase())} placeholder="CASH-XXXXXX" /><Button onClick={() => action(`/workflow/payments/${payment.id}/confirm-cash`, { cash_reference: cashCode, actor })}>{tr("تأكيد النقد", "Confirm cash")}</Button></div>}</div>)}</div></details></div>;
+  return <div className="space-y-4"><Callout tone="warning"><span className="text-sm">{tr("هذا اعتماد خارجي قديم؛ أدوات المشاركة محفوظة للتوافق ولا تختلط بمسار الاعتمادات الداخلي.", "This is a legacy external approval; sharing tools remain for compatibility and are separate from the internal workflow.")}</span></Callout><div className="grid grid-cols-2 gap-2 border bg-muted/50 p-3 text-sm"><div>{tr("المهندس", "Engineer")}<br/><b>{selected.engineer_name || "-"}</b></div><div>{tr("الإجمالي", "Total")}<br/><b>{fmtEGP(selected.final_total)}</b></div></div><div className="flex flex-wrap gap-2">{selected.status === "draft" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/ready`)}><CheckCircle2 className="h-4 w-4" />{tr("جاهز للإرسال", "Ready to send")}</Button>}{selected.status === "ready_to_send" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/sent`)}><ExternalLink className="h-4 w-4" />{tr("تسجيل فتح المشاركة", "Record share opened")}</Button>}{selected.status === "revision_requested" && <Button onClick={() => action(`/workflow/approvals/${selected.id}/revision`)}>{tr("إنشاء الإصدار التالي", "Create next revision")}</Button>}<Button variant="outline" onClick={() => share("copy")}><ClipboardCopy className="h-4 w-4" />{tr("نسخ الرابط", "Copy link")}</Button><Button variant="outline" disabled={!selected.engineer_phone} onClick={() => share("whatsapp")}><MessageCircle className="h-4 w-4" />WhatsApp</Button><Button variant="outline" disabled={!selected.engineer_email} onClick={() => share("gmail")}><Mail className="h-4 w-4" />{tr("بريد", "Email")}</Button></div><details className="rounded-xl border p-3"><summary className="cursor-pointer font-bold">{tr("سجل المدفوعات المنفصل", "Separate legacy payment history")}</summary><div className="mt-3 space-y-2">{!selected.payments.length ? <div className="text-sm text-muted-foreground">{tr("لا توجد دفعات.", "No payments.")}</div> : selected.payments.map((payment) => <div key={payment.id} className="rounded-lg border p-3"><div className="flex justify-between"><b>{payment.method}</b><span>{dictionaryLabel(paymentLabels, payment.status, tr, payment.status)}</span></div><div className="mt-1 text-sm">{fmtEGP(payment.amount)}</div>{payment.status === "under_review" && <div className="mt-2 flex gap-2"><Button size="sm" onClick={() => action(`/workflow/payments/${payment.id}/verify`)}>{tr("تحقق", "Verify")}</Button><Button size="sm" variant="destructive" onClick={() => action(`/workflow/payments/${payment.id}/reject`)}>{tr("رفض", "Reject")}</Button></div>}{payment.method === "cash" && payment.status === "pending" && <div className="mt-2 flex gap-2"><Input value={cashCode} onChange={(event) => setCashCode(event.target.value.toUpperCase())} placeholder="CASH-XXXXXX" /><Button onClick={() => action(`/workflow/payments/${payment.id}/confirm-cash`, { cash_reference: cashCode, actor })}>{tr("تأكيد النقد", "Confirm cash")}</Button></div>}</div>)}</div></details></div>;
 }
 
 const INLINE_VIEWABLE_ATTACHMENT_TYPES = new Set(["application/pdf"]);
@@ -263,9 +261,9 @@ function AttachmentRow({ attachment, requestId }) {
     ? `/internal/incoming-purchase-requests/${requestId}/general-attachments/${attachment.id}`
     : `/internal/incoming-purchase-requests/${requestId}/attachments/${attachment.id}`;
   const open = () => downloadWorkspaceFile(path, { filename: attachment.original_filename, mediaType: attachment.media_type });
-  return <button type="button" onClick={open} className="flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-xs hover:bg-slate-50" data-testid="request-attachment-row">
+  return <button type="button" onClick={open} className="flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-xs hover:bg-muted/50" data-testid="request-attachment-row">
     <span className="flex items-center gap-1"><Paperclip className="h-3 w-3" /> {attachment.original_filename}</span>
-    <span className="text-slate-400">{((attachment.size_bytes || 0) / 1024).toFixed(0)} KB</span>
+    <span className="text-muted-foreground">{((attachment.size_bytes || 0) / 1024).toFixed(0)} KB</span>
   </button>;
 }
 
@@ -277,7 +275,7 @@ function QuotationAttachmentLink({ rfqId, quotationId, attachment }) {
     mediaType: attachment.media_type,
     failureMessage: tr("تعذر فتح مرفق عرض المورد", "Could not open the supplier quotation attachment."),
   });
-  return <button type="button" onClick={open} className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100" data-testid="quotation-attachment-link">
+  return <button type="button" onClick={open} className="border bg-blue-500/10 px-2 py-1 text-xs text-blue-700 hover:bg-blue-500/20 dark:text-blue-300" data-testid="quotation-attachment-link">
     <Paperclip className="me-1 inline h-3 w-3" /> {attachment.original_filename}
   </button>;
 }
@@ -309,19 +307,19 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
           <div>{tr("الأولوية", "Priority")}<br /><b>{request.priority || "-"}</b></div>
           <div>{tr("وجهة التسليم", "Delivery destination")}<br /><b>{request.delivery_destination || "-"}</b></div>
         </div>
-        {request.notes && <div className="mt-2 rounded-md bg-slate-50 p-2 text-xs text-slate-600">{request.notes}</div>}
+        {request.notes && <div className="mt-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">{request.notes}</div>}
         <div className="mt-3 space-y-1.5">
           {items.map((item) => <div key={item.id} className="rounded-md border p-2 text-sm" data-testid="review-workspace-request-item">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
                 <b>{item.product_name}</b>
                 {item.is_manual
-                  ? <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">{tr("يدوي", "Manual")}</span>
-                  : <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[11px] text-blue-800">{tr("دليل الأصناف", "Item master")}</span>}
+                  ? <StatusBadge tone="warning">{tr("يدوي", "Manual")}</StatusBadge>
+                  : <StatusBadge tone="info">{tr("دليل الأصناف", "Item master")}</StatusBadge>}
               </div>
-              <span className="text-xs text-slate-500">{item.quantity} {item.unit}</span>
+              <span className="text-xs text-muted-foreground">{item.quantity} {item.unit}</span>
             </div>
-            {item.specifications && <div className="mt-1 text-xs text-slate-500">{item.specifications}</div>}
+            {item.specifications && <div className="mt-1 text-xs text-muted-foreground">{item.specifications}</div>}
             <div className="mt-1 text-xs text-muted-foreground">{tr("حالة المراجعة الفنية", "Technical review status")}: <b>{item.review_status}</b>{item.review_reason && <> — {item.review_reason}</>}</div>
           </div>)}
         </div>
@@ -351,7 +349,7 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
         : <div className="text-sm">
           <div className="flex flex-wrap gap-3"><b dir="ltr">{rfq.rfq_number}</b><span>{tr(`${rfq.supplier_count} مورد`, `${rfq.supplier_count} suppliers`)}</span><span>{tr(`${rfq.received_quotation_count} عرض مستلم`, `${rfq.received_quotation_count} quotations received`)}</span>{rfq.deadline && <span>{tr("الموعد النهائي", "Deadline")}: {rfq.deadline}</span>}</div>
           <div className="mt-2 flex flex-wrap gap-1">{rfq.suppliers.map((supplier) => (
-            <span key={supplier.supplier_id || supplier.supplier_name} className="rounded bg-slate-100 px-2 py-1 text-xs">{supplier.supplier_name}</span>
+            <span key={supplier.supplier_id || supplier.supplier_name} className="rounded bg-muted px-2 py-1 text-xs">{supplier.supplier_name}</span>
           ))}</div>
         </div>}
     </section></TabsContent>
@@ -362,11 +360,11 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
         <div key={quotation.id} className="rounded-lg border p-3 text-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <b>{quotation.supplier_name}</b>
-            <span className={`rounded-full px-2 py-1 text-xs font-bold ${QUOTATION_STATUS_STYLE[quotation.status] || "bg-slate-100 text-slate-700"}`}>
+            <StatusBadge tone={QUOTATION_STATUS_TONE[quotation.status] || "neutral"}>
               {dictionaryLabel(QUOTATION_STATUS_LABEL, quotation.status, tr, quotation.status)}
-            </span>
+            </StatusBadge>
           </div>
-          <div className="mt-1 flex flex-wrap gap-3 text-xs text-slate-500">
+          <div className="mt-1 flex flex-wrap gap-3 text-xs text-muted-foreground">
             {quotation.quotation_ref && <span>{tr("مرجع", "Reference")}: {quotation.quotation_ref}</span>}
             {quotation.quotation_date && <span>{tr("تاريخ", "Date")}: {quotation.quotation_date}</span>}
             {quotation.valid_until && <span>{tr("صالح حتى", "Valid until")}: {quotation.valid_until}</span>}
@@ -374,7 +372,7 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
             {quotation.delivery_terms && <span>{tr("التسليم", "Delivery")}: {quotation.delivery_terms}</span>}
           </div>
           <div className="mt-2 space-y-1">{quotation.lines.map((line, index) => (
-            <div key={line.rfq_item_id || index} className="flex flex-wrap justify-between gap-2 rounded bg-slate-50 px-2 py-1 text-xs">
+            <div key={line.rfq_item_id || index} className="flex flex-wrap justify-between gap-2 rounded bg-muted/50 px-2 py-1 text-xs">
               <span>{line.product_name}</span>
               <span>{line.quantity} {line.unit} × {fmtEGP(line.unit_price)} · {line.availability === "available" ? tr("متاح", "Available") : tr("غير متاح", "Unavailable")}</span>
             </div>
@@ -391,7 +389,7 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
       {!comparison
         ? <div className="text-sm text-muted-foreground">{tr("غير متاح / سجل سابق", "Unavailable / legacy record")}</div>
         : <div className="space-y-3">
-          <div className="text-xs text-slate-500">{comparison.comparison_number}</div>
+          <div className="text-xs text-muted-foreground">{comparison.comparison_number}</div>
           {comparison.product_summaries.map((product) => {
             const key = product.item_id || product.item_code;
             const productRows = comparison.rows.filter((row) => (row.item_id || row.item_code) === key);
@@ -401,7 +399,7 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
                 <div
                   key={row.id || index}
                   data-testid="review-workspace-comparison-row"
-                  className={`flex flex-wrap items-center justify-between gap-2 rounded px-2 py-1 text-xs ${row.selected_for_purchase ? "bg-emerald-50 ring-1 ring-emerald-300" : "bg-slate-50"}`}
+                  className={`flex flex-wrap items-center justify-between gap-2 rounded px-2 py-1 text-xs ${row.selected_for_purchase ? "bg-emerald-50 ring-1 ring-emerald-300" : "bg-muted/50"}`}
                 >
                   <span className="font-bold">{row.supplier_name}{row.selected_for_purchase ? tr(" ✓ محدد للشراء", " ✓ Selected") : ""}</span>
                   <span>{row.quantity} × {fmtEGP(row.unit_price)}{row.discount_pct ? ` − ${row.discount_pct}%` : ""}{row.tax_pct ? ` + ${tr("ضريبة", "VAT")} ${row.tax_pct}%` : ""} = {fmtEGP(row.final_total)}</span>

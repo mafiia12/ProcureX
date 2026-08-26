@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import PurchaseOrderPaymentDrawer from "@/components/PurchaseOrderPaymentDrawer";
 import ProcurementProgress from "@/components/ProcurementProgress";
 import {
-  ActionBar, EmptyState, KpiCard, PageHeader, StatusBadge, Timeline,
+  ActionBar, Callout, EmptyState, KpiStrip, PageHeader, Panel, StatusBadge, Timeline,
 } from "@/components/procurement-ui";
 import { Button } from "@/components/ui/button";
 import {
@@ -237,12 +237,14 @@ export default function PurchaseOrderDetails() {
       </div>
     </section>
 
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <KpiCard label={tr("إجمالي أمر الشراء", "PO total")} value={fmtEGP(paymentSummary.po_total ?? order.final_total)} icon={Wallet} tone="primary" />
-      <KpiCard label={tr("المدفوع", "Paid")} value={fmtEGP(paymentSummary.paid_amount)} icon={CheckCircle2} tone="success" />
-      <KpiCard label={tr("المتبقي", "Outstanding")} value={fmtEGP(paymentSummary.outstanding_amount)} icon={AlertTriangle} tone="warning" />
-      <KpiCard label={tr("حالة الاستلام", "Receiving status")} value={receivingStatus} icon={PackageCheck} tone={order.status === "delivery_problem" ? "danger" : completed ? "success" : "neutral"} />
-    </div>
+    <KpiStrip
+      items={[
+        { label: tr("إجمالي أمر الشراء", "PO total"), value: fmtEGP(paymentSummary.po_total ?? order.final_total), icon: Wallet, tone: "primary" },
+        { label: tr("المدفوع", "Paid"), value: fmtEGP(paymentSummary.paid_amount), icon: CheckCircle2, tone: "success" },
+        { label: tr("المتبقي", "Outstanding"), value: fmtEGP(paymentSummary.outstanding_amount), icon: AlertTriangle, tone: "warning" },
+        { label: tr("حالة الاستلام", "Receiving status"), value: receivingStatus, icon: PackageCheck, tone: order.status === "delivery_problem" ? "danger" : completed ? "success" : "neutral" },
+      ]}
+    />
 
     {canFinalize && <ActionBar data-testid="po-operational-actions">
       <div className="me-auto min-w-52">
@@ -272,9 +274,8 @@ export default function PurchaseOrderDetails() {
 
       <TabsContent value="overview" forceMount className="data-[state=inactive]:hidden">
         <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
-          <section className="rounded-lg border bg-card p-4">
-            <h3 className="text-sm font-bold">{tr("بيانات أمر الشراء", "Purchase order overview")}</h3>
-            <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+          <Panel title={tr("بيانات أمر الشراء", "Purchase order overview")}>
+            <div className="grid grid-cols-2 gap-3 text-sm">
               {[
                 [tr("العميل", "Client"), order.customer_name],
                 [tr("تاريخ PO", "PO date"), order.po_date],
@@ -285,10 +286,9 @@ export default function PurchaseOrderDetails() {
               ].map(([label, value]) => <div key={label}><div className="text-xs text-muted-foreground">{label}</div><div className="mt-0.5 font-semibold">{value || "-"}</div></div>)}
             </div>
             {order.notes && <div className="mt-4 rounded-md bg-muted/50 p-3 text-sm"><b>{tr("ملاحظات", "Notes")}:</b> {order.notes}</div>}
-          </section>
-          <section className="rounded-lg border bg-card p-4">
-            <h3 className="text-sm font-bold">{tr("الملخص المالي", "Financial summary")}</h3>
-            <div className="mt-3 space-y-2 text-sm">
+          </Panel>
+          <Panel title={tr("الملخص المالي", "Financial summary")}>
+            <div className="space-y-2 text-sm">
               {[
                 [tr("قبل الخصم", "Subtotal"), order.subtotal],
                 [tr("الخصم", "Discount"), order.discount_total],
@@ -298,7 +298,7 @@ export default function PurchaseOrderDetails() {
                 [tr("الإجمالي النهائي", "Final total"), order.final_total],
               ].map(([label, value], index) => <div key={label} className={`flex items-center justify-between gap-3 ${index === 5 ? "border-t pt-2 font-bold" : ""}`}><span className="text-muted-foreground">{label}</span><span dir="ltr">{fmtEGP(value)}</span></div>)}
             </div>
-          </section>
+          </Panel>
         </div>
         <div className="mt-4"><ProcurementProgress currentStage={currentStage} /></div>
       </TabsContent>
@@ -325,7 +325,7 @@ export default function PurchaseOrderDetails() {
       </TabsContent>
 
       <TabsContent value="payments" forceMount className="data-[state=inactive]:hidden">
-        <section className="rounded-lg border bg-card p-4" data-testid="po-payment-summary">
+        <section className="border bg-card p-3" data-testid="po-payment-summary">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div><h3 className="font-bold">{tr("دفعات أمر الشراء", "Purchase order payments")}</h3><StatusBadge tone={paymentSummary.payment_status === "paid" ? "success" : paymentSummary.payment_status === "partially_paid" ? "warning" : "neutral"}>{paymentStatusLabel}{paymentSummary.is_overdue ? tr(" · متأخر", " · Overdue") : ""}</StatusBadge></div>
             {canManagePayments && Number(paymentSummary.outstanding_amount) > 0 && <Button size="sm" onClick={() => setRecordOpen(true)} data-testid="po-record-payment-button"><Wallet className="h-4 w-4" />{tr("تسجيل دفعة", "Record payment")}</Button>}
@@ -357,7 +357,7 @@ export default function PurchaseOrderDetails() {
       </TabsContent>
 
       <TabsContent value="receiving" forceMount className="data-[state=inactive]:hidden">
-        {(receivingOpen || completed) ? <section className="rounded-lg border bg-card p-4" data-testid="site-receiving-section">
+        {(receivingOpen || completed) ? <section className="border bg-card p-3" data-testid="site-receiving-section">
           <div className="flex items-center gap-2 font-bold"><PackageCheck className="h-5 w-5 text-primary" />{tr("استلام الموقع", "Site receiving")}</div>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[[tr("إجمالي المطلوب", "Ordered"), receiptSummary.ordered_quantity], [tr("إجمالي المستلم", "Received"), receiptSummary.received_quantity], [tr("المتبقي", "Remaining"), receiptSummary.remaining_quantity], [tr("الحالة", "Status"), receivingStatus]].map(([label, value]) => <div key={label} className="rounded-md bg-muted/50 p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 font-bold">{typeof value === "number" ? number(value) : value}</div></div>)}
@@ -373,28 +373,25 @@ export default function PurchaseOrderDetails() {
             {receiveMode === "partial" && <div className="mt-4 space-y-3 rounded-lg border bg-muted/30 p-4" data-testid="partial-receipt-form"><h4 className="font-bold">{tr("الكميات المستلمة الآن", "Quantities received now")}</h4>{order.items.map((item) => <div key={item.id} className="grid items-center gap-2 rounded-md bg-card p-3 md:grid-cols-[2fr_repeat(4,1fr)]"><b>{item.product_name}</b><span className="text-xs">{tr("المطلوب", "Ordered")}<br/><b>{number(item.quantity)}</b></span><span className="text-xs">{tr("سابقًا", "Previously")}<br/><b>{number(item.received_quantity)}</b></span><label className="text-xs">{tr("الآن", "Now")}<Input type="number" min="0" max={item.remaining_quantity} step="any" value={quantities[item.id] || ""} onChange={(event) => setQuantities((current) => ({ ...current, [item.id]: event.target.value }))} /></label><span className="text-xs">{tr("المتبقي بعده", "Remaining after")}<br/><b>{number(Math.max(0, Number(item.remaining_quantity || 0) - Number(quantities[item.id] || 0)))}</b></span></div>)}<div className="grid gap-2 md:grid-cols-2"><Input value={actor} onChange={(event) => setActor(event.target.value)} placeholder={tr("اسم المستلم", "Receiver name")} /><Input value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("ملاحظة اختيارية", "Optional note")} /></div>{partialHasInvalidQuantity && <div className="rounded-md bg-destructive/10 p-2 text-sm text-destructive" data-testid="partial-receipt-quantity-error">{tr("لا يمكن أن تتجاوز الكمية المستلمة الآن الكمية المتبقية لأي صنف.", "Received quantity cannot exceed the remaining quantity.")}</div>}<Button className="w-full" disabled={busy || !partialHasAnyQuantity || partialHasInvalidQuantity} onClick={() => receive("partial")}>{tr("حفظ الاستلام الجزئي", "Record partial receipt")}</Button></div>}
             {receiveMode === "problem" && <div className="mt-4 space-y-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4" data-testid="problem-receipt-form"><h4 className="font-bold text-destructive">{tr("تسجيل مشكلة / عدم مطابقة", "Report receiving problem")}</h4><div className="grid gap-2 md:grid-cols-2"><select className="h-10 rounded-md border bg-background px-3" value={problemReason} onChange={(event) => setProblemReason(event.target.value)}><option value="">{tr("اختر السبب...", "Select reason...")}</option>{problemReasons.map(([ar, en]) => <option key={ar} value={ar}>{tr(ar, en)}</option>)}</select><select className="h-10 rounded-md border bg-background px-3" value={affectedItemId} onChange={(event) => setAffectedItemId(event.target.value)}><option value="">{tr("كل الطلب / بدون صنف محدد", "Whole order / no specific item")}</option>{order.items.map((item) => <option key={item.id} value={item.id}>{item.product_name}</option>)}</select><Input type="number" min="0" value={affectedQuantity} onChange={(event) => setAffectedQuantity(event.target.value)} placeholder={tr("الكمية المتأثرة (اختياري)", "Affected quantity (optional)")} /><Input value={actor} onChange={(event) => setActor(event.target.value)} placeholder={tr("اسم مسجل المشكلة", "Reported by")} /><Input className="md:col-span-2" value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("ملاحظة اختيارية", "Optional note")} /></div><Button className="w-full" variant="destructive" disabled={busy || !problemReason} onClick={() => receive("problem")}>{tr("حفظ المشكلة وإبقاء الطلب مفتوحًا", "Record problem and keep PO open")}</Button></div>}
           </>}
-          {receivingOpen && !canOperatePO && <div className="mt-4 rounded-md bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">{tr("تأكيد الاستلام متاح لمسؤول المشتريات؛ باقي الأدوار يمكنها متابعة الحالة.", "Only the procurement lead can record receiving; other roles have read access.")}</div>}
-          {completed && <div className="mt-4 rounded-md bg-emerald-500/10 p-3 font-semibold text-emerald-800 dark:text-emerald-300">{tr("✅ اكتمل استلام جميع الكميات. لا توجد إجراءات تشغيلية متبقية.", "All quantities received. No operational actions remain.")}</div>}
+          {receivingOpen && !canOperatePO && <Callout tone="warning" className="mt-4"><span className="text-sm">{tr("تأكيد الاستلام متاح لمسؤول المشتريات؛ باقي الأدوار يمكنها متابعة الحالة.", "Only the procurement lead can record receiving; other roles have read access.")}</span></Callout>}
+          {completed && <Callout tone="success" className="mt-4"><span className="text-sm font-semibold">{tr("اكتمل استلام جميع الكميات. لا توجد إجراءات تشغيلية متبقية.", "All quantities received. No operational actions remain.")}</span></Callout>}
         </section> : <EmptyState compact title={tr("لم يبدأ الاستلام", "Receiving has not started")} description={tr("ستظهر إجراءات الاستلام بعد إصدار أمر الشراء وبدء التوريد.", "Receiving actions become available after the PO is issued and delivery starts.")} />}
       </TabsContent>
 
       <TabsContent value="documents" forceMount className="data-[state=inactive]:hidden">
-        <section className="rounded-lg border bg-card p-4">
-          <h3 className="font-bold">{tr("المستندات والتقارير", "Documents and reports")}</h3>
-          {reportsAvailable ? <div className="mt-3 flex flex-wrap gap-2"><Button asChild size="sm"><Link to={`/purchase-orders/${order.id}/report/admin`}><Printer className="h-4 w-4" />{tr("تقرير الإدارة بالأسعار", "Management report with prices")}</Link></Button><Button asChild size="sm" variant="outline"><Link to={`/purchase-orders/${order.id}/report/site`}><FileText className="h-4 w-4" />{tr("إشعار الموقع بدون أسعار", "Site notice without prices")}</Link></Button></div> : <EmptyState compact title={tr("لا توجد مستندات تشغيلية بعد", "No operational documents yet")} description={tr("تظهر تقارير التوريد بعد بدء التنفيذ.", "Delivery reports become available after execution begins.")} />}
-        </section>
+        <Panel title={tr("المستندات والتقارير", "Documents and reports")}>
+          {reportsAvailable ? <div className="flex flex-wrap gap-2"><Button asChild size="sm"><Link to={`/purchase-orders/${order.id}/report/admin`}><Printer className="h-4 w-4" />{tr("تقرير الإدارة بالأسعار", "Management report with prices")}</Link></Button><Button asChild size="sm" variant="outline"><Link to={`/purchase-orders/${order.id}/report/site`}><FileText className="h-4 w-4" />{tr("إشعار الموقع بدون أسعار", "Site notice without prices")}</Link></Button></div> : <EmptyState compact title={tr("لا توجد مستندات تشغيلية بعد", "No operational documents yet")} description={tr("تظهر تقارير التوريد بعد بدء التنفيذ.", "Delivery reports become available after execution begins.")} />}
+        </Panel>
       </TabsContent>
 
       <TabsContent value="history" forceMount className="data-[state=inactive]:hidden">
         <div className="grid gap-4 lg:grid-cols-2">
-          <section className="rounded-lg border bg-card p-4">
-            <h3 className="font-bold">{tr("تتبع المصدر", "Source traceability")}</h3>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">{order.source_trace.filter((item) => item.number).map((item, index) => <span key={item.type} className="contents">{index > 0 && <span>{direction === "rtl" ? "←" : "→"}</span>}{item.type === "request" ? <Link className="rounded bg-blue-500/10 px-2.5 py-1.5 font-bold text-blue-700 dark:text-blue-300" to="/incoming-requests" state={{ request_id: item.id }} dir="ltr">{item.number}</Link> : item.type === "comparison" ? <Link className="rounded bg-blue-500/10 px-2.5 py-1.5 font-bold text-blue-700 dark:text-blue-300" to="/supplier-price-comparison" state={{ comparison_id: item.id }} dir="ltr">{item.number}</Link> : item.type === "approval" ? <Link className="rounded bg-blue-500/10 px-2.5 py-1.5 font-bold text-blue-700 dark:text-blue-300" to="/approvals" state={{ approval_id: item.id }} dir="ltr">{item.number}</Link> : <span className="rounded bg-foreground px-2.5 py-1.5 font-bold text-background" dir="ltr">{item.number}</span>}</span>)}</div>
-          </section>
-          <section className="rounded-lg border bg-card p-4" data-testid="receipt-history">
-            <h3 className="flex items-center gap-2 font-bold"><History className="h-4 w-4" />{tr("سجل الاستلام", "Receiving history")}</h3>
-            <div className="mt-3"><Timeline events={order.receipt_history || []} emptyLabel={tr("لا يوجد سجل استلام", "No receiving history")} renderEvent={(receipt) => <div><div className="font-semibold">{tr(...(receiptLabels[receipt.receipt_type] || [receipt.receipt_type, receipt.receipt_type]))}</div>{receipt.problem_reason && <div className="text-sm text-destructive">{tr("السبب", "Reason")}: {receipt.problem_reason}</div>}{!!receipt.lines?.length && <div className="text-sm text-muted-foreground">{receipt.lines.map((line) => `${line.product_name}: ${number(line.received_quantity)} ${line.unit}`).join(" · ")}</div>}{receipt.note && <div className="text-sm text-muted-foreground">{receipt.note}</div>}</div>} /></div>
-          </section>
+          <Panel title={tr("تتبع المصدر", "Source traceability")}>
+            <div className="flex flex-wrap items-center gap-2 text-sm">{order.source_trace.filter((item) => item.number).map((item, index) => <span key={item.type} className="contents">{index > 0 && <span>{direction === "rtl" ? "←" : "→"}</span>}{item.type === "request" ? <Link className="border bg-blue-500/10 px-2.5 py-1.5 font-bold text-blue-700 dark:text-blue-300" to="/incoming-requests" state={{ request_id: item.id }} dir="ltr">{item.number}</Link> : item.type === "comparison" ? <Link className="border bg-blue-500/10 px-2.5 py-1.5 font-bold text-blue-700 dark:text-blue-300" to="/supplier-price-comparison" state={{ comparison_id: item.id }} dir="ltr">{item.number}</Link> : item.type === "approval" ? <Link className="border bg-blue-500/10 px-2.5 py-1.5 font-bold text-blue-700 dark:text-blue-300" to="/approvals" state={{ approval_id: item.id }} dir="ltr">{item.number}</Link> : <span className="border bg-foreground px-2.5 py-1.5 font-bold text-background" dir="ltr">{item.number}</span>}</span>)}</div>
+          </Panel>
+          <Panel testId="receipt-history" title={<span className="flex items-center gap-2"><History className="h-4 w-4" />{tr("سجل الاستلام", "Receiving history")}</span>}>
+            <Timeline events={order.receipt_history || []} emptyLabel={tr("لا يوجد سجل استلام", "No receiving history")} renderEvent={(receipt) => <div><div className="font-semibold">{tr(...(receiptLabels[receipt.receipt_type] || [receipt.receipt_type, receipt.receipt_type]))}</div>{receipt.problem_reason && <div className="text-sm text-destructive">{tr("السبب", "Reason")}: {receipt.problem_reason}</div>}{!!receipt.lines?.length && <div className="text-sm text-muted-foreground">{receipt.lines.map((line) => `${line.product_name}: ${number(line.received_quantity)} ${line.unit}`).join(" · ")}</div>}{receipt.note && <div className="text-sm text-muted-foreground">{receipt.note}</div>}</div>} />
+          </Panel>
         </div>
       </TabsContent>
     </Tabs>

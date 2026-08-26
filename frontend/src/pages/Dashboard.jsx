@@ -9,7 +9,7 @@ import {
 } from "recharts";
 
 import {
-  EmptyState, KpiCard, PageHeader, SectionHeader, StatusBadge,
+  EmptyState, KpiStrip, Panel, PageHeader, SectionHeader, StatusBadge,
 } from "@/components/procurement-ui";
 import { Button } from "@/components/ui/button";
 import { usePreferences } from "@/contexts/PreferencesContext";
@@ -99,28 +99,30 @@ export default function Dashboard() {
       />
 
       <section data-testid="formal-procurement-kpis">
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
-          <KpiCard icon={AlertCircle} label={tr("طلبات تحتاج إجراء", "Requests needing action")} value={summary.requests_requiring_action ?? attentionItems.filter((item) => ["needs_clarification", "request_review"].includes(item.type)).length} tone={(summary.requests_requiring_action ?? 0) ? "danger" : "neutral"} testId="kpi-action-required" />
-          <KpiCard icon={ClipboardCheck} label={tr("اعتمادات معلقة", "Pending approvals")} value={pendingApprovals} tone={pendingApprovals ? "warning" : "neutral"} testId="kpi-pending-approvals" />
-          <KpiCard icon={ShoppingCart} label={tr("أوامر شراء نشطة", "Active purchase orders")} value={summary.active_purchase_orders ?? 0} tone="info" testId="kpi-active-pos" />
-          <KpiCard icon={Receipt} label={tr("قيمة أوامر الشراء", "Purchase order value")} value={fmtEGP(summary.formal_po_value)} tone="primary" testId="kpi-formal-po-value" />
-          <KpiCard icon={Wallet} label={tr("المدفوع فعليًا", "Actually paid")} value={fmtEGP(summary.actual_paid)} tone="success" testId="kpi-actual-paid" />
-          <KpiCard icon={CircleDollarSign} label={tr("المتبقي للموردين", "Outstanding to suppliers")} value={fmtEGP(summary.outstanding)} tone="warning" testId="kpi-outstanding" />
-        </div>
+        <KpiStrip
+          items={[
+            { icon: AlertCircle, label: tr("طلبات تحتاج إجراء", "Requests needing action"), value: summary.requests_requiring_action ?? attentionItems.filter((item) => ["needs_clarification", "request_review"].includes(item.type)).length, tone: (summary.requests_requiring_action ?? 0) ? "danger" : "neutral", testId: "kpi-action-required" },
+            { icon: ClipboardCheck, label: tr("اعتمادات معلقة", "Pending approvals"), value: pendingApprovals, tone: pendingApprovals ? "warning" : "neutral", testId: "kpi-pending-approvals" },
+            { icon: ShoppingCart, label: tr("أوامر شراء نشطة", "Active purchase orders"), value: summary.active_purchase_orders ?? 0, tone: "info", testId: "kpi-active-pos" },
+            { icon: Receipt, label: tr("قيمة أوامر الشراء", "Purchase order value"), value: fmtEGP(summary.formal_po_value), tone: "primary", testId: "kpi-formal-po-value" },
+            { icon: Wallet, label: tr("المدفوع فعليًا", "Actually paid"), value: fmtEGP(summary.actual_paid), tone: "success", testId: "kpi-actual-paid" },
+            { icon: CircleDollarSign, label: tr("المتبقي للموردين", "Outstanding to suppliers"), value: fmtEGP(summary.outstanding), tone: "warning", testId: "kpi-outstanding" },
+          ]}
+        />
       </section>
 
-      <section className="rounded-lg border bg-card p-4" data-testid="attention-center">
-        <SectionHeader
-          title={tr("يحتاج متابعتي", "Needs my attention")}
-          description={tr("مرتّب حسب أولوية المتابعة الفعلية.", "Prioritized by operational urgency.")}
-          action={<span className="rounded-full bg-muted px-2.5 py-1 text-xs font-bold text-muted-foreground">{tr(`${attentionItems.length} سجلات`, `${attentionItems.length} records`)}</span>}
-        />
+      <Panel
+        testId="attention-center"
+        title={tr("يحتاج متابعتي", "Needs my attention")}
+        description={tr("مرتّب حسب أولوية المتابعة الفعلية.", "Prioritized by operational urgency.")}
+        action={<span className="border bg-muted px-2 py-0.5 text-xs font-bold text-muted-foreground">{tr(`${attentionItems.length} سجلات`, `${attentionItems.length} records`)}</span>}
+      >
         {attentionItems.length ? (
           <div className="divide-y divide-border">
             {attentionItems.slice(0, 10).map((item, index) => {
               const meta = ATTENTION_META[item.type] || { label: [item.type, item.type], tone: "neutral", action: ["فتح", "Open"] };
               return (
-                <div key={`${item.type}-${item.reference}-${index}`} className="grid items-center gap-3 py-3 md:grid-cols-[minmax(150px,0.8fr)_minmax(150px,1fr)_minmax(220px,1.6fr)_auto]" data-testid={`attention-item-${item.type}`}>
+                <div key={`${item.type}-${item.reference}-${index}`} className="grid items-center gap-3 py-2.5 md:grid-cols-[minmax(150px,0.8fr)_minmax(150px,1fr)_minmax(220px,1.6fr)_auto]" data-testid={`attention-item-${item.type}`}>
                   <div className="min-w-0"><div className="font-mono text-sm font-bold text-foreground" dir="ltr">{item.reference}</div><StatusBadge tone={meta.tone}>{tr(...meta.label)}</StatusBadge></div>
                   <div className="min-w-0 text-sm"><div className="truncate font-medium text-foreground">{item.project_name || tr("بدون مشروع", "No project")}</div>{supplierByReference[item.reference] && <div className="truncate text-xs text-muted-foreground">{supplierByReference[item.reference]}</div>}</div>
                   <div className="min-w-0"><div className="text-sm text-foreground">{ATTENTION_REASONS[item.type] ? tr(...ATTENTION_REASONS[item.type]) : item.reason}</div>{item.due_or_age && <div className="mt-0.5 text-xs text-muted-foreground" dir="auto">{item.due_or_age}</div>}</div>
@@ -132,36 +134,34 @@ export default function Dashboard() {
         ) : (
           <EmptyState compact icon={ClipboardCheck} title={tr("لا توجد إجراءات عاجلة حاليًا", "Nothing needs action right now")} description={tr("ستظهر هنا السجلات التي تحتاج قرارًا أو متابعة.", "Records requiring a decision or follow-up will appear here.")} />
         )}
-      </section>
+      </Panel>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr]">
-        <section className="rounded-lg border bg-card p-4" data-testid="request-pipeline">
-          <SectionHeader title={tr("الحركة الحالية", "Active workflow")} description={tr("توزيع الطلبات عبر مراحل العمل.", "Requests currently moving through the workflow.")} />
+        <Panel testId="request-pipeline" title={tr("الحركة الحالية", "Active workflow")} description={tr("توزيع الطلبات عبر مراحل العمل.", "Requests currently moving through the workflow.")}>
           <div className="space-y-2.5">
             {pipeline.filter((row) => row.count > 0).map((row) => (
-              <div key={row.key}><div className="mb-1 flex items-center justify-between gap-3 text-xs"><span className="text-muted-foreground">{PIPELINE_LABELS[row.key] ? tr(...PIPELINE_LABELS[row.key]) : row.label}</span><b className="tabular-nums text-foreground">{row.count}</b></div><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary/70" style={{ width: `${Math.max(8, Number(row.count || 0) / maxPipelineCount * 100)}%` }} /></div></div>
+              <div key={row.key}><div className="mb-1 flex items-center justify-between gap-3 text-xs"><span className="text-muted-foreground">{PIPELINE_LABELS[row.key] ? tr(...PIPELINE_LABELS[row.key]) : row.label}</span><b className="tabular-nums text-foreground">{row.count}</b></div><div className="h-1 overflow-hidden bg-muted"><div className="h-full bg-primary/70" style={{ width: `${Math.max(8, Number(row.count || 0) / maxPipelineCount * 100)}%` }} /></div></div>
             ))}
             {!pipeline.some((row) => row.count > 0) && <EmptyState compact title={tr("لا توجد طلبات نشطة", "No active requests")} description={tr("ستظهر مراحل الطلبات هنا عند بدء دورة مشتريات جديدة.", "Workflow stages will appear when a new procurement cycle starts.")} />}
           </div>
-        </section>
+        </Panel>
 
-        <section className="rounded-lg border bg-card p-4" data-testid="chart-project-value">
-          <SectionHeader title={tr("قيمة أوامر الشراء حسب المشروع", "PO value by project")} description={tr("أعلى المشاريع من حيث الالتزام المالي الرسمي.", "Projects with the highest formal procurement commitment.")} />
-          {projects.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={projects.slice(0, 8)} layout="vertical" margin={{ left: 12, right: 12 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" /><XAxis type="number" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} /><YAxis type="category" dataKey="project_name" width={100} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} /><Tooltip formatter={(value) => fmtEGP(value)} contentStyle={{ background: "hsl(var(--popover))", borderColor: "hsl(var(--border))", color: "hsl(var(--popover-foreground))" }} /><Bar dataKey="formal_po_value" name={tr("قيمة أوامر الشراء", "Purchase order value")} fill="hsl(var(--primary))" radius={[4, 4, 4, 4]} /></BarChart></ResponsiveContainer></div> : <EmptyState compact title={tr("لا توجد قيم مشاريع", "No project values yet")} description={tr("تظهر المقارنة بعد إصدار أول أمر شراء رسمي.", "This view appears after the first formal PO is issued.")} />}
-        </section>
+        <Panel testId="chart-project-value" title={tr("قيمة أوامر الشراء حسب المشروع", "PO value by project")} description={tr("أعلى المشاريع من حيث الالتزام المالي الرسمي.", "Projects with the highest formal procurement commitment.")}>
+          {projects.length ? <div className="h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={projects.slice(0, 8)} layout="vertical" margin={{ left: 12, right: 12 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" /><XAxis type="number" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} /><YAxis type="category" dataKey="project_name" width={100} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} /><Tooltip formatter={(value) => fmtEGP(value)} contentStyle={{ background: "hsl(var(--popover))", borderColor: "hsl(var(--border))", color: "hsl(var(--popover-foreground))" }} /><Bar dataKey="formal_po_value" name={tr("قيمة أوامر الشراء", "Purchase order value")} fill="hsl(var(--primary))" radius={[0, 0, 0, 0]} /></BarChart></ResponsiveContainer></div> : <EmptyState compact title={tr("لا توجد قيم مشاريع", "No project values yet")} description={tr("تظهر المقارنة بعد إصدار أول أمر شراء رسمي.", "This view appears after the first formal PO is issued.")} />}
+        </Panel>
       </div>
 
-      <section className="rounded-lg border bg-card p-4" data-testid="po-status-section">
-        <SectionHeader title={tr("سلامة التوريد والاستلام", "Delivery and receiving health")} description={tr("مؤشرات تشغيلية مختصرة مع إبراز الاستثناءات.", "A concise operational view focused on exceptions.")} />
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          {[
-            [Truck, tr("قيد التوريد", "In delivery"), receiving.in_delivery_count, "info"],
-            [PackageCheck, tr("استلام جزئي", "Partial receipt"), receiving.partial_received_count, "warning"],
-            [AlertCircle, tr("مشكلات توريد", "Delivery problems"), receiving.delivery_problem_count, "danger"],
-            [ClipboardCheck, tr("مكتمل الاستلام", "Receiving complete"), receiving.completed_count, "success"],
-          ].map(([Icon, label, value, tone]) => <KpiCard key={label} icon={Icon} label={label} value={value ?? 0} tone={tone} />)}
-        </div>
-      </section>
+      <Panel testId="po-status-section" title={tr("سلامة التوريد والاستلام", "Delivery and receiving health")} description={tr("مؤشرات تشغيلية مختصرة مع إبراز الاستثناءات.", "A concise operational view focused on exceptions.")} bodyClassName="p-0">
+        <KpiStrip
+          className="border-0"
+          items={[
+            { icon: Truck, label: tr("قيد التوريد", "In delivery"), value: receiving.in_delivery_count ?? 0, tone: "info" },
+            { icon: PackageCheck, label: tr("استلام جزئي", "Partial receipt"), value: receiving.partial_received_count ?? 0, tone: "warning" },
+            { icon: AlertCircle, label: tr("مشكلات توريد", "Delivery problems"), value: receiving.delivery_problem_count ?? 0, tone: "danger" },
+            { icon: ClipboardCheck, label: tr("مكتمل الاستلام", "Receiving complete"), value: receiving.completed_count ?? 0, tone: "success" },
+          ]}
+        />
+      </Panel>
     </div>
   );
 }
