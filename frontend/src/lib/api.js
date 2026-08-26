@@ -28,6 +28,8 @@ api.interceptors.request.use((config) => {
 export const fmt = (n) =>
   new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
 
+export const fmtMoney = (n, currency = "ج.م") => `${currency} ${fmt(n)}`;
+
 export const fmtEGP = (n) => {
   const language = typeof window !== "undefined"
     ? window.localStorage.getItem("procurex-language")

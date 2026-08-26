@@ -39,6 +39,7 @@ from database import db, engine, init_db  # noqa: E402
 from attachment_storage import (  # noqa: E402
     ROOT_DIR, LocalAttachmentStorage, build_attachment_storage,
 )
+import business_codes  # noqa: E402
 from business_codes import next_business_code  # noqa: E402
 from db_migrations import (  # noqa: E402
     BUSINESS_CODE_SCHEMA_VERSION,
@@ -542,6 +543,52 @@ def test_business_code_reservations_are_unique_under_concurrency():
         code.startswith("SUP-") and len(code.removeprefix("SUP-")) == 6
         for code in codes
     )
+
+
+def test_supplier_sequence_uses_highest_suffix_across_mixed_historical_widths(
+    tmp_path
+):
+    isolated_engine = create_engine(
+        f"sqlite:///{(tmp_path / 'mixed-supplier-codes.db').as_posix()}"
+    )
+    Base.metadata.create_all(
+        isolated_engine,
+        tables=[Supplier.__table__, BusinessCodeSequence.__table__],
+    )
+    historical_codes = ["SUP-001", "SUP-002", "SUP-000020", "SUP-000026"]
+    with isolated_engine.begin() as connection:
+        connection.execute(
+            Supplier.__table__.insert(),
+            [
+                {"id": f"historical-{index}", "code": code, "name": code}
+                for index, code in enumerate(historical_codes)
+            ],
+        )
+        connection.execute(
+            BusinessCodeSequence.__table__.insert().values(
+                entity="suppliers", next_value=3
+            )
+        )
+
+    original_engine = business_codes.engine
+    original_is_sqlite = business_codes.IS_SQLITE
+    business_codes.engine = isolated_engine
+    business_codes.IS_SQLITE = True
+
+    try:
+        first = business_codes.next_business_code("suppliers")
+        second = business_codes.next_business_code("suppliers")
+
+        assert first == "SUP-000027"
+        assert second == "SUP-000028"
+        with isolated_engine.connect() as connection:
+            assert set(connection.scalars(select(Supplier.code)).all()) == set(
+                historical_codes
+            )
+    finally:
+        business_codes.engine = original_engine
+        business_codes.IS_SQLITE = original_is_sqlite
+        isolated_engine.dispose()
 
 
 def test_purchase_order_sequence_respects_history_concurrency_and_restart():

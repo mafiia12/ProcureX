@@ -49,7 +49,7 @@ jest.mock("react-router-dom", () => ({
   useParams: () => ({ projectId: "project-1" }),
 }), { virtual: true });
 jest.mock("@/lib/api", () => ({
-  __esModule: true, fmtEGP: (value) => `${value} ج.م`, errMsg: () => "خطأ",
+  __esModule: true, fmtMoney: (value, currency) => `${currency} ${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, errMsg: () => "خطأ",
   default: { get: (...args) => mockGet(...args) },
 }));
 jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
@@ -70,6 +70,8 @@ test("shows the six formal project KPIs and keeps legacy purchasing separate", a
   expect(container.querySelector('[data-testid="project-formal-kpis"]').children).toHaveLength(6);
   expect(container.querySelector('[data-testid="project-formal-kpis"]').textContent).toContain("قيمة أوامر الشراء");
   expect(container.querySelector('[data-testid="project-formal-kpis"]').textContent).toContain("المتبقي");
+  expect(container.querySelector('[data-testid="project-formal-kpis"]').textContent).toContain("ج.م 100.00");
+  expect(container.querySelector('[data-testid="project-formal-kpis"]').textContent).not.toMatch(/[٠-٩]/);
   expect(container.querySelector('[data-testid="project-actions"]').textContent).toContain("إعداد مقارنة الموردين: 1");
   expect(container.querySelector('[data-testid="project-actions"]').textContent).toContain("متابعة التوريد: 1");
   expect([...container.querySelectorAll("button")].some((button) => button.textContent === "الشراء المباشر")).toBe(false);

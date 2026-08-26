@@ -1,4 +1,4 @@
-import { errMsg, fmtEGP } from "@/lib/api";
+import { errMsg, fmtEGP, fmtMoney } from "@/lib/api";
 
 afterEach(() => localStorage.removeItem("procurex-language"));
 
@@ -23,4 +23,9 @@ test("EGP formatting follows the active Arabic or English interface", () => {
   expect(fmtEGP(5935)).toBe("5,935.00 ج.م");
   localStorage.setItem("procurex-language", "en");
   expect(fmtEGP(5935)).toBe("EGP 5,935.00");
+});
+
+test("project money formatting keeps Western digits and prefixes the currency", () => {
+  expect(fmtMoney(3461.76)).toBe("ج.م 3,461.76");
+  expect(fmtMoney(3461.76, "EGP")).toBe("EGP 3,461.76");
 });

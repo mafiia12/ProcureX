@@ -123,21 +123,21 @@ function ComparisonMatrix({
   const colCount = Math.max(visibleSupplierGroups.length, 1);
   const footerRow = itemOrder.length + 2;
   return (
-    <div className="overflow-x-auto border bg-card" data-testid="comparison-matrix">
+    <div className="overflow-x-auto rounded-md border bg-card" data-testid="comparison-matrix">
       <div
         className="grid min-w-[640px]"
-        style={{ gridTemplateColumns: `minmax(190px,1.2fr) repeat(${colCount}, minmax(200px,1fr))` }}
+        style={{ gridTemplateColumns: `minmax(220px,1.25fr) repeat(${colCount}, minmax(210px,1fr))` }}
       >
-        <div className="sticky top-0 z-10 border-b border-e bg-muted/70 px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-muted-foreground" style={{ gridColumn: 1, gridRow: 1 }}>
+        <div className="sticky start-0 top-0 z-20 border-b border-e bg-muted px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-muted-foreground" style={{ gridColumn: 1, gridRow: 1 }}>
           {tr("الصنف", "Item")}
         </div>
         {itemOrder.map((item, rowIndex) => (
-          <div key={item.itemKey} className="min-w-0 border-b border-e bg-card px-3 py-1.5" style={{ gridColumn: 1, gridRow: rowIndex + 2 }}>
-            <div className="truncate text-xs font-semibold text-foreground" title={item.product_name}>{item.product_name}</div>
-            <div className="mt-0.5 text-[10.5px] text-muted-foreground">{tr("الكمية", "Qty")}: <span className="tabular-nums">{fmt(item.quantity)}</span> {item.unit}</div>
+          <div key={item.itemKey} className="sticky start-0 z-10 min-w-0 border-b border-e bg-card px-3 py-1" style={{ gridColumn: 1, gridRow: rowIndex + 2 }}>
+            <div className="truncate text-xs font-bold leading-4 text-foreground" title={item.product_name}>{item.product_name}</div>
+            <div className="text-[10px] leading-4 text-muted-foreground">{tr("الكمية", "Qty")}: <span className="tabular-nums">{fmt(item.quantity)}</span> {item.unit}</div>
           </div>
         ))}
-        <div className="border-e bg-muted/50 px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-muted-foreground" style={{ gridColumn: 1, gridRow: footerRow }}>
+        <div className="sticky start-0 z-10 border-t-2 border-e bg-muted px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-foreground" style={{ gridColumn: 1, gridRow: footerRow }}>
           {tr("ملخص العرض", "Offer summary")}
         </div>
 
@@ -149,7 +149,7 @@ function ComparisonMatrix({
           const quotation = quotationForGroup(group);
           return (
             <div key={group.key} data-testid="supplier-offer-card" style={{ display: "contents" }}>
-              <div className={cn("border-b border-e p-2.5", isCheapestComplete && "bg-emerald-500/5")} style={{ gridColumn: col, gridRow: 1 }}>
+              <div className={cn("border-b border-e p-2", isCheapestComplete && "bg-emerald-500/5")} style={{ gridColumn: col, gridRow: 1 }}>
                 {!group.supplierId ? (
                   <div data-testid="supplier-column-selector">
                     <SearchableSelect
@@ -167,9 +167,9 @@ function ComparisonMatrix({
                     <div className="truncate text-[10.5px] text-muted-foreground" dir="ltr">{group.supplierCode}</div>
                   </>
                 )}
-                <div className="mt-1.5 flex flex-wrap gap-1">
-                  {summary.is_complete ? <StatusBadge tone="success">{tr("عرض كامل", "Complete offer")}</StatusBadge> : <StatusBadge tone="warning">{tr("عرض غير مكتمل", "Incomplete offer")}</StatusBadge>}
-                  {isCheapestComplete && <StatusBadge tone="success">{tr("الأرخص كاملًا", "Cheapest complete")}</StatusBadge>}
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {summary.is_complete ? <span data-testid="complete-offer-badge"><StatusBadge tone="success" className="border font-bold">{tr("عرض كامل", "Complete offer")}</StatusBadge></span> : <span data-testid="incomplete-offer-badge"><StatusBadge tone="warning" className="border font-bold">{tr("عرض غير مكتمل", "Incomplete offer")}</StatusBadge></span>}
+                  {isCheapestComplete && <span data-testid="lowest-offer-badge"><StatusBadge tone="success" className="border font-bold">{tr("الأرخص كاملًا", "Cheapest complete")}</StatusBadge></span>}
                   {!!selectedCount && <StatusBadge tone="primary">{tr(`${selectedCount} مختار`, `${selectedCount} selected`)}</StatusBadge>}
                 </div>
                 <div className="mt-1.5 flex items-center justify-between text-[9px] font-bold uppercase tracking-wide text-muted-foreground">
@@ -181,23 +181,23 @@ function ComparisonMatrix({
                 const row = group.rowsByItem.get(item.itemKey);
                 if (!row) {
                   return (
-                    <div key={item.itemKey} className="border-b border-e bg-muted/20 px-2.5 py-1.5 text-center text-[10.5px] text-muted-foreground" style={{ gridColumn: col, gridRow: rowIndex + 2 }}>
-                      {tr("غير مقدم", "Not quoted")}
+                    <div key={item.itemKey} className="flex items-center justify-center border-b border-e bg-muted/20 px-2 py-1 text-center text-[10px] text-muted-foreground" style={{ gridColumn: col, gridRow: rowIndex + 2 }}>
+                      <span data-testid="not-offered-badge" className="inline-flex rounded-full border border-dashed bg-background px-2 py-0.5 font-semibold">{tr("غير مقدم", "Not quoted")}</span>
                     </div>
                   );
                 }
                 const tone = row.selected_for_purchase ? "bg-primary/5" : row.is_unavailable ? "bg-destructive/5" : row.is_incomplete ? "bg-amber-500/5" : row.is_lowest_final_total ? "bg-emerald-500/5" : "";
                 return (
-                  <div key={item.itemKey} data-testid="comparison-row" className={cn("border-b border-e px-2 py-1.5", tone)} style={{ gridColumn: col, gridRow: rowIndex + 2 }}>
+                  <div key={item.itemKey} data-testid="comparison-row" className={cn("border-b border-e px-2 py-1", tone)} style={{ gridColumn: col, gridRow: rowIndex + 2 }}>
                     <div className="flex items-center gap-1.5">
-                      <Input type="number" min="0" step="0.01" value={row.unit_price || ""} onChange={(event) => onPrice(row.key, event.target.value)} className="h-7 w-20 px-1 text-center text-xs" data-testid={`inline-unit-price-${row.key}`} />
-                      <span className="flex-1 text-end text-xs font-bold tabular-nums text-foreground">{formatMoney(row.final_total)}</span>
+                      <Input type="number" min="0" step="0.01" value={row.unit_price || ""} onChange={(event) => onPrice(row.key, event.target.value)} className="h-6 w-20 px-1 text-end font-mono text-xs tabular-nums" data-testid={`inline-unit-price-${row.key}`} />
+                      <span className="flex-1 text-end font-mono text-xs font-bold tabular-nums text-foreground" dir="ltr">{formatMoney(row.final_total)}</span>
                     </div>
                     {(row.is_lowest_final_total || row.is_unavailable || row.is_incomplete) && (
                       <div className="mt-1 flex flex-wrap gap-1">
-                        {row.is_lowest_final_total && <StatusBadge tone="success">{tr("أقل سعر", "Lowest")}</StatusBadge>}
-                        {row.is_unavailable && <StatusBadge tone="danger">{tr("غير متاح", "Unavailable")}</StatusBadge>}
-                        {row.is_incomplete && <StatusBadge tone="warning">{tr("ناقص", "Incomplete")}</StatusBadge>}
+                        {row.is_lowest_final_total && <span data-testid="lowest-price-badge"><StatusBadge tone="success" className="border font-bold">{tr("أقل سعر", "Lowest")}</StatusBadge></span>}
+                        {row.is_unavailable && <StatusBadge tone="danger" className="border font-bold">{tr("غير متاح", "Unavailable")}</StatusBadge>}
+                        {row.is_incomplete && <StatusBadge tone="warning" className="border font-bold">{tr("ناقص", "Incomplete")}</StatusBadge>}
                       </div>
                     )}
                     <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
@@ -212,13 +212,13 @@ function ComparisonMatrix({
                 );
               })}
 
-              <div className="border-e bg-card p-2.5" style={{ gridColumn: col, gridRow: footerRow }}>
-                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10.5px]">
+              <div className="border-t-2 border-e bg-muted/20 p-2" style={{ gridColumn: col, gridRow: footerRow }} data-testid="supplier-offer-summary">
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10.5px] tabular-nums">
                   <span className="text-muted-foreground">{tr("الإجمالي قبل الإضافات", "Subtotal")}</span><b className="text-end">{formatMoney(summary.items_subtotal)}</b>
                   <span className="text-muted-foreground">{tr("الخصم", "Discount")}</span><b className="text-end">-{formatMoney(summary.total_discounts)}</b>
                   <span className="text-muted-foreground">{tr("الضريبة", "VAT")}</span><b className="text-end">{formatMoney(summary.total_taxes)}</b>
                   <span className="text-muted-foreground">{tr("الشحن وتكاليف أخرى", "Shipping & other")}</span><b className="text-end">{formatMoney(Number(summary.total_shipping || 0) + Number(summary.total_other_costs || 0))}</b>
-                  <span className="border-t pt-1 font-bold text-foreground">{tr("الإجمالي النهائي", "Final total")}</span><b className="border-t pt-1 text-end text-primary">{formatMoney(summary.final_offer_total)}</b>
+                  <span className="border-y bg-primary/5 px-1 py-1.5 font-bold text-foreground">{tr("الإجمالي النهائي", "Final total")}</span><b className="border-y bg-primary/5 px-1 py-1.5 text-end font-mono text-primary" dir="ltr">{formatMoney(summary.final_offer_total)}</b>
                   <span className="text-muted-foreground">{tr("مدة التوريد", "Lead time")}</span><b className="text-end">{summary.maximum_delivery_days ?? "-"} {tr("يوم", "days")}</b>
                   <span className="text-muted-foreground">{tr("شروط الدفع", "Payment terms")}</span><b className="truncate text-end" title={group.rows[0]?.payment_terms}>{group.rows[0]?.payment_terms || "-"}</b>
                   <span className="text-muted-foreground">{tr("صلاحية العرض", "Offer validity")}</span><b className="text-end">{group.rows[0]?.price_valid_until || "-"}</b>

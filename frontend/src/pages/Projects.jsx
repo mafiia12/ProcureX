@@ -1,11 +1,12 @@
 import { useNavigate } from "react-router-dom";
 import CrudPage from "@/components/CrudPage";
-import { fmtEGP } from "@/lib/api";
+import { fmtMoney } from "@/lib/api";
 import { usePreferences } from "@/contexts/PreferencesContext";
 
 export default function Projects() {
   const navigate = useNavigate();
-  const { tr } = usePreferences();
+  const { language, tr } = usePreferences();
+  const projectMoney = (value) => <span className="font-mono tabular-nums" dir="ltr">{fmtMoney(value, language === "en" ? "EGP" : "ج.م")}</span>;
 
   return (
     <CrudPage
@@ -31,9 +32,9 @@ export default function Projects() {
         { key: "engineer", label: tr("المهندس المسؤول", "Responsible Engineer") },
         { key: "active_request_count", label: tr("REQ نشطة", "Active REQs") },
         { key: "active_po_count", label: tr("PO نشطة", "Active POs") },
-        { key: "formal_po_value", label: tr("قيمة PO", "PO Value"), render: (row) => fmtEGP(row.formal_po_value) },
-        { key: "paid_amount", label: tr("المدفوع", "Paid"), render: (row) => fmtEGP(row.paid_amount) },
-        { key: "outstanding_amount", label: tr("المتبقي", "Outstanding"), render: (row) => fmtEGP(row.outstanding_amount) },
+        { key: "formal_po_value", label: tr("قيمة PO", "PO Value"), render: (row) => projectMoney(row.formal_po_value) },
+        { key: "paid_amount", label: tr("المدفوع", "Paid"), render: (row) => projectMoney(row.paid_amount) },
+        { key: "outstanding_amount", label: tr("المتبقي", "Outstanding"), render: (row) => projectMoney(row.outstanding_amount) },
         { key: "status", label: tr("الحالة", "Status") },
       ]}
       fields={[

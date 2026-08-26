@@ -29,6 +29,20 @@ def _numeric_suffix(code: str, prefixes: tuple[str, ...]) -> int | None:
     return None
 
 
+def _highest_numeric_suffix(
+    codes: list[str], prefixes: tuple[str, ...]
+) -> int:
+    """Return the highest numeric suffix across every recognized code width."""
+    return max(
+        (
+            number
+            for code in codes
+            if (number := _numeric_suffix(str(code or ""), prefixes)) is not None
+        ),
+        default=0,
+    )
+
+
 def reserve_code(
     entity: str,
     prefix: str,
@@ -52,14 +66,10 @@ def reserve_code(
                     statement = statement.with_for_update()
                 stored_next = connection.scalar(statement)
                 existing_codes = connection.scalars(select(code_column)).all()
-                existing_numbers = [
-                    number
-                    for code in existing_codes
-                    if (number := _numeric_suffix(
-                        str(code or ""), legacy_prefixes
-                    )) is not None
-                ]
-                value = max(stored_next or 1, max(existing_numbers, default=0) + 1)
+                highest_existing = _highest_numeric_suffix(
+                    existing_codes, legacy_prefixes
+                )
+                value = max(stored_next or 1, highest_existing + 1)
                 if stored_next is None:
                     connection.execute(insert(BusinessCodeSequence).values(
                         entity=entity, next_value=value + 1,

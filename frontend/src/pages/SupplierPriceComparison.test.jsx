@@ -349,6 +349,20 @@ test("cheapest complete action selects every eligible row and excludes an incomp
   const root = createRoot(container);
   await act(async () => { root.render(<SupplierPriceComparison initialComparison={twoItemDetail} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
 
+  const matrix = container.querySelector('[data-testid="comparison-matrix"]');
+  expect(matrix.querySelectorAll('[data-testid="complete-offer-badge"]')).toHaveLength(1);
+  expect(matrix.querySelectorAll('[data-testid="incomplete-offer-badge"]')).toHaveLength(1);
+  expect(matrix.querySelectorAll('[data-testid="lowest-offer-badge"]')).toHaveLength(1);
+  expect(matrix.querySelectorAll('[data-testid="not-offered-badge"]')).toHaveLength(1);
+  expect(matrix.querySelectorAll('[data-testid="supplier-offer-summary"]')).toHaveLength(2);
+  const priceInput = matrix.querySelector('[data-testid^="inline-unit-price-"]');
+  expect(priceInput.classList.contains("h-6")).toBe(true);
+  expect(priceInput.classList.contains("tabular-nums")).toBe(true);
+  const itemCell = [...matrix.children[0].children]
+    .find((element) => element.style.gridColumn === "1" && element.style.gridRow === "2");
+  expect(itemCell.classList.contains("sticky")).toBe(true);
+  expect(itemCell.classList.contains("py-1")).toBe(true);
+
   await act(async () => container.querySelector('[data-testid="select-cheapest-complete-offer"]').click());
   const completeCard = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')]
     .find((card) => card.textContent.includes("المورد الأخضر"));
