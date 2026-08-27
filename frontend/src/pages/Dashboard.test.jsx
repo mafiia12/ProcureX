@@ -91,6 +91,29 @@ test("centers actual actionable records with one direct action", async () => {
   container.remove();
 });
 
+test("keeps the daily report compact and removes non-actionable document artifacts", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      ...dashboard.attention_items,
+      { type: "purchase_draft", reference: "PDR-000001", path: "/incoming-requests" },
+      { type: "internal_request", reference: "IPR-000001", path: "/incoming-requests" },
+    ],
+  });
+  const header = container.querySelector('[data-testid="dashboard-command-header"]');
+  const dailyReport = [...header.querySelectorAll("button")]
+    .find((button) => button.textContent.includes("التقرير اليومي"));
+  expect(dailyReport).toBeTruthy();
+  expect(dailyReport.classList.contains("h-7")).toBe(true);
+  expect(container.textContent).not.toContain("PDR-000001");
+  expect(container.textContent).not.toContain("IPR-000001");
+  expect(container.querySelector('[data-testid="kpi-action-required"]').textContent).toContain("2");
+  await act(async () => dailyReport.click());
+  expect(mockNavigate).toHaveBeenCalledWith("/daily-report");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("renders a pricing-ready request as sourcing work for Procurement Responsible", async () => {
   const { container, root } = await renderDashboard({
     ...dashboard,
@@ -117,6 +140,11 @@ test("keeps one useful project chart and compact workflow health", async () => {
   expect(exposure.textContent).toContain("600 ج.م");
   expect(container.querySelector('[data-testid="request-pipeline"]').textContent).toContain("تحت التوريد");
   expect(container.querySelector('[data-testid="po-status-section"]').textContent).toContain("استلام جزئي");
+  expect(container.querySelectorAll('[data-testid^="delivery-health-"]')).toHaveLength(4);
+  const snapshot = container.querySelector('[data-testid="dashboard-operational-snapshot"]');
+  expect(snapshot.querySelector('[data-testid="request-pipeline"]')).toBeTruthy();
+  expect(snapshot.querySelector('[data-testid="chart-project-value"]')).toBeTruthy();
+  expect(snapshot.querySelector('[data-testid="po-status-section"]')).toBeTruthy();
   await act(async () => root.unmount());
   container.remove();
 });
