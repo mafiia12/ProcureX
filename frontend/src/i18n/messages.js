@@ -49,6 +49,7 @@ export const messages = {
     },
     nav: {
       dashboard: "لوحة التحكم",
+      dailyReport: "التقرير اليومي",
       purchases: "المشتريات",
       register: "سجل المشتريات",
       history: "تاريخ الأسعار",
@@ -226,6 +227,7 @@ export const messages = {
     },
     nav: {
       dashboard: "Dashboard",
+      dailyReport: "Daily Report",
       purchases: "Purchases",
       register: "Purchase Register",
       history: "Price History",

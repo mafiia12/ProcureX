@@ -16,6 +16,7 @@ import {
   Inbox,
   Scale,
   FileCheck2,
+  CalendarDays,
   UserRound,
   LogOut,
   PanelLeftClose,
@@ -41,6 +42,7 @@ const ROLE_LABELS = {
 const NAV_GROUPS = [
   { key: "operations", label: ["التشغيل", "Operations"], items: [
   { to: "/", key: "dashboard", icon: LayoutDashboard },
+  { to: "/daily-report", key: "dailyReport", icon: CalendarDays },
   { to: "/incoming-requests", key: "incoming", icon: Inbox },
   { to: "/supplier-price-comparison", key: "comparison", icon: Scale },
   { to: "/approvals", key: "approvals", icon: FileCheck2 },

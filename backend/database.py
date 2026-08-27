@@ -33,6 +33,7 @@ try:
         migrate_rfq_supplier_quotations,
         migrate_po_payment_ledger,
         migrate_supplier_offer_adjustments,
+        migrate_daily_reports,
     )
 except ImportError:
     from db_migrations import (
@@ -45,6 +46,7 @@ except ImportError:
         migrate_rfq_supplier_quotations,
         migrate_po_payment_ledger,
         migrate_supplier_offer_adjustments,
+        migrate_daily_reports,
     )
 
 
@@ -460,6 +462,7 @@ def init_db() -> Optional[Path]:
             "construction_work_items", "construction_material_rates",
             "construction_calculation_sessions", "construction_calculation_snapshots",
             "users", "user_project_access",
+            "daily_reports",
         }
         existing = set(inspect(engine).get_table_names())
         if not required.issubset(existing):
@@ -482,9 +485,10 @@ def init_db() -> Optional[Path]:
     rfq_backup = migrate_rfq_supplier_quotations(engine)
     po_payment_backup = migrate_po_payment_ledger(engine)
     supplier_offer_backup = migrate_supplier_offer_adjustments(engine)
+    daily_report_backup = migrate_daily_reports(engine)
     Base.metadata.create_all(engine)
     return (
-        supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
+        daily_report_backup or supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
         or classification_backup
     )
 

@@ -56,6 +56,7 @@ try:
         SupplierQuotationLine, router as rfq_router,
     )
     from .site_portal import router as portal_router
+    from .daily_report import router as daily_report_router
     from .excel_io import (parse_workbook, import_data, build_export_workbook,
                            next_code, next_seq_id, next_record_no,
                            recompute_payment_status)
@@ -92,6 +93,7 @@ except ImportError:
         SupplierQuotationLine, router as rfq_router,
     )
     from site_portal import router as portal_router
+    from daily_report import router as daily_report_router
     from excel_io import (parse_workbook, import_data, build_export_workbook,
                           next_code, next_seq_id, next_record_no,
                           recompute_payment_status)
@@ -3019,6 +3021,7 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
         application.include_router(public_approval_router)
         application.include_router(internal_workflow_router)
         application.include_router(rfq_router)
+        application.include_router(daily_report_router, prefix="/api")
 
     application.add_event_handler("startup", start_document_worker)
     application.add_event_handler("shutdown", stop_document_worker)

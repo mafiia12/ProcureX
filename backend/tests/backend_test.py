@@ -7584,3 +7584,299 @@ def test_dashboard_read_is_safe_with_sparse_data_and_causes_no_mutations(s, admi
 
     second = _dashboard(s, admin_headers)
     assert second == first
+
+
+# ---------------- Daily Procurement Report ----------------
+from daily_report import DailyReport  # noqa: E402
+
+DAILY_REPORT_API = f"{API}/reports/daily"
+DPR_DATE = "2018-05-09"
+DPR_OTHER_DATE = "2018-05-10"
+
+
+def _dpr_headers(client, role, suffix=None):
+    with SessionLocal() as session:
+        username = f"dpr-{role}-{suffix or uuid.uuid4().hex[:8]}"
+        _make_user(session, username=username, role=role)
+    return _login_headers(client, username)
+
+
+def _seed_dpr_request(session, report_date, *, request_number=None, status="pricing"):
+    timestamp = f"{report_date}T09:00:00+00:00"
+    request_id = str(uuid.uuid4())
+    session.add(IncomingPurchaseRequest(
+        id=request_id, request_number=request_number or f"T-DPR-REQ-{uuid.uuid4().hex[:8]}",
+        requester_name="مهندس الموقع", company_name="عميل التقرير اليومي",
+        phone_number="01000000000", project_name="مشروع التقرير اليومي",
+        project_location="القاهرة", delivery_location="الموقع الرئيسي",
+        required_delivery_date="2099-01-01", priority="high", status=status,
+        submission_token=uuid.uuid4().hex, content_fingerprint=uuid.uuid4().hex,
+        created_at=timestamp, updated_at=timestamp,
+    ))
+    session.flush()
+    session.add(IncomingPurchaseRequestItem(
+        id=str(uuid.uuid4()), request_id=request_id, position=1,
+        product_name="صنف اختباري", quantity=1, unit="قطعة", review_status="approved",
+    ))
+    return request_id
+
+
+def _seed_dpr_po(
+    session, report_date, *, supplier_id=None, supplier_name="مورد التقرير اليومي",
+    final_total=1000.0, status="sent", po_number=None,
+):
+    order_id = str(uuid.uuid4())
+    timestamp = f"{report_date}T10:00:00+00:00"
+    session.add(PurchaseOrder(
+        id=order_id, po_number=po_number or f"T-DPR-PO-{uuid.uuid4().hex[:8]}",
+        supplier_id=supplier_id or f"T-DPR-SUP-{uuid.uuid4().hex[:8]}", supplier_name=supplier_name,
+        project_name="مشروع التقرير اليومي", po_date=report_date, status=status,
+        final_total=final_total, created_at=timestamp, updated_at=timestamp,
+    ))
+    session.flush()
+    session.add(PurchaseOrderItem(
+        id=str(uuid.uuid4()), purchase_order_id=order_id, product_name="صنف",
+        quantity=1, unit="قطعة", unit_price=final_total, line_total=final_total,
+    ))
+    return order_id
+
+
+def _seed_dpr_payment(session, order_id, report_date, amount, *, status="recorded"):
+    now = f"{report_date}T12:00:00+00:00"
+    session.add(PurchaseOrderPayment(
+        id=str(uuid.uuid4()), payment_number=f"T-DPR-PAY-{uuid.uuid4().hex[:8]}",
+        purchase_order_id=order_id, idempotency_key=uuid.uuid4().hex,
+        payment_date=report_date, amount=amount, status=status,
+        created_by="محاسب الاختبار", created_at=now, updated_at=now,
+    ))
+
+
+def _seed_dpr_receipt(session, order_id, report_date, *, receipt_type="partial", po_number="", project_name="", supplier_name=""):
+    now = f"{report_date}T13:00:00+00:00"
+    session.add(PurchaseOrderReceipt(
+        id=str(uuid.uuid4()), purchase_order_id=order_id, idempotency_key=uuid.uuid4().hex,
+        receipt_type=receipt_type, actor_name="مهندس موقع الاختبار",
+        po_number=po_number, project_name=project_name, supplier_name=supplier_name, received_at=now,
+    ))
+
+
+def test_daily_report_defaults_to_today(s, admin_headers):
+    response = s.get(DAILY_REPORT_API, headers=admin_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["report_date"] == datetime.now(timezone.utc).date().isoformat()
+    assert body["report_number"] == f"DPR-{body['report_date']}"
+    assert body["is_closed"] is False
+
+
+def test_daily_report_includes_requests_received_for_the_selected_date_only(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    number = f"T-DPR-REQ-IN-{suffix}"
+    other_number = f"T-DPR-REQ-OUT-{suffix}"
+    with SessionLocal.begin() as session:
+        _seed_dpr_request(session, DPR_DATE, request_number=number)
+        _seed_dpr_request(session, DPR_OTHER_DATE, request_number=other_number)
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    numbers = [row["request_number"] for row in body["sections"]["requests_received"]]
+    assert number in numbers
+    assert other_number not in numbers
+    row = next(r for r in body["sections"]["requests_received"] if r["request_number"] == number)
+    assert row["item_count"] == 1
+    assert row["item_status_breakdown"] == {"approved": 1}
+    assert row["priority"] == "high"
+
+
+def test_daily_report_includes_purchase_orders_issued_for_the_selected_date_only(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal.begin() as session:
+        in_order = _seed_dpr_po(session, DPR_DATE, po_number=f"T-DPR-PO-IN-{suffix}", final_total=1500)
+        out_order = _seed_dpr_po(session, DPR_OTHER_DATE, po_number=f"T-DPR-PO-OUT-{suffix}", final_total=1500)
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    po_numbers = [row["po_number"] for row in body["sections"]["purchase_orders_issued"]]
+    assert f"T-DPR-PO-IN-{suffix}" in po_numbers
+    assert f"T-DPR-PO-OUT-{suffix}" not in po_numbers
+    row = next(r for r in body["sections"]["purchase_orders_issued"] if r["po_number"] == f"T-DPR-PO-IN-{suffix}")
+    assert row["final_total"] == 1500
+    assert row["item_count"] == 1
+    assert row["payment_status"] == "unpaid"
+
+
+def test_daily_report_payment_totals_ignore_legacy_direct_payments(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    purchase_id = str(uuid.uuid4())
+    with SessionLocal.begin() as session:
+        order_id = _seed_dpr_po(session, DPR_DATE, po_number=f"T-DPR-PO-LEGACY-{suffix}", final_total=1000)
+        _seed_dpr_payment(session, order_id, DPR_DATE, 400)
+        # A legacy Direct Purchase payment dated the same day - must never
+        # be mixed into the formal PO Payment Ledger totals below.
+        session.add(Purchase(
+            id=purchase_id, purchase_id=f"T-DPR-LEGACY-PUR-{suffix}",
+            purchase_date=DPR_DATE, supplier_name="مورد قديم", invoice_total=5000,
+            created_at=f"{DPR_DATE}T08:00:00+00:00",
+        ))
+        session.flush()
+        session.add(Payment(
+            id=str(uuid.uuid4()), payment_id=f"T-DPR-LEGACY-PAY-{suffix}",
+            payment_date=DPR_DATE, purchase_id=purchase_id, amount_paid=9999,
+            created_at=f"{DPR_DATE}T08:30:00+00:00",
+        ))
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    payment_amounts = [row["amount"] for row in body["sections"]["payments_today"]]
+    assert 400 in payment_amounts
+    assert 9999 not in payment_amounts
+    row = next(r for r in body["sections"]["purchase_orders_issued"] if r["po_number"] == f"T-DPR-PO-LEGACY-{suffix}")
+    assert row["paid_amount"] == 400
+    assert row["outstanding_amount"] == 600
+
+
+def test_daily_report_supplier_financial_position_outstanding_balance(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    supplier_id = f"T-DPR-SUP-BAL-{suffix}"
+    with SessionLocal.begin() as session:
+        order_id = _seed_dpr_po(session, DPR_DATE, supplier_id=supplier_id, supplier_name="مورد الرصيد", final_total=1000)
+        _seed_dpr_payment(session, order_id, DPR_DATE, 300)
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    row = next(r for r in body["sections"]["supplier_financial_position"] if r["supplier_id"] == supplier_id)
+    assert row["total_po_value"] == 1000
+    assert row["paid_amount"] == 300
+    assert row["outstanding_amount"] == 700
+    assert row["payment_status"] == "partially_paid"
+
+
+def test_daily_report_supplier_payment_status_fully_paid(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    supplier_id = f"T-DPR-SUP-PAID-{suffix}"
+    with SessionLocal.begin() as session:
+        order_id = _seed_dpr_po(session, DPR_DATE, supplier_id=supplier_id, final_total=500)
+        _seed_dpr_payment(session, order_id, DPR_DATE, 500)
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    row = next(r for r in body["sections"]["supplier_financial_position"] if r["supplier_id"] == supplier_id)
+    assert row["payment_status"] == "paid"
+    assert row["outstanding_amount"] == 0
+
+
+def test_daily_report_supplier_payment_status_partially_paid(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    supplier_id = f"T-DPR-SUP-PARTIAL-{suffix}"
+    with SessionLocal.begin() as session:
+        order_id = _seed_dpr_po(session, DPR_DATE, supplier_id=supplier_id, final_total=1000)
+        _seed_dpr_payment(session, order_id, DPR_DATE, 400)
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    row = next(r for r in body["sections"]["supplier_financial_position"] if r["supplier_id"] == supplier_id)
+    assert row["payment_status"] == "partially_paid"
+
+
+def test_daily_report_supplier_payment_status_unpaid(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    supplier_id = f"T-DPR-SUP-UNPAID-{suffix}"
+    with SessionLocal.begin() as session:
+        _seed_dpr_po(session, DPR_DATE, supplier_id=supplier_id, final_total=800)
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    row = next(r for r in body["sections"]["supplier_financial_position"] if r["supplier_id"] == supplier_id)
+    assert row["payment_status"] == "unpaid"
+    assert row["paid_amount"] == 0
+    assert row["outstanding_amount"] == 800
+
+
+def test_daily_report_includes_receiving_activity_for_the_selected_date(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    po_number = f"T-DPR-PO-RECV-{suffix}"
+    with SessionLocal.begin() as session:
+        order_id = _seed_dpr_po(session, DPR_DATE, po_number=po_number)
+        _seed_dpr_receipt(session, order_id, DPR_DATE, receipt_type="partial", po_number=po_number)
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    receiving = body["sections"]["receiving_activity"]
+    assert any(row["po_number"] == f"T-DPR-PO-RECV-{suffix}" and row["receipt_type"] == "partial" for row in receiving)
+
+
+def test_daily_report_needs_attention_includes_a_delivery_problem(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    po_number = f"T-DPR-PO-PROBLEM-{suffix}"
+    with SessionLocal.begin() as session:
+        order_id = _seed_dpr_po(session, DPR_DATE, po_number=po_number, status="delivery_problem")
+        _seed_dpr_receipt(session, order_id, DPR_DATE, receipt_type="problem", po_number=po_number)
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    assert any(
+        item["type"] == "delivery_problem" and item["reference"] == po_number
+        for item in body["sections"]["needs_attention"]
+    )
+
+
+def test_daily_report_notes_save_and_load(s, admin_headers):
+    date = "2018-06-11"
+    saved = s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=admin_headers, json={
+        "general_notes": "المورد وعد بالتوريد غدًا", "key_risks": "تأخر الدفع", "follow_up_tomorrow": "",
+        "follow_up_notes": "متابعة السداد غدًا",
+    })
+    assert saved.status_code == 200, saved.text
+
+    body = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert body["notes"]["general_notes"] == "المورد وعد بالتوريد غدًا"
+    assert body["notes"]["key_risks"] == "تأخر الدفع"
+    assert body["notes"]["follow_up_notes"] == "متابعة السداد غدًا"
+
+
+def test_daily_report_role_access_matrix(s, admin_headers):
+    engineer_headers = _dpr_headers(s, "procurement_engineer")
+    commercial_headers = _dpr_headers(s, "commercial_manager")
+    responsible_headers = _dpr_headers(s, "procurement_responsible")
+
+    assert s.get(DAILY_REPORT_API, headers=engineer_headers).status_code == 200
+    assert s.get(DAILY_REPORT_API, headers=commercial_headers).status_code == 200
+    assert s.get(DAILY_REPORT_API, headers=responsible_headers).status_code == 200
+
+    date = "2018-06-12"
+    notes_body = {"general_notes": "x", "key_risks": "", "follow_up_notes": ""}
+    assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=engineer_headers, json=notes_body).status_code == 403
+    assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=commercial_headers, json=notes_body).status_code == 403
+    assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=responsible_headers, json=notes_body).status_code == 200
+    assert s.post(f"{DAILY_REPORT_API}/{date}/close", headers=engineer_headers).status_code == 403
+
+
+def test_daily_report_site_portal_cannot_access(s):
+    username = f"dpr-site-only-{uuid.uuid4().hex[:8]}"
+    with SessionLocal() as session:
+        _make_user(
+            session, username=username, password="Sprint21Passw0rd!",
+            account_type="site_portal", role="site_engineer",
+        )
+    headers = _login_headers(s, username)
+    assert s.get(DAILY_REPORT_API, headers=headers).status_code == 403
+
+
+def test_daily_report_close_then_reopen_and_no_duplicate_report_per_date(s, admin_headers):
+    date = "2018-06-13"
+    with SessionLocal.begin() as session:
+        _seed_dpr_po(session, date, po_number=f"T-DPR-PO-CLOSE-{uuid.uuid4().hex[:8]}", final_total=250)
+
+    s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=admin_headers, json={
+        "general_notes": "ملاحظة أولى", "key_risks": "", "follow_up_notes": "",
+    })
+    close = s.post(f"{DAILY_REPORT_API}/{date}/close", headers=admin_headers)
+    assert close.status_code == 200, close.text
+
+    again = s.post(f"{DAILY_REPORT_API}/{date}/close", headers=admin_headers)
+    assert again.status_code == 409
+
+    body = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert body["is_closed"] is True
+    assert body["summary_frozen"] is True
+    assert body["summary"]["purchase_orders_issued_value"] == 250
+
+    reopened = s.post(f"{DAILY_REPORT_API}/{date}/reopen", headers=admin_headers)
+    assert reopened.status_code == 200, reopened.text
+    reopened_again = s.post(f"{DAILY_REPORT_API}/{date}/reopen", headers=admin_headers)
+    assert reopened_again.status_code == 409
+
+    with SessionLocal() as session:
+        count = session.query(DailyReport).filter(DailyReport.report_date == date).count()
+    assert count == 1

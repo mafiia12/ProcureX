@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import api, { fmtEGP } from "@/lib/api";
 
-const ATTENTION_META = {
+export const ATTENTION_META = {
   delivery_problem: { label: ["مشكلة توريد", "Delivery problem"], tone: "danger", action: ["مراجعة التوريد", "Review delivery"] },
   needs_clarification: { label: ["يحتاج توضيح", "Needs clarification"], tone: "warning", action: ["فتح الطلب", "Open request"] },
   request_review: { label: ["مراجعة فنية", "Technical review"], tone: "info", action: ["مراجعة الطلب", "Review request"] },
@@ -26,7 +26,7 @@ const ATTENTION_META = {
   partial_received: { label: ["استلام جزئي", "Partial receipt"], tone: "warning", action: ["متابعة الاستلام", "Review receiving"] },
 };
 
-const ATTENTION_REASONS = {
+export const ATTENTION_REASONS = {
   delivery_problem: ["مشكلة في التوريد تحتاج معالجة", "A delivery issue requires action"],
   needs_clarification: ["بانتظار استكمال التوضيح المطلوب", "Waiting for the requested clarification"],
   request_review: ["طلب شراء يحتاج مراجعة فنية", "Purchase request requires technical review"],

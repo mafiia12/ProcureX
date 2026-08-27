@@ -34,6 +34,7 @@ import ApprovedItemsDraft from "@/pages/ApprovedItemsDraft";
 import ProjectPurchases from "@/pages/ProjectPurchases";
 import ApprovalsCommandCenter from "@/pages/ApprovalsCommandCenter";
 import RfqWorkspace from "@/pages/RfqWorkspace";
+import DailyProcurementReport from "@/pages/DailyProcurementReport";
 import PublicApproval from "@/pages/PublicApproval";
 function AppRoutes() {
   const { direction } = usePreferences();
@@ -82,6 +83,7 @@ function AppRoutes() {
               element={<SupplierPriceComparison />}
             />
             <Route path="/rfq/:rfqId" element={<RfqWorkspace />} />
+            <Route path="/daily-report" element={<DailyProcurementReport />} />
             <Route
               path="/construction-calculator"
               element={<Navigate to="/" replace />}

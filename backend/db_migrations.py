@@ -25,6 +25,7 @@ SITE_PORTAL_ATTACHMENTS_SCHEMA_VERSION = 14
 RFQ_SUPPLIER_QUOTATIONS_SCHEMA_VERSION = 15
 PO_PAYMENT_LEDGER_SCHEMA_VERSION = 16
 SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION = 18
+DAILY_REPORT_SCHEMA_VERSION = 19
 
 
 INCOMING_REQUEST_TABLES = {
@@ -1215,6 +1216,36 @@ def migrate_supplier_offer_adjustments(engine) -> Path | None:
                 )
         connection.exec_driver_sql(
             f"PRAGMA user_version = {SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION}"
+        )
+    return backup_path
+
+
+def migrate_daily_reports(engine) -> Path | None:
+    """Add the daily_reports table (manual notes + close marker) after a
+    verified backup. Brand-new, additive table only - no existing rows in
+    any other table are touched."""
+    required_tables = {"daily_reports"}
+    tables = set(inspect(engine).get_table_names())
+    with engine.connect() as connection:
+        current_version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+    if required_tables.issubset(tables) and current_version >= DAILY_REPORT_SCHEMA_VERSION:
+        return None
+    database_path = _database_path(engine)
+    backup_path = None
+    if tables:
+        if database_path is None:
+            raise RuntimeError("A file-backed SQLite database is required for safe migration")
+        backup_path = create_verified_backup(database_path, label="daily-reports")
+    try:
+        from . import daily_report as _daily_report  # noqa: F401
+        from .database import Base
+    except ImportError:  # pragma: no cover
+        import daily_report as _daily_report  # noqa: F401
+        from database import Base
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            f"PRAGMA user_version = {DAILY_REPORT_SCHEMA_VERSION}"
         )
     return backup_path
 
