@@ -327,7 +327,7 @@ export default function PurchaseOrderDetails() {
       <TabsContent value="payments" forceMount className="data-[state=inactive]:hidden">
         <section className="border bg-card p-3" data-testid="po-payment-summary">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div><h3 className="font-bold">{tr("دفعات أمر الشراء", "Purchase order payments")}</h3><StatusBadge tone={paymentSummary.payment_status === "paid" ? "success" : paymentSummary.payment_status === "partially_paid" ? "warning" : "neutral"}>{paymentStatusLabel}{paymentSummary.is_overdue ? tr(" · متأخر", " · Overdue") : ""}</StatusBadge></div>
+            <div className="flex flex-wrap items-center gap-2"><h3 className="font-bold">{tr("دفعات أمر الشراء", "Purchase order payments")}</h3><StatusBadge tone={paymentSummary.payment_status === "paid" ? "success" : paymentSummary.payment_status === "partially_paid" ? "warning" : "neutral"}>{paymentStatusLabel}{paymentSummary.is_overdue ? tr(" · متأخر", " · Overdue") : ""}</StatusBadge><span title={tr("سجل رسمي مرتبط بأمر الشراء - لا يشمل مدفوعات الشراء المباشر القديمة", "The formal PO-linked ledger - excludes legacy direct-purchase payments")}><StatusBadge tone="info">{tr("دفعة أمر شراء", "PO payment")}</StatusBadge></span></div>
             {canManagePayments && Number(paymentSummary.outstanding_amount) > 0 && <Button size="sm" onClick={() => setRecordOpen(true)} data-testid="po-record-payment-button"><Wallet className="h-4 w-4" />{tr("تسجيل دفعة", "Record payment")}</Button>}
           </div>
           <div className="mt-3 grid grid-cols-3 gap-3">

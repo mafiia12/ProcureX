@@ -61,7 +61,7 @@ export default function Payments() {
   }[normalizedStatus(value)]);
 
   const columns = [
-    { key: "po_number", label: tr("أمر الشراء", "PO"), render: (order) => <button type="button" className="font-mono font-bold text-primary hover:underline" dir="ltr" onClick={() => navigate(`/purchase-orders/${order.id}`)}>{order.po_number}</button> },
+    { key: "po_number", label: tr("أمر الشراء", "PO"), render: (order) => <div className="flex items-center gap-1.5"><button type="button" className="font-mono font-bold text-primary hover:underline" dir="ltr" onClick={() => navigate(`/purchase-orders/${order.id}`)}>{order.po_number}</button><span title={tr("دفعة مرتبطة بأمر شراء رسمي - لا تشمل مدفوعات الشراء المباشر القديمة", "Linked to a formal purchase order - excludes legacy direct-purchase payments")}><StatusBadge tone="info">{tr("دفعة أمر شراء", "PO payment")}</StatusBadge></span></div> },
     { key: "project_name", label: tr("المشروع", "Project"), className: "max-w-44 truncate" },
     { key: "supplier_name", label: tr("المورد", "Supplier"), className: "max-w-44 truncate" },
     { key: "total", label: tr("إجمالي PO", "PO total"), className: "text-end", render: (order) => <span className="font-semibold tabular-nums" dir="ltr">{fmtEGP(order.payment_summary?.po_total ?? order.final_total)}</span> },
