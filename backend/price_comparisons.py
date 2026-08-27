@@ -28,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 try:
+    from .commercial_totals import calculate_supplier_total
     from .auth.models import User
     from .auth.service import require_erp_role
     from .business_codes import reserve_code
@@ -41,6 +42,7 @@ try:
         Supplier,
     )
 except ImportError:
+    from commercial_totals import calculate_supplier_total
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import reserve_code
@@ -162,6 +164,32 @@ class PriceComparisonRow(Base):
     )
 
 
+class PriceComparisonSupplierOffer(Base):
+    __tablename__ = "price_comparison_supplier_offers"
+    __table_args__ = (
+        UniqueConstraint(
+            "comparison_id", "supplier_code",
+            name="uq_price_comparison_supplier_offer",
+        ),
+        Index("ix_price_comparison_supplier_offers_comparison", "comparison_id"),
+        Index("ix_price_comparison_supplier_offers_supplier", "supplier_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    comparison_id: Mapped[str] = mapped_column(
+        String, ForeignKey("price_comparisons.id", ondelete="CASCADE"),
+    )
+    supplier_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True,
+    )
+    supplier_code: Mapped[str] = mapped_column(String)
+    supplier_name: Mapped[str] = mapped_column(String)
+    discount_pct: Mapped[float] = mapped_column(Float, default=0, server_default=text("0"))
+    tax_pct: Mapped[float] = mapped_column(Float, default=0, server_default=text("0"))
+    shipping_cost: Mapped[float] = mapped_column(Float, default=0, server_default=text("0"))
+    other_cost: Mapped[float] = mapped_column(Float, default=0, server_default=text("0"))
+
+
 class ComparisonRowIn(BaseModel):
     id: Optional[str] = None
     item_id: str = ""
@@ -189,6 +217,16 @@ class ComparisonRowIn(BaseModel):
     selected_for_purchase: int = Field(default=0, ge=0, le=1)
 
 
+class ComparisonSupplierOfferIn(BaseModel):
+    supplier_id: str = ""
+    supplier_code: str = Field(default="", max_length=200)
+    supplier_name: str = Field(default="", max_length=300)
+    discount_pct: float = Field(default=0, ge=0, le=100)
+    tax_pct: float = Field(default=0, ge=0, le=100)
+    shipping_cost: float = Field(default=0, ge=0, le=1_000_000_000_000)
+    other_cost: float = Field(default=0, ge=0, le=1_000_000_000_000)
+
+
 class ComparisonIn(BaseModel):
     project_id: str = ""
     project_name: str = Field(default="", max_length=200)
@@ -199,6 +237,9 @@ class ComparisonIn(BaseModel):
     comparison_date: str = Field(min_length=10, max_length=10)
     notes: str = Field(default="", max_length=4000)
     rows: list[ComparisonRowIn] = Field(min_length=1, max_length=2000)
+    supplier_offers: list[ComparisonSupplierOfferIn] = Field(
+        default_factory=list, max_length=500,
+    )
 
 
 def _now() -> str:
@@ -260,6 +301,70 @@ def _offer_is_complete(row) -> bool:
     )
 
 
+def _supplier_key(row) -> str:
+    return str(
+        row.get("supplier_id")
+        or row.get("supplier_code")
+        or row.get("manual_supplier_key")
+        or row.get("supplier_name")
+        or ""
+    )
+
+
+def _legacy_supplier_offers(comparison_date: str, rows: list[dict]) -> list[dict]:
+    """Translate legacy per-line adjustments without changing historical totals."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        key = _supplier_key(row)
+        if key:
+            groups.setdefault(key, []).append(row)
+    offers = []
+    for group_rows in groups.values():
+        eligible = [
+            row for row in group_rows
+            if _offer_is_complete(row)
+            and row.get("availability") == "available"
+            and not (
+                row.get("price_valid_until")
+                and row.get("price_valid_until") < comparison_date
+            )
+        ]
+        subtotal = sum(
+            _number(row.get("quantity")) * _number(row.get("unit_price"))
+            for row in eligible
+        )
+        discount = sum(
+            _number(row.get("quantity")) * _number(row.get("unit_price"))
+            * _number(row.get("discount_pct")) / 100
+            for row in eligible
+        )
+        taxable = subtotal - discount
+        tax = sum(
+            _number(row.get("quantity")) * _number(row.get("unit_price"))
+            * (1 - _number(row.get("discount_pct")) / 100)
+            * _number(row.get("tax_pct")) / 100
+            for row in eligible
+        )
+        first = group_rows[0]
+        supplier_id = first.get("supplier_id") or ""
+        supplier_name = first.get("supplier_name") or ""
+        offers.append({
+            "supplier_id": supplier_id,
+            "supplier_code": first.get("supplier_code") or (
+                _manual_key("SUPPLIER", supplier_name)
+                if not supplier_id and supplier_name else ""
+            ),
+            "supplier_name": supplier_name,
+            "discount_pct": discount / subtotal * 100 if subtotal else 0,
+            "tax_pct": tax / taxable * 100 if taxable else 0,
+            "shipping_cost": sum(
+                _number(row.get("shipping_cost")) for row in eligible
+            ),
+            "other_cost": sum(_number(row.get("other_cost")) for row in eligible),
+        })
+    return offers
+
+
 def _next_comparison_number() -> str:
     return reserve_code(
         "price_comparisons",
@@ -289,22 +394,27 @@ def calculate_comparison(
     comparison_date: str,
     rows: list[dict],
     last_prices: Optional[dict[str, float]] = None,
+    supplier_offers: Optional[list[dict]] = None,
 ) -> dict:
     """Return product, supplier, delivery, availability, and mixed-buy summaries."""
     last_prices = last_prices or {}
+    normalized_offers = (
+        [dict(offer) for offer in supplier_offers]
+        if supplier_offers is not None
+        else _legacy_supplier_offers(comparison_date, rows)
+    )
+    offers_by_supplier = {
+        _supplier_key(offer): offer for offer in normalized_offers
+        if _supplier_key(offer)
+    }
     calculated_rows = []
     for source in rows:
         row = dict(source)
         subtotal = _number(row.get("quantity")) * _number(row.get("unit_price"))
-        discount = subtotal * _number(row.get("discount_pct")) / 100
-        taxable = subtotal - discount
-        tax = taxable * _number(row.get("tax_pct")) / 100
-        final = (
-            taxable
-            + tax
-            + _number(row.get("shipping_cost"))
-            + _number(row.get("other_cost"))
-        )
+        for legacy_field in (
+            "discount_pct", "tax_pct", "shipping_cost", "other_cost",
+        ):
+            row.pop(legacy_field, None)
         valid_until = row.get("price_valid_until") or ""
         is_expired = bool(valid_until and valid_until < comparison_date)
         is_missing_price = _number(row.get("unit_price")) <= 0
@@ -313,10 +423,7 @@ def calculate_comparison(
         row.update(
             {
                 "subtotal": _round(subtotal),
-                "discount_amount": _round(discount),
-                "amount_after_discount": _round(taxable),
-                "tax_amount": _round(tax),
-                "final_total": _round(final),
+                "final_total": _round(subtotal),
                 "is_expired": is_expired,
                 "is_missing_price": is_missing_price,
                 "is_unavailable": is_unavailable,
@@ -452,6 +559,14 @@ def calculate_comparison(
             str(row.get("item_id") or row.get("item_code")) for row in eligible
         }
         first = group_rows[0]
+        offer = offers_by_supplier.get(_supplier_key(first), {})
+        offer_totals = calculate_supplier_total(
+            sum(_number(row["subtotal"]) for row in eligible),
+            offer.get("discount_pct"),
+            offer.get("tax_pct"),
+            offer.get("shipping_cost"),
+            offer.get("other_cost"),
+        )
         summary = {
             "supplier_id": first.get("supplier_id"),
             "supplier_code": first.get("supplier_code"),
@@ -463,20 +578,11 @@ def calculate_comparison(
                 [row for row in group_rows if row["is_unavailable"]]
             ),
             "available_products": len(available_products),
-            "items_subtotal": _round(sum(_number(row["subtotal"]) for row in eligible)),
-            "total_discounts": _round(
-                sum(_number(row["discount_amount"]) for row in eligible)
-            ),
-            "total_taxes": _round(sum(_number(row["tax_amount"]) for row in eligible)),
-            "total_shipping": _round(
-                sum(_number(row["shipping_cost"]) for row in eligible)
-            ),
-            "total_other_costs": _round(
-                sum(_number(row["other_cost"]) for row in eligible)
-            ),
-            "final_offer_total": _round(
-                sum(_number(row["final_total"]) for row in eligible)
-            ),
+            "discount_pct": _number(offer.get("discount_pct")),
+            "tax_pct": _number(offer.get("tax_pct")),
+            "shipping_cost": _number(offer.get("shipping_cost")),
+            "other_cost": _number(offer.get("other_cost")),
+            **offer_totals,
             "maximum_delivery_days": (
                 int(max(_number(row["delivery_days"]) for row in eligible))
                 if eligible
@@ -518,7 +624,19 @@ def calculate_comparison(
         lowest_offer = _lowest_by(eligible, "final_total")
         if lowest_offer:
             mixed_rows.append(lowest_offer)
-    mixed_total = _round(sum(_number(row["final_total"]) for row in mixed_rows))
+    mixed_groups: dict[str, list[dict]] = {}
+    for row in mixed_rows:
+        mixed_groups.setdefault(_supplier_key(row), []).append(row)
+    mixed_total = _round(sum(
+        calculate_supplier_total(
+            sum(_number(row["subtotal"]) for row in selected_rows),
+            offers_by_supplier.get(key, {}).get("discount_pct"),
+            offers_by_supplier.get(key, {}).get("tax_pct"),
+            offers_by_supplier.get(key, {}).get("shipping_cost"),
+            offers_by_supplier.get(key, {}).get("other_cost"),
+        )["final_offer_total"]
+        for key, selected_rows in mixed_groups.items()
+    ))
     single_total = cheapest_complete["final_offer_total"] if cheapest_complete else None
     savings = _round(single_total - mixed_total) if single_total is not None else None
     mixed_supplier_count = len(
@@ -527,6 +645,7 @@ def calculate_comparison(
 
     return {
         "rows": calculated_rows,
+        "supplier_offers": normalized_offers,
         "product_summaries": product_summaries,
         "supplier_summaries": supplier_summaries,
         "scenario_summary": {
@@ -581,6 +700,13 @@ def _row_document(row: PriceComparisonRow) -> dict:
     }
 
 
+def _offer_document(offer: PriceComparisonSupplierOffer) -> dict:
+    return {
+        column.name: getattr(offer, column.name)
+        for column in PriceComparisonSupplierOffer.__table__.columns
+    }
+
+
 def _detail(session, comparison: PriceComparison) -> dict:
     rows = session.scalars(
         select(PriceComparisonRow)
@@ -588,10 +714,16 @@ def _detail(session, comparison: PriceComparison) -> dict:
         .order_by(PriceComparisonRow.position)
     ).all()
     row_documents = [_row_document(row) for row in rows]
+    offers = session.scalars(
+        select(PriceComparisonSupplierOffer)
+        .where(PriceComparisonSupplierOffer.comparison_id == comparison.id)
+        .order_by(PriceComparisonSupplierOffer.supplier_name)
+    ).all()
     calculations = calculate_comparison(
         comparison.comparison_date,
         row_documents,
         _last_prices(session, {row.item_code for row in rows}),
+        [_offer_document(offer) for offer in offers] or None,
     )
     source_attachments = []
     source_rfq_id = ""
@@ -671,7 +803,9 @@ def _references(session, body: ComparisonIn):
     if body.customer_id and not customer:
         raise HTTPException(422, "العميل المحدد غير موجود")
     item_ids = {row.item_id for row in body.rows if row.item_id}
-    supplier_ids = {row.supplier_id for row in body.rows if row.supplier_id}
+    supplier_ids = {row.supplier_id for row in body.rows if row.supplier_id} | {
+        offer.supplier_id for offer in body.supplier_offers if offer.supplier_id
+    }
     items = {
         item.id: item
         for item in session.scalars(select(Item).where(Item.id.in_(item_ids))).all()
@@ -735,6 +869,20 @@ def _references(session, body: ComparisonIn):
     ]
     if len(selected_products) != len(set(selected_products)):
         raise HTTPException(422, "يمكن اختيار عرض واحد فقط لكل منتج")
+    row_supplier_keys = {
+        row.supplier_id or row.supplier_code.strip()
+        or _manual_key("SUPPLIER", row.supplier_name)
+        for row in body.rows if row.supplier_id or row.supplier_name.strip()
+    }
+    offer_supplier_keys = [
+        offer.supplier_id or offer.supplier_code.strip()
+        or _manual_key("SUPPLIER", offer.supplier_name)
+        for offer in body.supplier_offers
+    ]
+    if len(offer_supplier_keys) != len(set(offer_supplier_keys)):
+        raise HTTPException(422, "لا يمكن تكرار تعديلات نفس عرض المورد")
+    if set(offer_supplier_keys) - row_supplier_keys:
+        raise HTTPException(422, "تعديلات عرض المورد يجب أن ترتبط ببنود داخل المقارنة")
     return project, customer, items, suppliers
 
 
@@ -757,13 +905,10 @@ def _replace_rows(
     body: ComparisonIn,
     items: dict[str, Item],
     suppliers: dict[str, Supplier],
-
 ) -> None:
-    session.execute(
-        delete(PriceComparisonRow).where(
-            PriceComparisonRow.comparison_id == comparison.id
-        )
-    )
+    session.execute(delete(PriceComparisonRow).where(
+        PriceComparisonRow.comparison_id == comparison.id
+    ))
     session.flush()
     for position, source in enumerate(body.rows, start=1):
         item = items.get(source.item_id)
@@ -772,78 +917,90 @@ def _replace_rows(
             source.item_code.strip() or item.code
             if item
             else source.item_code.strip() or _manual_key(
-                "ITEM",
-                source.product_name,
-                source.brand,
-                source.main_category,
-                source.subcategory,
-                source.specifications,
+                "ITEM", source.product_name, source.brand, source.main_category,
+                source.subcategory, source.specifications,
             )
         )
         supplier_code = (
             source.supplier_code.strip() or supplier.code
             if supplier
-            else (
-                source.supplier_code.strip()
-                or (
-                    _manual_key("SUPPLIER", source.supplier_name)
-                    if source.supplier_name.strip()
-                    else ""
-                )
+            else source.supplier_code.strip() or (
+                _manual_key("SUPPLIER", source.supplier_name)
+                if source.supplier_name.strip() else ""
             )
         )
-        session.add(
-            PriceComparisonRow(
-                id=str(uuid.uuid4()),
-                comparison_id=comparison.id,
-                position=position,
-                item_id=item.id if item else None,
-                item_code=item_code,
-                product_name=(
-                    source.product_name.strip() or item.product_name or item.name
-                    if item
-                    else source.product_name.strip()
-                ),
-                brand=source.brand.strip() or ((item.brand or "") if item else ""),
-                main_category=(
-                    source.main_category.strip()
-                    or (item.main_category or item.category or "")
-                    if item
-                    else source.main_category.strip()
-                ),
-                subcategory=(
-                    source.subcategory.strip() or (item.subcategory or "")
-                    if item
-                    else source.subcategory.strip()
-                ),
-                specifications=(
-                    source.specifications.strip()
-                    or (item.specifications or item.specs or "")
-                    if item
-                    else source.specifications.strip()
-                ),
-                unit=source.unit or (item.unit if item else "") or "",
-                supplier_id=supplier.id if supplier else None,
-                supplier_code=supplier_code,
-                supplier_name=(
-                    source.supplier_name.strip() or supplier.name
-                    if supplier
-                    else source.supplier_name.strip()
-                ),
-                quantity=source.quantity,
-                unit_price=source.unit_price,
-                discount_pct=source.discount_pct,
-                tax_pct=source.tax_pct,
-                shipping_cost=source.shipping_cost,
-                other_cost=source.other_cost,
-                delivery_days=source.delivery_days,
-                payment_terms=source.payment_terms,
-                availability=source.availability,
-                price_valid_until=source.price_valid_until,
-                notes=source.notes,
-                selected_for_purchase=source.selected_for_purchase,
-            )
+        session.add(PriceComparisonRow(
+            id=str(uuid.uuid4()), comparison_id=comparison.id, position=position,
+            item_id=item.id if item else None, item_code=item_code,
+            product_name=(
+                source.product_name.strip() or item.product_name or item.name
+                if item else source.product_name.strip()
+            ),
+            brand=source.brand.strip() or ((item.brand or "") if item else ""),
+            main_category=(
+                source.main_category.strip() or (item.main_category or item.category or "")
+                if item else source.main_category.strip()
+            ),
+            subcategory=(
+                source.subcategory.strip() or (item.subcategory or "")
+                if item else source.subcategory.strip()
+            ),
+            specifications=(
+                source.specifications.strip() or (item.specifications or item.specs or "")
+                if item else source.specifications.strip()
+            ),
+            unit=source.unit or (item.unit if item else "") or "",
+            supplier_id=supplier.id if supplier else None,
+            supplier_code=supplier_code,
+            supplier_name=(
+                source.supplier_name.strip() or supplier.name
+                if supplier else source.supplier_name.strip()
+            ),
+            quantity=source.quantity, unit_price=source.unit_price,
+            # Legacy columns remain additive/backward-compatible only. New
+            # comparisons store commercial adjustments on the supplier offer.
+            discount_pct=0, tax_pct=0, shipping_cost=0, other_cost=0,
+            delivery_days=source.delivery_days, payment_terms=source.payment_terms,
+            availability=source.availability,
+            price_valid_until=source.price_valid_until, notes=source.notes,
+            selected_for_purchase=source.selected_for_purchase,
+        ))
+
+
+def _replace_supplier_offers(
+    session,
+    comparison: PriceComparison,
+    body: ComparisonIn,
+    suppliers: dict[str, Supplier],
+) -> None:
+    session.execute(delete(PriceComparisonSupplierOffer).where(
+        PriceComparisonSupplierOffer.comparison_id == comparison.id
+    ))
+    session.flush()
+    source_offers = [offer.model_dump() for offer in body.supplier_offers]
+    if not source_offers:
+        source_offers = _legacy_supplier_offers(
+            body.comparison_date, [row.model_dump() for row in body.rows],
         )
+    for source in source_offers:
+        supplier = suppliers.get(source.get("supplier_id") or "")
+        supplier_name = str(source.get("supplier_name") or "").strip() or (
+            supplier.name if supplier else ""
+        )
+        supplier_code = str(source.get("supplier_code") or "").strip() or (
+            supplier.code if supplier else ""
+        ) or _manual_key("SUPPLIER", supplier_name)
+        if not supplier_code:
+            continue
+        session.add(PriceComparisonSupplierOffer(
+            id=str(uuid.uuid4()), comparison_id=comparison.id,
+            supplier_id=supplier.id if supplier else None,
+            supplier_code=supplier_code, supplier_name=supplier_name,
+            discount_pct=_number(source.get("discount_pct")),
+            tax_pct=_number(source.get("tax_pct")),
+            shipping_cost=_number(source.get("shipping_cost")),
+            other_cost=_number(source.get("other_cost")),
+        ))
 
 
 @router.get("")
@@ -922,6 +1079,7 @@ def create_comparison(
         )
         session.add(comparison)
         _replace_rows(session, comparison, body, items, suppliers)
+        _replace_supplier_offers(session, comparison, body, suppliers)
         session.commit()
         return _detail(session, comparison)
 
@@ -958,6 +1116,9 @@ def delete_comparison(
         project_id = comparison.project_id or ""
         session.execute(delete(PriceComparisonRow).where(
             PriceComparisonRow.comparison_id == comparison.id,
+        ))
+        session.execute(delete(PriceComparisonSupplierOffer).where(
+            PriceComparisonSupplierOffer.comparison_id == comparison.id,
         ))
         session.delete(comparison)
         _audit(
@@ -1008,6 +1169,7 @@ def update_comparison(
         comparison.notes = body.notes
         comparison.updated_at = _now()
         _replace_rows(session, comparison, body, items, suppliers)
+        _replace_supplier_offers(session, comparison, body, suppliers)
         session.commit()
         return _detail(session, comparison)
 
@@ -1037,14 +1199,7 @@ def _export_workbook(detail: dict) -> bytes:
         "الكمية",
         "الوحدة",
         "سعر الوحدة",
-        "الخصم %",
-        "قيمة الخصم",
-        "بعد الخصم",
-        "الضريبة %",
-        "قيمة الضريبة",
-        "الشحن",
-        "تكلفة أخرى",
-        "الإجمالي النهائي",
+        "إجمالي البند",
         "التسليم بالأيام",
         "التوفر",
         "فرق الأقل",
@@ -1069,13 +1224,6 @@ def _export_workbook(detail: dict) -> bytes:
                 row["quantity"],
                 row["unit"],
                 row["unit_price"],
-                row["discount_pct"],
-                row["discount_amount"],
-                row["amount_after_discount"],
-                row["tax_pct"],
-                row["tax_amount"],
-                row["shipping_cost"],
-                row["other_cost"],
                 row["final_total"],
                 row["delivery_days"],
                 row["availability"],
@@ -1098,7 +1246,9 @@ def _export_workbook(detail: dict) -> bytes:
         "المنتجات المتاحة",
         "غير متاح",
         "إجمالي البنود",
+        "الخصم %",
         "الخصومات",
+        "الضريبة %",
         "الضرائب",
         "الشحن",
         "تكاليف أخرى",
@@ -1118,7 +1268,9 @@ def _export_workbook(detail: dict) -> bytes:
                 row["available_products"],
                 row["unavailable_products"],
                 row["items_subtotal"],
+                row["discount_pct"],
                 row["total_discounts"],
+                row["tax_pct"],
                 row["total_taxes"],
                 row["total_shipping"],
                 row["total_other_costs"],

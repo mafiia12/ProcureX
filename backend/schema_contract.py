@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from sqlalchemy import inspect
 
 
-HEAD_REVISION = "0017_corrected_request_ancestry"
+HEAD_REVISION = "0018_supplier_offer_adjustments"
 
 # SQL expressions as they must appear in the database schema.  These defaults
 # already describe the values used by the application and legacy SQLite
@@ -122,6 +122,20 @@ AUTHORITATIVE_DEFAULTS: dict[str, dict[str, str]] = {
         "price_valid_until": "''",
         "notes": "''",
         "selected_for_purchase": "0",
+    },
+    "price_comparison_supplier_offers": {
+        "discount_pct": "0",
+        "tax_pct": "0",
+        "shipping_cost": "0",
+        "other_cost": "0",
+    },
+    "engineer_approval_supplier_offers": {
+        "supplier_id": "''",
+        "supplier_name": "''",
+        "discount_pct": "0",
+        "tax_pct": "0",
+        "shipping_cost": "0",
+        "other_cost": "0",
     },
     "purchase_orders": {
         "source_request_id": "''",

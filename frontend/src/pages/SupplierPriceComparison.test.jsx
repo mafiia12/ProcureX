@@ -60,6 +60,7 @@ const getResponse = (url) => {
 };
 const mockGet = jest.fn(getResponse);
 const mockPost = jest.fn();
+const mockPut = jest.fn();
 const mockDelete = jest.fn();
 
 jest.mock("@/lib/api", () => ({
@@ -69,7 +70,7 @@ jest.mock("@/lib/api", () => ({
   default: {
     get: (...args) => mockGet(...args),
     post: (...args) => mockPost(...args),
-    put: jest.fn(),
+    put: (...args) => mockPut(...args),
     delete: (...args) => mockDelete(...args),
   },
 }));
@@ -102,6 +103,7 @@ beforeEach(() => {
   window.print = jest.fn();
   mockGet.mockImplementation(getResponse);
   mockPost.mockReset();
+  mockPut.mockReset();
   mockDelete.mockReset();
   mockPost.mockImplementation((url, body) => {
     if (url === "/suppliers") return Promise.resolve({
@@ -112,6 +114,7 @@ beforeEach(() => {
     });
     return Promise.resolve({ data: detail });
   });
+  mockPut.mockResolvedValue({ data: detail });
 });
 
 test("adds each eligible request item once into one aligned supplier column", async () => {
@@ -373,6 +376,51 @@ test("cheapest complete action selects every eligible row and excludes an incomp
   // Selection is a local comparison decision until the user explicitly saves;
   // it never invokes approval or any other workflow mutation automatically.
   expect(mockPost).not.toHaveBeenCalled();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("supplier footer adjustments persist and cheapest complete uses final total", async () => {
+  const adjusted = {
+    ...detail,
+    supplier_offers: [
+      { supplier_id: "supplier-1", supplier_code: "SUP-1", supplier_name: "المورد الأخضر", discount_pct: 0, tax_pct: 0, shipping_cost: 50, other_cost: 0 },
+      { supplier_id: "supplier-2", supplier_code: "SUP-2", supplier_name: "المورد غير المتاح", discount_pct: 20, tax_pct: 0, shipping_cost: 0, other_cost: 0 },
+    ],
+    rows: [
+      { ...detail.rows[0], id: "adjust-a1", item_id: "item-1", item_code: "ITM-1", product_name: "منتج أول", unit_price: 80 },
+      { ...detail.rows[0], id: "adjust-a2", item_id: "item-2", item_code: "ITM-2", product_name: "منتج ثان", unit_price: 80 },
+      { ...detail.rows[1], id: "adjust-b1", item_id: "item-1", item_code: "ITM-1", product_name: "منتج أول", availability: "available", unit_price: 90 },
+      { ...detail.rows[1], id: "adjust-b2", item_id: "item-2", item_code: "ITM-2", product_name: "منتج ثان", availability: "available", unit_price: 90 },
+    ],
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => { root.render(<SupplierPriceComparison initialComparison={adjusted} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
+
+  const cards = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')];
+  expect(cards[0].textContent).toContain("370.00");
+  expect(cards[1].textContent).toContain("288.00");
+  await act(async () => setNativeValue(
+    container.querySelector('[data-testid="supplier-adjustment-discount_pct-supplier-2"]'), "60",
+  ));
+  expect(cards[1].textContent).toContain("144.00");
+
+  await act(async () => container.querySelector('[data-testid="select-cheapest-complete-offer"]').click());
+  expect(cards[1].textContent).toContain("2 مختار");
+  expect(cards[0].textContent).not.toContain("مختار");
+
+  await act(async () => {
+    container.querySelector('[data-testid="comparison-save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  const savedPayload = mockPut.mock.calls.find(([url]) => url === "/price-comparisons/comparison-1")?.[1];
+  expect(savedPayload.supplier_offers.find((offer) => offer.supplier_id === "supplier-2")).toMatchObject({
+    discount_pct: 60, shipping_cost: 0, other_cost: 0,
+  });
+  expect(savedPayload.rows.every((row) => !("discount_pct" in row) && !("shipping_cost" in row))).toBe(true);
 
   await act(async () => root.unmount());
   container.remove();

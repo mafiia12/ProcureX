@@ -46,6 +46,7 @@ from db_migrations import (  # noqa: E402
     CONSTRUCTION_CALCULATOR_SCHEMA_VERSION,
     DOCUMENT_CAPTURE_SCHEMA_VERSION,
     SUPPLIER_PRICE_COMPARISON_SCHEMA_VERSION,
+    SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION,
     migrate_business_code_sequences,
     migrate_construction_calculator,
     migrate_document_capture,
@@ -53,9 +54,12 @@ from db_migrations import (  # noqa: E402
     migrate_item_classification,
     migrate_item_identity,
     migrate_supplier_price_comparisons,
+    migrate_supplier_offer_adjustments,
 )
 from excel_io import import_data, parse_workbook  # noqa: E402
-from price_comparisons import PriceComparison, calculate_comparison  # noqa: E402
+from price_comparisons import (  # noqa: E402
+    PriceComparison, PriceComparisonSupplierOffer, calculate_comparison,
+)
 from procurement_workflow import (  # noqa: E402
     EngineerApproval, calculate_procurement_kpis,
     APPROVAL_STAGE_EXPENDITURE_APPROVAL, APPROVAL_STAGE_FUNDS_AVAILABILITY,
@@ -819,11 +823,16 @@ def _comparison_offer(item_id, supplier_id, unit_price=0, **overrides):
 
 
 @pytest.mark.parametrize(
-    ("first", "second", "expected_supplier", "expected_total"),
+    (
+        "first", "second", "expected_item_supplier", "expected_item_total",
+        "expected_supplier", "expected_total",
+    ),
     [
         pytest.param(
             {"unit_price": "١٬٠٠٠"},
             {"unit_price": "1,100"},
+            "supplier-1",
+            1000,
             "supplier-1",
             1000,
             id="numeric-formatted-prices",
@@ -831,6 +840,8 @@ def _comparison_offer(item_id, supplier_id, unit_price=0, **overrides):
         pytest.param(
             {"unit_price": 120, "discount_pct": 25},
             {"unit_price": 100},
+            "supplier-2",
+            100,
             "supplier-1",
             90,
             id="discount",
@@ -838,6 +849,8 @@ def _comparison_offer(item_id, supplier_id, unit_price=0, **overrides):
         pytest.param(
             {"unit_price": 90, "shipping_cost": 30},
             {"unit_price": 100},
+            "supplier-1",
+            90,
             "supplier-2",
             100,
             id="shipping",
@@ -845,6 +858,8 @@ def _comparison_offer(item_id, supplier_id, unit_price=0, **overrides):
         pytest.param(
             {"unit_price": 90, "tax_pct": 20},
             {"unit_price": 100},
+            "supplier-1",
+            90,
             "supplier-2",
             100,
             id="tax",
@@ -852,7 +867,8 @@ def _comparison_offer(item_id, supplier_id, unit_price=0, **overrides):
     ],
 )
 def test_supplier_recommendation_uses_numeric_final_total(
-    first, second, expected_supplier, expected_total
+    first, second, expected_item_supplier, expected_item_total,
+    expected_supplier, expected_total,
 ):
     rows = [
         _comparison_offer("item-1", "supplier-1", **first),
@@ -866,13 +882,12 @@ def test_supplier_recommendation_uses_numeric_final_total(
         result["supplier_summaries"], key=lambda summary: summary["final_offer_total"]
     )
 
-    assert product["lowest_final_total"] == expected_total
-    assert product["lowest_final_total_supplier"] == expected_supplier
+    assert product["lowest_final_total"] == expected_item_total
+    assert product["lowest_final_total_supplier"] == expected_item_supplier
     assert scenario["cheapest_complete_supplier"] == cheapest_summary
     assert scenario["cheapest_complete_supplier"]["supplier_id"] == expected_supplier
     assert scenario["single_supplier_total"] == expected_total
-    assert scenario["mixed_supplier_total"] == expected_total
-    assert scenario["mixed_supplier_selections"][0]["supplier_id"] == expected_supplier
+    assert scenario["mixed_supplier_selections"][0]["supplier_id"] == expected_item_supplier
 
 
 def test_supplier_recommendation_preserves_equal_price_ties():
@@ -982,14 +997,11 @@ def test_supplier_price_comparison_calculations_and_rankings():
     result = calculate_comparison("2026-07-28", rows, {"ITM-1": 100})
 
     assert result["rows"][0]["subtotal"] == 1000
-    assert result["rows"][0]["discount_amount"] == 100
-    assert result["rows"][0]["amount_after_discount"] == 900
-    assert result["rows"][0]["tax_amount"] == 126
-    assert result["rows"][0]["final_total"] == 1086
-    assert result["rows"][1]["final_total"] == 1083
+    assert result["rows"][0]["final_total"] == 1000
+    assert result["rows"][1]["final_total"] == 950
     assert result["rows"][1]["difference_from_lowest"] == 0
-    assert result["rows"][0]["difference_from_lowest"] == 3
-    assert result["rows"][0]["difference_pct_from_lowest"] == 0.28
+    assert result["rows"][0]["difference_from_lowest"] == 50
+    assert result["rows"][0]["difference_pct_from_lowest"] == 5.26
     assert result["rows"][1]["difference_from_last_price"] == -5
     assert result["rows"][1]["difference_pct_from_last_price"] == -5
     assert result["rows"][1]["is_lowest_final_total"] is True
@@ -1004,6 +1016,54 @@ def test_supplier_price_comparison_calculations_and_rankings():
     assert product["difference_from_last_price"] == -5
     assert product["difference_pct_from_last_price"] == -5
     assert product["available_offer_count"] == 2
+
+
+def test_supplier_offer_adjustments_apply_once_and_vat_follows_discount():
+    rows = [
+        _comparison_offer("item-1", "supplier-1", 100),
+        _comparison_offer("item-2", "supplier-1", 200),
+    ]
+    result = calculate_comparison(
+        "2026-07-28", rows, supplier_offers=[{
+            "supplier_id": "supplier-1", "discount_pct": 10, "tax_pct": 14,
+            "shipping_cost": 50, "other_cost": 25,
+        }],
+    )
+    assert [row["subtotal"] for row in result["rows"]] == [100, 200]
+    assert all("shipping_cost" not in row for row in result["rows"])
+    assert result["supplier_summaries"][0] == {
+        **result["supplier_summaries"][0],
+        "items_subtotal": 300,
+        "total_discounts": 30,
+        "amount_after_discount": 270,
+        "total_taxes": 37.8,
+        "total_shipping": 50,
+        "total_other_costs": 25,
+        "final_offer_total": 382.8,
+    }
+
+
+def test_cheapest_complete_offer_uses_final_total_and_excludes_incomplete():
+    rows = [
+        _comparison_offer("item-1", "supplier-1", 80),
+        _comparison_offer("item-2", "supplier-1", 80),
+        _comparison_offer("item-1", "supplier-2", 90),
+        _comparison_offer("item-2", "supplier-2", 90),
+        _comparison_offer("item-1", "supplier-3", 10),
+    ]
+    result = calculate_comparison(
+        "2026-07-28", rows, supplier_offers=[
+            {"supplier_id": "supplier-1", "shipping_cost": 50},
+            {"supplier_id": "supplier-2", "discount_pct": 20},
+            {"supplier_id": "supplier-3"},
+        ],
+    )
+    assert result["scenario_summary"]["cheapest_complete_supplier"]["supplier_id"] == "supplier-2"
+    assert result["scenario_summary"]["single_supplier_total"] == 144
+    supplier_three = next(
+        row for row in result["supplier_summaries"] if row["supplier_id"] == "supplier-3"
+    )
+    assert supplier_three["is_complete"] is False
 
 
 def test_supplier_price_comparison_sqlite_migration_is_additive(tmp_path):
@@ -1050,6 +1110,43 @@ def test_supplier_price_comparison_sqlite_migration_is_additive(tmp_path):
             assert (
                 connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1
             )
+    migration_engine.dispose()
+
+
+def test_supplier_offer_adjustment_migration_preserves_legacy_totals(tmp_path):
+    database_path = tmp_path / "supplier-offer-adjustments.db"
+    migration_engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with migration_engine.begin() as connection:
+        for table in ("projects", "customers", "items", "suppliers"):
+            connection.exec_driver_sql(
+                f"CREATE TABLE {table} (id VARCHAR PRIMARY KEY, name VARCHAR, code VARCHAR)"
+            )
+    migrate_supplier_price_comparisons(migration_engine)
+    with migration_engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO price_comparisons "
+            "(id, comparison_number, comparison_date, created_at, updated_at) "
+            "VALUES ('cmp-1', 'CMP-1', '2026-07-28', '', '')"
+        )
+        for row_id, price, shipping in (("row-1", 100, 20), ("row-2", 200, 20)):
+            connection.exec_driver_sql(
+                "INSERT INTO price_comparison_rows "
+                "(id, comparison_id, position, item_code, product_name, supplier_code, "
+                "supplier_name, quantity, unit_price, discount_pct, tax_pct, shipping_cost) "
+                "VALUES (?, 'cmp-1', ?, ?, ?, 'SUP-1', 'Supplier', 1, ?, 10, 14, ?)",
+                (row_id, 1 if row_id == "row-1" else 2, row_id, row_id, price, shipping),
+            )
+    backup_path = migrate_supplier_offer_adjustments(migration_engine)
+    assert backup_path and backup_path.is_file()
+    with sqlite3.connect(database_path) as connection:
+        offer = connection.execute(
+            "SELECT discount_pct, tax_pct, shipping_cost, other_cost "
+            "FROM price_comparison_supplier_offers"
+        ).fetchone()
+        assert offer == pytest.approx((10, 14, 40, 0))
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == (
+            SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION
+        )
     migration_engine.dispose()
 
 
@@ -1106,6 +1203,16 @@ def test_supplier_price_comparison_save_reopen_edit_export_and_persistence(s, ad
         "customer_name": "عميل مقارنة اختباري",
         "comparison_date": "2026-07-28",
         "notes": "اختبار متعدد المنتجات",
+        "supplier_offers": [
+            {
+                "supplier_id": supplier["id"], "supplier_code": supplier["code"],
+                "supplier_name": supplier["name"],
+                "discount_pct": 0, "tax_pct": 0,
+                "shipping_cost": 17 if index == 2 else 0,
+                "other_cost": 3 if index == 2 else 0,
+            }
+            for index, supplier in enumerate(suppliers)
+        ],
         "rows": rows,
     }
     created = s.post(f"{API}/price-comparisons", json=payload, headers=admin_headers)
@@ -1114,6 +1221,10 @@ def test_supplier_price_comparison_save_reopen_edit_export_and_persistence(s, ad
     assert detail["comparison_number"].startswith("CMP-")
     assert len(detail["comparison_number"].removeprefix("CMP-")) == 6
     assert len(detail["rows"]) == 6
+    assert next(
+        offer for offer in detail["supplier_offers"]
+        if offer["supplier_id"] == suppliers[2]["id"]
+    )["shipping_cost"] == 17
     assert len(detail["product_summaries"]) == 2
     assert len(detail["supplier_summaries"]) == 3
     assert detail["scenario_summary"]["cheapest_complete_supplier"]["supplier_id"] == (
@@ -1146,6 +1257,10 @@ def test_supplier_price_comparison_save_reopen_edit_export_and_persistence(s, ad
     reopened = s.get(f"{API}/price-comparisons/{comparison_id}", headers=admin_headers)
     assert reopened.status_code == 200
     assert reopened.json()["comparison_number"] == detail["comparison_number"]
+    assert next(
+        offer for offer in reopened.json()["supplier_offers"]
+        if offer["supplier_id"] == suppliers[2]["id"]
+    )["other_cost"] == 3
 
     updated_rows = rows[:-1]
     updated_rows[0] = {**updated_rows[0], "unit_price": 85, "shipping_cost": 5}
@@ -1231,7 +1346,13 @@ def test_manual_comparison_rows_persist_without_touching_master_data(s, admin_he
     assert stored["main_category"] == "TEST_MANUAL_MAIN"
     assert stored["subcategory"] == "TEST_MANUAL_SUB"
     assert stored["specifications"] == "TEST_MANUAL_SPEC"
-    assert stored["final_total"] == 212.2
+    assert stored["final_total"] == 200
+    assert detail["supplier_summaries"][0]["final_offer_total"] == 212.2
+    offer = detail["supplier_offers"][0]
+    assert (
+        offer["discount_pct"], offer["tax_pct"],
+        offer["shipping_cost"], offer["other_cost"],
+    ) == pytest.approx((10, 14, 5, 2))
     assert len(s.get(f"{API}/items", headers=admin_headers).json()) == before_items
     assert len(s.get(f"{API}/suppliers", headers=admin_headers).json()) == before_suppliers
 
@@ -3459,11 +3580,11 @@ def test_purchase_orders_use_approved_snapshot_after_comparison_changes(s, admin
         "quantity": 3.0,
         "unit": items[0]["unit"],
         "unit_price": 100.0,
-        "discount_pct": 10.0,
-        "tax_pct": 14.0,
-        "line_total": 314.8,
+        "discount_pct": 0.0,
+        "tax_pct": 0.0,
+        "line_total": 300.0,
     }
-    assert approved_lines[items[1]["id"]]["line_total"] == 166.45
+    assert approved_lines[items[1]["id"]]["line_total"] == 150.0
     assert approval["final_total"] == 481.25
 
     for actor_role in ("procurement_engineer", "commercial_manager"):
@@ -3574,9 +3695,9 @@ def test_purchase_orders_use_approved_snapshot_after_comparison_changes(s, admin
         "quantity": 3.0,
         "unit": items[0]["unit"],
         "unit_price": 100.0,
-        "discount_pct": 10.0,
-        "vat_pct": 14.0,
-        "line_total": 314.8,
+        "discount_pct": 0.0,
+        "vat_pct": 0.0,
+        "line_total": 300.0,
     }
     second_po_item = po_items[items[1]["id"]]
     assert {
@@ -3589,9 +3710,9 @@ def test_purchase_orders_use_approved_snapshot_after_comparison_changes(s, admin
         "quantity": 2.0,
         "unit": items[1]["unit"],
         "unit_price": 75.0,
-        "discount_pct": 5.0,
-        "vat_pct": 14.0,
-        "line_total": 166.45,
+        "discount_pct": 0.0,
+        "vat_pct": 0.0,
+        "line_total": 150.0,
     }
     totals_by_supplier = {
         order["supplier_id"]: order for order in result["purchase_orders"]

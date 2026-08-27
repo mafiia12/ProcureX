@@ -39,10 +39,12 @@ try:
     from .document_capture.jobs import start_document_worker, stop_document_worker
     from .document_capture.router import internal_document_router, public_document_router
     from .price_comparisons import (
-        PriceComparison, router as price_comparison_router,
+        PriceComparison, PriceComparisonSupplierOffer, router as price_comparison_router,
     )
+    from .commercial_totals import calculate_supplier_total
     from .procurement_workflow import (
-        ApprovalPayment, EngineerApproval, EngineerApprovalLine, _audit,
+        ApprovalPayment, EngineerApproval, EngineerApprovalLine,
+        EngineerApprovalSupplierOffer, _audit,
         APPROVAL_STAGE_COMPARISON_TECHNICAL, APPROVAL_STAGE_EXPENDITURE_APPROVAL,
         APPROVAL_STAGE_FUNDS_AVAILABILITY, APPROVAL_STAGE_PO_READY,
         advance_request_milestone, calculate_procurement_kpis,
@@ -73,10 +75,12 @@ except ImportError:
     from document_capture.jobs import start_document_worker, stop_document_worker
     from document_capture.router import internal_document_router, public_document_router
     from price_comparisons import (
-        PriceComparison, router as price_comparison_router,
+        PriceComparison, PriceComparisonSupplierOffer, router as price_comparison_router,
     )
+    from commercial_totals import calculate_supplier_total
     from procurement_workflow import (
-        ApprovalPayment, EngineerApproval, EngineerApprovalLine, _audit,
+        ApprovalPayment, EngineerApproval, EngineerApprovalLine,
+        EngineerApprovalSupplierOffer, _audit,
         APPROVAL_STAGE_COMPARISON_TECHNICAL, APPROVAL_STAGE_EXPENDITURE_APPROVAL,
         APPROVAL_STAGE_FUNDS_AVAILABILITY, APPROVAL_STAGE_PO_READY,
         advance_request_milestone, calculate_procurement_kpis,
@@ -863,6 +867,11 @@ class PurchaseOrderSupplierGroup(BaseModel):
     supplier_name: str
     items: List[PurchaseOrderItemCreate]
     total: float = 0
+    discount_pct: float = 0
+    tax_pct: float = 0
+    shipping_cost: float = 0
+    other_cost: float = 0
+    has_supplier_offer: bool = False
 
 
 class PurchaseOrderFromComparison(BaseModel):
@@ -986,6 +995,16 @@ async def create_purchase_orders_from_comparison(
             .where(EngineerApprovalLine.approval_id == source_approval.id)
             .order_by(EngineerApprovalLine.position)
         ).all()
+        comparison_offers = session.scalars(
+            select(PriceComparisonSupplierOffer).where(
+                PriceComparisonSupplierOffer.comparison_id == comparison.id,
+            )
+        ).all()
+        approval_offers = session.scalars(
+            select(EngineerApprovalSupplierOffer).where(
+                EngineerApprovalSupplierOffer.approval_id == source_approval.id,
+            )
+        ).all()
 
     if not approved_lines:
         raise HTTPException(422, "لا يحتوي الاعتماد على أصناف معتمدة لإنشاء أمر الشراء")
@@ -1005,13 +1024,26 @@ async def create_purchase_orders_from_comparison(
     if len(approved_products) != len(set(approved_products)):
         raise HTTPException(422, "يمكن إنشاء أمر شراء من عرض واحد فقط لكل منتج")
 
+    offers_by_supplier = {}
+    for offer in approval_offers or comparison_offers:
+        for key in (
+            offer.supplier_id, getattr(offer, "supplier_code", ""), offer.supplier_name,
+        ):
+            if key:
+                offers_by_supplier[key] = offer
     grouped_orders = {}
     for line in approved_lines:
         supplier_key = line.supplier_id or line.supplier_name
+        supplier_offer = offers_by_supplier.get(supplier_key)
         group = grouped_orders.setdefault(supplier_key, {
             "supplier_id": line.supplier_id,
             "supplier_name": line.supplier_name,
             "items": [],
+            "discount_pct": float(supplier_offer.discount_pct or 0) if supplier_offer else 0,
+            "tax_pct": float(supplier_offer.tax_pct or 0) if supplier_offer else 0,
+            "shipping_cost": float(supplier_offer.shipping_cost or 0) if supplier_offer else 0,
+            "other_cost": float(supplier_offer.other_cost or 0) if supplier_offer else 0,
+            "has_supplier_offer": supplier_offer is not None,
         })
         group["items"].append(PurchaseOrderItemCreate(
             item_id=line.item_id,
@@ -1126,6 +1158,17 @@ async def create_purchase_orders_from_comparison(
                     "payment_terms": item.payment_terms,
                     "price_valid_until": item.price_valid_until,
                 })
+
+            if order.has_supplier_offer:
+                offer_totals = calculate_supplier_total(
+                    subtotal, order.discount_pct, order.tax_pct,
+                    order.shipping_cost, order.other_cost,
+                )
+                discount_total = offer_totals["total_discounts"]
+                vat_total = offer_totals["total_taxes"]
+                shipping_total = offer_totals["total_shipping"]
+                other_total = offer_totals["total_other_costs"]
+                final_total = offer_totals["final_offer_total"]
 
             purchase_order = {
                 "id": purchase_order_id,

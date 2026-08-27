@@ -1,4 +1,6 @@
-import { calculateComparison, calculateLine } from "@/lib/priceComparison";
+import {
+  calculateComparison, calculateLine, calculateSupplierTotal,
+} from "@/lib/priceComparison";
 
 
 const items = [
@@ -27,7 +29,7 @@ const row = (itemId, supplierId, unitPrice, deliveryDays, extra = {}) => ({
   ...extra,
 });
 
-test("calculates discount, tax, shipping, other costs and expiry exactly", () => {
+test("keeps item totals item-level and applies offer adjustments once", () => {
   const result = calculateLine({
     supplier_name: "مورد اختبار",
     quantity: 10,
@@ -40,11 +42,15 @@ test("calculates discount, tax, shipping, other costs and expiry exactly", () =>
     price_valid_until: "2099-12-31",
   }, "2026-07-28");
   expect(result.subtotal).toBe(1000);
-  expect(result.discount_amount).toBe(100);
-  expect(result.amount_after_discount).toBe(900);
-  expect(result.tax_amount).toBe(126);
-  expect(result.final_total).toBe(1086);
+  expect(result.final_total).toBe(1000);
   expect(result.eligible).toBe(true);
+  expect(calculateSupplierTotal(result.subtotal, {
+    discount_pct: 10, tax_pct: 14, shipping_cost: 50, other_cost: 10,
+  })).toEqual({
+    items_subtotal: 1000, total_discounts: 100, amount_after_discount: 900,
+    total_taxes: 126, total_shipping: 50, total_other_costs: 10,
+    final_offer_total: 1086,
+  });
 
   const expired = calculateLine({
     quantity: 1, unit_price: 50, availability: "available",
@@ -59,32 +65,29 @@ test.each([
     "formatted numeric prices",
     { unit_price: "١٬٠٠٠" },
     { unit_price: "1,100" },
-    "supplier-1",
-    1000,
+    "supplier-1", "supplier-1", 1000, 1000, 1000,
   ],
   [
     "discounts",
     { unit_price: 120, discount_pct: 25 },
     { unit_price: 100 },
-    "supplier-1",
-    90,
+    "supplier-2", "supplier-1", 100, 90, 100,
   ],
   [
     "shipping costs",
     { unit_price: 90, shipping_cost: 30 },
     { unit_price: 100 },
-    "supplier-2",
-    100,
+    "supplier-1", "supplier-2", 90, 100, 120,
   ],
   [
     "taxes",
     { unit_price: 90, tax_pct: 20 },
     { unit_price: 100 },
-    "supplier-2",
-    100,
+    "supplier-1", "supplier-2", 90, 100, 108,
   ],
 ])("recommends the lowest numeric final total with %s", (
-  _caseName, first, second, expectedSupplier, expectedTotal,
+  _caseName, first, second, expectedItemSupplier, expectedSupplier,
+  expectedItemTotal, expectedTotal, expectedMixedTotal,
 ) => {
   const result = calculateComparison([
     row("item-1", "supplier-1", 1, 5, first),
@@ -96,15 +99,15 @@ test.each([
     ...result.supplier_summaries.map((summary) => summary.final_offer_total),
   );
 
-  expect(product.lowest_final_total).toBe(expectedTotal);
+  expect(product.lowest_final_total).toBe(expectedItemTotal);
   expect(product.lowest_final_total_supplier).toBe(
-    suppliers.find((supplier) => supplier.id === expectedSupplier).name,
+    suppliers.find((supplier) => supplier.id === expectedItemSupplier).name,
   );
   expect(scenario.cheapest_complete_supplier.supplier_id).toBe(expectedSupplier);
   expect(scenario.cheapest_complete_supplier.final_offer_total).toBe(supplierMinimum);
   expect(scenario.single_supplier_total).toBe(expectedTotal);
-  expect(scenario.mixed_supplier_total).toBe(expectedTotal);
-  expect(scenario.mixed_supplier_selections[0].supplier_id).toBe(expectedSupplier);
+  expect(scenario.mixed_supplier_total).toBe(expectedMixedTotal);
+  expect(scenario.mixed_supplier_selections[0].supplier_id).toBe(expectedItemSupplier);
 });
 
 test("preserves equal-price ties and uses stable first-offer recommendations", () => {
@@ -180,7 +183,7 @@ test("compares multiple products and complete supplier offers without auto-selec
   expect(result.scenario_summary.savings_pct).toBe(3.33);
 });
 
-test("uses final line total for offer deltas and exposes historical percentages", () => {
+test("uses raw item total for item deltas and offer total for supplier ranking", () => {
   const result = calculateComparison([
     row("item-1", "supplier-1", 100, 5, {
       quantity: 10, discount_pct: 10, tax_pct: 14, shipping_cost: 50,
@@ -192,10 +195,10 @@ test("uses final line total for offer deltas and exposes historical percentages"
   ], items, suppliers, "2026-07-28");
   const first = result.rows.find((entry) => entry.supplier_id === "supplier-1");
   const second = result.rows.find((entry) => entry.supplier_id === "supplier-2");
-  expect(first.final_total).toBe(1086);
-  expect(second.final_total).toBe(1083);
-  expect(first.difference_from_lowest).toBe(3);
-  expect(first.difference_pct_from_lowest).toBe(0.28);
+  expect(first.final_total).toBe(1000);
+  expect(second.final_total).toBe(950);
+  expect(first.difference_from_lowest).toBe(50);
+  expect(first.difference_pct_from_lowest).toBe(5.26);
   expect(second.difference_pct_from_last_price).toBe(-5);
   expect(result.product_summaries[0]).toMatchObject({
     last_historical_unit_price: 100,
@@ -203,6 +206,42 @@ test("uses final line total for offer deltas and exposes historical percentages"
     difference_pct_from_last_price: -5,
     available_offer_count: 2,
   });
+});
+
+test("shipping and other costs are each applied once for a multi-item offer", () => {
+  const result = calculateComparison([
+    row("item-1", "supplier-1", 100, 5),
+    row("item-2", "supplier-1", 200, 5),
+  ], items, suppliers, "2026-07-28", [{
+    supplier_id: "supplier-1", discount_pct: 10, tax_pct: 14,
+    shipping_cost: 50, other_cost: 25,
+  }]);
+  expect(result.supplier_summaries[0]).toMatchObject({
+    items_subtotal: 300,
+    total_discounts: 30,
+    total_taxes: 37.8,
+    total_shipping: 50,
+    total_other_costs: 25,
+    final_offer_total: 382.8,
+  });
+});
+
+test("cheapest complete supplier uses final total and excludes an incomplete offer", () => {
+  const result = calculateComparison([
+    row("item-1", "supplier-1", 80, 5),
+    row("item-2", "supplier-1", 80, 5),
+    row("item-1", "supplier-2", 90, 5),
+    row("item-2", "supplier-2", 90, 5),
+    row("item-1", "supplier-3", 10, 5),
+  ], items, suppliers, "2026-07-28", [
+    { supplier_id: "supplier-1", shipping_cost: 50 },
+    { supplier_id: "supplier-2", discount_pct: 20 },
+    { supplier_id: "supplier-3" },
+  ]);
+  expect(result.scenario_summary.cheapest_complete_supplier).toMatchObject({
+    supplier_id: "supplier-2", items_subtotal: 180, final_offer_total: 144,
+  });
+  expect(result.supplier_summaries.find((entry) => entry.supplier_id === "supplier-3").is_complete).toBe(false);
 });
 
 test("groups manual products and suppliers without changing line formulas", () => {

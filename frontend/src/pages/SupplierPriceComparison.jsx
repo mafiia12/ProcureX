@@ -23,7 +23,8 @@ import {
 import api, { errMsg, fmt } from "@/lib/api";
 import useUnsavedChanges from "@/hooks/useUnsavedChanges";
 import {
-  calculateComparison, emptyComparisonRow, manualEntryKey,
+  calculateComparison, calculateSupplierTotal, emptyComparisonRow, manualEntryKey,
+  supplierOffersFromRows,
 } from "@/lib/priceComparison";
 import ProcurementProgress from "@/components/ProcurementProgress";
 import {
@@ -36,14 +37,12 @@ import { cn } from "@/lib/utils";
 const today = () => new Date().toISOString().slice(0, 10);
 const money = (value) => `${fmt(value)} ج.م`;
 const numberFields = new Set([
-  "quantity", "unit_price", "discount_pct", "tax_pct", "shipping_cost",
-  "other_cost", "delivery_days", "selected_for_purchase",
+  "quantity", "unit_price", "delivery_days", "selected_for_purchase",
 ]);
 const rowPayloadFields = [
   "item_id", "item_code", "product_name", "brand", "main_category",
   "subcategory", "specifications", "supplier_id", "supplier_code",
-  "supplier_name", "quantity", "unit", "unit_price", "discount_pct",
-  "tax_pct", "shipping_cost", "other_cost", "delivery_days", "payment_terms",
+  "supplier_name", "quantity", "unit", "unit_price", "delivery_days", "payment_terms",
   "availability", "price_valid_until", "notes",
   "selected_for_purchase",
 ];
@@ -56,7 +55,11 @@ const rowSupplierKey = (row) => (
 );
 const isManualRow = (row) => !row.item_id || !row.supplier_id;
 
-const comparisonFingerprint = ({ projectName, customerName, comparisonDate, notes, rows }) => JSON.stringify({
+const offerPayloadFields = [
+  "supplier_id", "supplier_code", "supplier_name", "discount_pct", "tax_pct",
+  "shipping_cost", "other_cost",
+];
+const comparisonFingerprint = ({ projectName, customerName, comparisonDate, notes, rows, supplierOffers }) => JSON.stringify({
   projectName: projectName || "",
   customerName: customerName || "",
   comparisonDate: comparisonDate || "",
@@ -65,6 +68,13 @@ const comparisonFingerprint = ({ projectName, customerName, comparisonDate, note
     rowPayloadFields.map((field) => [
       field,
       numberFields.has(field) ? Number(row[field]) || 0 : row[field] || "",
+    ]),
+  )),
+  supplierOffers: (supplierOffers || []).map((offer) => Object.fromEntries(
+    offerPayloadFields.map((field) => [
+      field,
+      ["discount_pct", "tax_pct", "shipping_cost", "other_cost"].includes(field)
+        ? Number(offer[field]) || 0 : offer[field] || "",
     ]),
   )),
 });
@@ -119,6 +129,7 @@ function ComparisonMatrix({
   itemOrder, visibleSupplierGroups, tr, formatMoney, onPrice, onSelectRow, onSelectSupplier,
   onEdit, onDelete, quotationForGroup, canUpload, onUpload, onViewAttachment,
   cheapestSelectableGroup, supplierOptions, onAssignSupplier,
+  onAdjustment,
 }) {
   const colCount = Math.max(visibleSupplierGroups.length, 1);
   const footerRow = itemOrder.length + 2;
@@ -213,11 +224,23 @@ function ComparisonMatrix({
               })}
 
               <div className="border-t-2 border-e bg-muted/20 p-2" style={{ gridColumn: col, gridRow: footerRow }} data-testid="supplier-offer-summary">
+                <div className="mb-2 grid grid-cols-2 gap-1">
+                  {[
+                    ["discount_pct", tr("الخصم %", "Discount %")],
+                    ["tax_pct", tr("الضريبة %", "VAT %")],
+                    ["shipping_cost", tr("الشحن", "Shipping")],
+                    ["other_cost", tr("تكاليف أخرى", "Other costs")],
+                  ].map(([field, label]) => <label key={field} className="text-[9.5px] text-muted-foreground">
+                    <span>{label}</span>
+                    <Input {...numberInputProps(field)} className="mt-0.5 h-6 px-1 text-end text-[10px] tabular-nums" value={group.offer?.[field] ?? ""} onChange={(event) => onAdjustment(group, field, event.target.value)} data-testid={`supplier-adjustment-${field}-${group.key}`} />
+                  </label>)}
+                </div>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10.5px] tabular-nums">
                   <span className="text-muted-foreground">{tr("الإجمالي قبل الإضافات", "Subtotal")}</span><b className="text-end">{formatMoney(summary.items_subtotal)}</b>
                   <span className="text-muted-foreground">{tr("الخصم", "Discount")}</span><b className="text-end">-{formatMoney(summary.total_discounts)}</b>
                   <span className="text-muted-foreground">{tr("الضريبة", "VAT")}</span><b className="text-end">{formatMoney(summary.total_taxes)}</b>
-                  <span className="text-muted-foreground">{tr("الشحن وتكاليف أخرى", "Shipping & other")}</span><b className="text-end">{formatMoney(Number(summary.total_shipping || 0) + Number(summary.total_other_costs || 0))}</b>
+                  <span className="text-muted-foreground">{tr("الشحن", "Shipping")}</span><b className="text-end">{formatMoney(summary.total_shipping)}</b>
+                  <span className="text-muted-foreground">{tr("تكاليف أخرى", "Other costs")}</span><b className="text-end">{formatMoney(summary.total_other_costs)}</b>
                   <span className="border-y bg-primary/5 px-1 py-1.5 font-bold text-foreground">{tr("الإجمالي النهائي", "Final total")}</span><b className="border-y bg-primary/5 px-1 py-1.5 text-end font-mono text-primary" dir="ltr">{formatMoney(summary.final_offer_total)}</b>
                   <span className="text-muted-foreground">{tr("مدة التوريد", "Lead time")}</span><b className="text-end">{summary.maximum_delivery_days ?? "-"} {tr("يوم", "days")}</b>
                   <span className="text-muted-foreground">{tr("شروط الدفع", "Payment terms")}</span><b className="truncate text-end" title={group.rows[0]?.payment_terms}>{group.rows[0]?.payment_terms || "-"}</b>
@@ -328,6 +351,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     ]);
     setSourceRfqId(location.state?.rfqId || "");
     setSupplierQuotations(location.state?.supplierQuotations || []);
+    setSupplierOffers(supplierOffersFromRows(rfqRows, comparisonDate));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state?.rfqRows]);
   const [comparisonDate, setComparisonDate] = useState(
@@ -339,6 +363,12 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     key: row.id || globalThis.crypto?.randomUUID?.(),
     entry_mode: isManualRow(row) ? "manual" : "system",
   })) || []);
+  const [supplierOffers, setSupplierOffers] = useState(() => (
+    initialComparison?.supplier_offers
+    || supplierOffersFromRows(
+      initialComparison?.rows || [], initialComparison?.comparison_date || today(),
+    )
+  ));
   const [search, setSearch] = useState("");
   const [productFilter, setProductFilter] = useState("");
   const [supplierFilter, setSupplierFilter] = useState("");
@@ -364,6 +394,9 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     comparisonDate: initialComparison?.comparison_date || today(),
     notes: initialComparison?.notes,
     rows: initialComparison?.rows || [],
+    supplierOffers: initialComparison?.supplier_offers || supplierOffersFromRows(
+      initialComparison?.rows || [], initialComparison?.comparison_date || today(),
+    ),
   }));
 
   useEffect(() => {
@@ -403,8 +436,8 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   })), [matchingItems]);
 
   const calculations = useMemo(
-    () => calculateComparison(rows, items, suppliers, comparisonDate),
-    [rows, items, suppliers, comparisonDate],
+    () => calculateComparison(rows, items, suppliers, comparisonDate, supplierOffers),
+    [rows, items, suppliers, comparisonDate, supplierOffers],
   );
   const productFilterOptions = useMemo(() => {
     const unique = new Map();
@@ -468,12 +501,13 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
         rows: [],
         rowsByItem: new Map(),
         summary: summaries.get(key),
+        offer: supplierOffers.find((offer) => rowSupplierKey(offer) === key),
       });
       groups.get(key).rows.push(row);
       groups.get(key).rowsByItem.set(rowItemKey(row), row);
     });
     return [...groups.values()];
-  }, [calculations.rows, calculations.supplier_summaries]);
+  }, [calculations.rows, calculations.supplier_summaries, supplierOffers]);
   useEffect(() => {
     if (!sourceRfqId) { setSourceRfqItems([]); return; }
     api.get(`/workflow/rfqs/${sourceRfqId}`).then(({ data }) => {
@@ -488,8 +522,8 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   }, [supplierPage, supplierPageCount]);
 
   const currentFingerprint = useMemo(() => comparisonFingerprint({
-    projectName, customerName, comparisonDate, notes, rows,
-  }), [projectName, customerName, comparisonDate, notes, rows]);
+    projectName, customerName, comparisonDate, notes, rows, supplierOffers,
+  }), [projectName, customerName, comparisonDate, notes, rows, supplierOffers]);
   const hasUnsavedChanges = savedFingerprintRef.current !== currentFingerprint;
   useUnsavedChanges(
     hasUnsavedChanges && !saving,
@@ -505,7 +539,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
       "Unsaved changes will be lost. Do you want to continue?",
     ))) return;
     savedFingerprintRef.current = comparisonFingerprint({
-      projectName: "", customerName: "", comparisonDate: today(), notes: "", rows: [],
+      projectName: "", customerName: "", comparisonDate: today(), notes: "", rows: [], supplierOffers: [],
     });
     setComparisonId("");
     setComparisonNumber("");
@@ -520,6 +554,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     setComparisonDate(today());
     setNotes("");
     setRows([]);
+    setSupplierOffers([]);
     setSearch("");
     setProductFilter("");
     setSupplierFilter("");
@@ -740,6 +775,14 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
           selected_for_purchase: 0,
         } : row;
       }));
+      setSupplierOffers((current) => [
+        ...current.filter((offer) => rowSupplierKey(offer) !== group.key),
+        {
+          supplier_id: supplier.id, supplier_code: supplier.code,
+          supplier_name: supplier.name, discount_pct: 0, tax_pct: 0,
+          shipping_cost: 0, other_cost: 0,
+        },
+      ]);
       toast.success(tr(`تم اختيار المورد ${supplier.name}`, `Supplier ${supplier.name} selected`));
     } catch (error) {
       toast.error(errMsg(error));
@@ -764,10 +807,6 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
       ...emptyComparisonRow(),
       quantity: current.quantity,
       unit_price: current.unit_price,
-      discount_pct: current.discount_pct,
-      tax_pct: current.tax_pct,
-      shipping_cost: current.shipping_cost,
-      other_cost: current.other_cost,
       delivery_days: current.delivery_days,
       availability: current.availability,
       entry_mode: mode,
@@ -840,6 +879,14 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     setRows((current) => editingKey
       ? current.map((row) => (row.key === editingKey ? prepared : row))
       : [...current, prepared]);
+    setSupplierOffers((current) => current.some(
+      (offer) => rowSupplierKey(offer) === supplierIdentity,
+    ) ? current : [...current, {
+      supplier_id: prepared.supplier_id || "",
+      supplier_code: prepared.supplier_code || supplierIdentity,
+      supplier_name: prepared.supplier_name || "",
+      discount_pct: 0, tax_pct: 0, shipping_cost: 0, other_cost: 0,
+    }]);
     setOfferOpen(false);
     toast.success(editingKey ? tr("تم تحديث العرض", "Offer updated") : tr("تمت إضافة العرض", "Offer added"));
   };
@@ -852,6 +899,25 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
       }
       return updated;
     }));
+  };
+
+  const updateSupplierAdjustment = (group, field, value) => {
+    setSupplierOffers((current) => {
+      const existing = current.find((offer) => rowSupplierKey(offer) === group.key);
+      const next = existing || {
+        supplier_id: group.supplierId || "",
+        supplier_code: group.supplierCode || group.key,
+        supplier_name: group.supplierName || "",
+        discount_pct: 0, tax_pct: 0, shipping_cost: 0, other_cost: 0,
+      };
+      return [
+        ...current.filter((offer) => rowSupplierKey(offer) !== group.key),
+        { ...next, [field]: value },
+      ];
+    });
+    setRows((current) => current.map((row) => (
+      rowSupplierKey(row) === group.key ? { ...row, selected_for_purchase: 0 } : row
+    )));
   };
 
   const updateRowSupplier = (rowKey, supplierId) => {
@@ -1042,6 +1108,20 @@ const toggleDetails = (key) => setExpandedRows((current) => {
       source_request_number: sourceRequestNumber,
       comparison_date: comparisonDate,
       notes,
+      supplier_offers: supplierOfferGroups
+        .filter((group) => group.supplierId || group.supplierName)
+        .map((group) => {
+          const offer = group.offer || {};
+          return {
+            supplier_id: group.supplierId || "",
+            supplier_code: group.supplierCode || group.key,
+            supplier_name: group.supplierName || "",
+            discount_pct: Number(offer.discount_pct) || 0,
+            tax_pct: Number(offer.tax_pct) || 0,
+            shipping_cost: Number(offer.shipping_cost) || 0,
+            other_cost: Number(offer.other_cost) || 0,
+          };
+        }),
       rows: rows.map((row) => Object.fromEntries(
         rowPayloadFields.map((field) => [
           field,
@@ -1085,8 +1165,8 @@ const toggleDetails = (key) => setExpandedRows((current) => {
           quantity: Number(row.quantity || rfqItem.quantity || 0),
           unit: row.unit || rfqItem.unit || "",
           unit_price: Number(row.unit_price || 0),
-          discount_pct: Number(row.discount_pct || 0),
-          tax_pct: Number(row.tax_pct || 0),
+          discount_pct: 0,
+          tax_pct: 0,
           availability: row.availability || "available",
           remark: row.notes || "",
         } : null;
@@ -1125,6 +1205,7 @@ const toggleDetails = (key) => setExpandedRows((current) => {
       comparisonDate: detail.comparison_date,
       notes: detail.notes,
       rows: detail.rows,
+      supplierOffers: detail.supplier_offers || [],
     });
     setComparisonId(detail.id);
     setComparisonNumber(detail.comparison_number);
@@ -1142,6 +1223,7 @@ const toggleDetails = (key) => setExpandedRows((current) => {
       key: row.id || globalThis.crypto?.randomUUID?.(),
       entry_mode: isManualRow(row) ? "manual" : "system",
     })));
+    setSupplierOffers(detail.supplier_offers || []);
   };
   const save = async () => {
     const error = validateComparison();
@@ -1279,8 +1361,16 @@ const selectedPurchaseSupplierCount = new Set(
   selectedPurchaseRows.map((row) => rowSupplierKey(row)).filter(Boolean),
 ).size;
 
-const selectedPurchaseTotal = selectedPurchaseRows.reduce(
-  (sum, row) => sum + Number(row.final_total || 0),
+const selectedPurchaseGroups = selectedPurchaseRows.reduce((groups, row) => {
+  const key = rowSupplierKey(row);
+  (groups[key] ||= []).push(row);
+  return groups;
+}, {});
+const selectedPurchaseTotal = Object.entries(selectedPurchaseGroups).reduce(
+  (sum, [key, selectedRows]) => sum + calculateSupplierTotal(
+    selectedRows.reduce((subtotal, row) => subtotal + Number(row.subtotal || 0), 0),
+    supplierOffers.find((offer) => rowSupplierKey(offer) === key) || {},
+  ).final_offer_total,
   0,
 );
 
@@ -1486,7 +1576,7 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
               {supplierOfferGroups.length > 3 && <div className="flex items-center gap-1 rounded-md border bg-card p-1"><Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={supplierPage === 0} onClick={() => setSupplierPage((page) => page - 1)} aria-label={tr("الموردون السابقون", "Previous suppliers")}>{direction === "rtl" ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}</Button><span className="min-w-24 text-center text-xs text-muted-foreground" dir="ltr">{supplierPage * 3 + 1}–{Math.min((supplierPage + 1) * 3, supplierOfferGroups.length)} / {supplierOfferGroups.length}</span><Button type="button" variant="ghost" size="icon" className="h-7 w-7" disabled={supplierPage + 1 >= supplierPageCount} onClick={() => setSupplierPage((page) => page + 1)} aria-label={tr("الموردون التاليون", "Next suppliers")}>{direction === "rtl" ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</Button></div>}
             </div>
           </div>
-          {visibleSupplierGroups.length ? <ComparisonMatrix itemOrder={itemOrder} visibleSupplierGroups={visibleSupplierGroups} tr={tr} formatMoney={formatMoney} onPrice={(keyValue, value) => updateRowField(keyValue, "unit_price", value)} onSelectRow={selectForPurchase} onSelectSupplier={selectSupplierOffer} onEdit={editRow} onDelete={deleteRow} quotationForGroup={quotationForGroup} canUpload={canUploadQuotation} onUpload={uploadQuotationAttachments} onViewAttachment={viewQuotationAttachment} cheapestSelectableGroup={cheapestSelectableGroup} supplierOptions={supplierOptions} onAssignSupplier={assignSupplierToGroup} /> : <EmptyState title={tr("لا توجد عروض موردين", "No supplier offers")} description={tr("أضف الأصناف المؤهلة ثم اختر المورد لكل عمود.", "Add eligible items, then select a supplier for each column.")} />}
+          {visibleSupplierGroups.length ? <ComparisonMatrix itemOrder={itemOrder} visibleSupplierGroups={visibleSupplierGroups} tr={tr} formatMoney={formatMoney} onPrice={(keyValue, value) => updateRowField(keyValue, "unit_price", value)} onSelectRow={selectForPurchase} onSelectSupplier={selectSupplierOffer} onEdit={editRow} onDelete={deleteRow} quotationForGroup={quotationForGroup} canUpload={canUploadQuotation} onUpload={uploadQuotationAttachments} onViewAttachment={viewQuotationAttachment} cheapestSelectableGroup={cheapestSelectableGroup} supplierOptions={supplierOptions} onAssignSupplier={assignSupplierToGroup} onAdjustment={updateSupplierAdjustment} /> : <EmptyState title={tr("لا توجد عروض موردين", "No supplier offers")} description={tr("أضف الأصناف المؤهلة ثم اختر المورد لكل عمود.", "Add eligible items, then select a supplier for each column.")} />}
         </div>
         {showDetailedTable && <div className="mt-4 overflow-hidden rounded-md border" data-testid="detailed-offers-table">
           <table className="w-full table-fixed text-xs">
@@ -1593,9 +1683,7 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
                   <div className="grid grid-cols-2 gap-2 text-[11px] md:grid-cols-4">
                     <span><b>{tr("الكود:", "Code:")}</b> {row.item_code || tr("يدوي", "Manual")}</span><span><b>{tr("الوحدة:", "Unit:")}</b> {row.unit || "-"}</span>
                     <span><b>{tr("التصنيف:", "Category:")}</b> {row.main_category || "-"} / {row.subcategory || "-"}</span><span title={row.specifications}><b>{tr("المواصفات:", "Specifications:")}</b> {row.specifications || "-"}</span>
-                    <span><b>{tr("الخصم:", "Discount:")}</b> {fmt(row.discount_pct)}%</span><span><b>{tr("الضريبة:", "VAT:")}</b> {fmt(row.tax_pct)}%</span>
-                    <span><b>{tr("الشحن:", "Shipping:")}</b> {formatMoney(row.shipping_cost)}</span><span><b>{tr("تكلفة أخرى:", "Other cost:")}</b> {formatMoney(row.other_cost)}</span>
-                    <span><b>{tr("بعد الخصم:", "After discount:")}</b> {formatMoney(row.amount_after_discount)}</span><span><b>{tr("فرق أقل إجمالي:", "Difference from lowest:")}</b> {row.difference_from_lowest == null ? "-" : `${formatMoney(row.difference_from_lowest)} (${fmt(row.difference_pct_from_lowest)}%)`}</span>
+                    <span><b>{tr("فرق أقل إجمالي بند:", "Difference from lowest item total:")}</b> {row.difference_from_lowest == null ? "-" : `${formatMoney(row.difference_from_lowest)} (${fmt(row.difference_pct_from_lowest)}%)`}</span>
                     <span><b>{tr("آخر سعر شراء:", "Last purchase price:")}</b> {row.last_historical_unit_price == null ? "-" : formatMoney(row.last_historical_unit_price)}</span><span><b>{tr("الفرق التاريخي:", "Historical difference:")}</b> {row.difference_from_last_price == null ? "-" : `${formatMoney(row.difference_from_last_price)} (${fmt(row.difference_pct_from_last_price)}%)`}</span>
                     <span><b>{tr("شروط الدفع:", "Payment terms:")}</b> {row.payment_terms || "-"}</span><span><b>{tr("صلاحية السعر:", "Price valid until:")}</b> {row.price_valid_until || "-"}</span>
                     <span className="md:col-span-2"><b>{tr("الملاحظات:", "Notes:")}</b> {row.notes || "-"}</span>
@@ -1714,7 +1802,6 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
             <details className="rounded-md border">
               <summary className="cursor-pointer p-3 text-xs font-bold">{tr("تفاصيل العرض الاختيارية", "Optional offer details")}</summary>
               <div className="grid grid-cols-2 gap-3 border-t p-3 md:grid-cols-4">
-                {[['discount_pct', tr('الخصم %', 'Discount %')], ['tax_pct', tr('الضريبة %', 'VAT %')], ['shipping_cost', tr('الشحن', 'Shipping')], ['other_cost', tr('تكلفة أخرى', 'Other cost')]].map(([field, label]) => <FormField key={field} label={label}><Input {...numberInputProps(field)} value={draft[field]} onChange={(event) => updateDraft(field, event.target.value)} /></FormField>)}
                 <FormField label={tr("شروط الدفع", "Payment terms")}><Input value={draft.payment_terms} onChange={(event) => updateDraft("payment_terms", event.target.value)} /></FormField>
                 <FormField label={tr("صلاحية السعر", "Price valid until")}><Input type="date" value={draft.price_valid_until} onChange={(event) => updateDraft("price_valid_until", event.target.value)} /></FormField>
                 <FormField label={tr("ملاحظات", "Notes")} className="col-span-2"><Textarea rows={1} value={draft.notes} onChange={(event) => updateDraft("notes", event.target.value)} /></FormField>

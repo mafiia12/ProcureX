@@ -38,8 +38,10 @@ try:
         IncomingRequestStatusHistory, require_internal_access,
     )
     from .price_comparisons import (
-        PriceComparison, PriceComparisonRow, calculate_comparison,
+        PriceComparison, PriceComparisonRow, PriceComparisonSupplierOffer,
+        calculate_comparison,
         _row_document as _comparison_row_document,
+        _offer_document as _comparison_offer_document,
     )
     from .rfq import (
         RequestForQuotation, RFQItem, RFQSupplier, SupplierQuotation,
@@ -60,8 +62,10 @@ except ImportError:
         IncomingRequestStatusHistory, require_internal_access,
     )
     from price_comparisons import (
-        PriceComparison, PriceComparisonRow, calculate_comparison,
+        PriceComparison, PriceComparisonRow, PriceComparisonSupplierOffer,
+        calculate_comparison,
         _row_document as _comparison_row_document,
+        _offer_document as _comparison_offer_document,
     )
     from rfq import (
         RequestForQuotation, RFQItem, RFQSupplier, SupplierQuotation,
@@ -263,6 +267,26 @@ class EngineerApprovalLine(Base):
     payment_terms: Mapped[str] = mapped_column(String, default="", server_default="")
     price_valid_until: Mapped[str] = mapped_column(String, default="", server_default="")
     notes: Mapped[str] = mapped_column(Text, default="", server_default="")
+
+
+class EngineerApprovalSupplierOffer(Base):
+    """Immutable supplier-level commercial snapshot for an approval revision."""
+    __tablename__ = "engineer_approval_supplier_offers"
+    __table_args__ = (
+        UniqueConstraint("approval_id", "supplier_id", name="uq_approval_supplier_offer"),
+        Index("ix_approval_supplier_offers_approval", "approval_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    approval_id: Mapped[str] = mapped_column(
+        String, ForeignKey("engineer_approvals.id", ondelete="CASCADE"),
+    )
+    supplier_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    supplier_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    discount_pct: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    tax_pct: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    shipping_cost: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    other_cost: Mapped[float] = mapped_column(Float, default=0, server_default="0")
 
 
 class ApprovalPayment(Base):
@@ -670,7 +694,7 @@ def _approval_code() -> str:
     )
 
 
-def _calculated_selected_rows(session, comparison: PriceComparison) -> list[dict]:
+def _calculated_selected_rows(session, comparison: PriceComparison) -> dict:
     all_rows = session.scalars(
         select(PriceComparisonRow).where(
             PriceComparisonRow.comparison_id == comparison.id,
@@ -679,10 +703,15 @@ def _calculated_selected_rows(session, comparison: PriceComparison) -> list[dict
     rows = [row for row in all_rows if row.selected_for_purchase == 1]
     if not rows:
         raise HTTPException(422, "اختر عرضًا صالحًا لكل صنف واحفظ المقارنة أولاً")
-    calculated = calculate_comparison(
+    offers = session.scalars(select(PriceComparisonSupplierOffer).where(
+        PriceComparisonSupplierOffer.comparison_id == comparison.id,
+    )).all()
+    calculation = calculate_comparison(
         datetime.now(timezone.utc).date().isoformat(),
         [{c.name: getattr(row, c.name) for c in PriceComparisonRow.__table__.columns} for row in rows],
-    )["rows"]
+        supplier_offers=[_comparison_offer_document(offer) for offer in offers],
+    )
+    calculated = calculation["rows"]
     if any(not row["eligible"] for row in calculated):
         raise HTTPException(422, "توجد عروض مختارة غير مكتملة أو منتهية الصلاحية")
     product_keys = [row.get("item_id") or row.get("item_code") or row.get("product_name") for row in calculated]
@@ -696,11 +725,12 @@ def _calculated_selected_rows(session, comparison: PriceComparison) -> list[dict
     if comparison.source_request_id:
         if any(not row.supplier_id for row in rows):
             raise HTTPException(422, "يجب ربط كل عرض مختار بمورد فعلي من سجل الموردين")
-    return calculated
+    return {"rows": calculated, "supplier_summaries": calculation["supplier_summaries"]}
 
 
 def _create_approval(session, comparison: PriceComparison, rows: list[dict], body: ApprovalCreateIn,
-                     *, revision: int = 0, previous_id: str = "") -> EngineerApproval:
+                     *, revision: int = 0, previous_id: str = "",
+                     supplier_summaries: list[dict] | None = None) -> EngineerApproval:
     project = session.get(Project, comparison.project_id) if comparison.project_id else None
     if not project:
         raise HTTPException(409, "يجب ربط المقارنة بمشروع صحيح قبل إنشاء الاعتماد")
@@ -714,12 +744,20 @@ def _create_approval(session, comparison: PriceComparison, rows: list[dict], bod
         if source_request.project_id != project.id:
             raise HTTPException(409, "مشروع الاعتماد لا يطابق مشروع طلب الشراء المصدر")
     timestamp = now_iso()
-    subtotal = sum(float(row.get("subtotal") or 0) for row in rows)
-    discount = sum(float(row.get("discount_amount") or row.get("discount_value") or 0) for row in rows)
-    tax = sum(float(row.get("tax_amount") or row.get("tax_value") or 0) for row in rows)
-    shipping = sum(float(row.get("shipping_cost") or 0) for row in rows)
-    other = sum(float(row.get("other_cost") or 0) for row in rows)
-    total = sum(float(row.get("final_total") or 0) for row in rows)
+    if supplier_summaries is not None:
+        subtotal = sum(float(row.get("items_subtotal") or 0) for row in supplier_summaries)
+        discount = sum(float(row.get("total_discounts") or 0) for row in supplier_summaries)
+        tax = sum(float(row.get("total_taxes") or 0) for row in supplier_summaries)
+        shipping = sum(float(row.get("total_shipping") or 0) for row in supplier_summaries)
+        other = sum(float(row.get("total_other_costs") or 0) for row in supplier_summaries)
+        total = sum(float(row.get("final_offer_total") or 0) for row in supplier_summaries)
+    else:
+        subtotal = sum(float(row.get("subtotal") or 0) for row in rows)
+        discount = sum(float(row.get("discount_amount") or row.get("discount_value") or 0) for row in rows)
+        tax = sum(float(row.get("tax_amount") or row.get("tax_value") or 0) for row in rows)
+        shipping = sum(float(row.get("shipping_cost") or 0) for row in rows)
+        other = sum(float(row.get("other_cost") or 0) for row in rows)
+        total = sum(float(row.get("final_total") or 0) for row in rows)
     approval = EngineerApproval(
         id=str(uuid.uuid4()), approval_number=_approval_code(), secure_token=secrets.token_urlsafe(32),
         project_id=project.id, project_name=project.name,
@@ -747,6 +785,16 @@ def _create_approval(session, comparison: PriceComparison, rows: list[dict], bod
     )
     session.add(approval)
     session.flush()
+    for summary in supplier_summaries or []:
+        session.add(EngineerApprovalSupplierOffer(
+            id=str(uuid.uuid4()), approval_id=approval.id,
+            supplier_id=summary.get("supplier_id") or summary.get("supplier_code") or summary.get("supplier_name") or "",
+            supplier_name=summary.get("supplier_name") or "",
+            discount_pct=float(summary.get("discount_pct") or 0),
+            tax_pct=float(summary.get("tax_pct") or 0),
+            shipping_cost=float(summary.get("total_shipping") or 0),
+            other_cost=float(summary.get("total_other_costs") or 0),
+        ))
     for position, row in enumerate(rows, 1):
         session.add(EngineerApprovalLine(
             id=str(uuid.uuid4()), approval_id=approval.id, position=position,
@@ -755,8 +803,10 @@ def _create_approval(session, comparison: PriceComparison, rows: list[dict], bod
             specifications=row.get("specifications") or "", quantity=float(row.get("quantity") or 0),
             unit=row.get("unit") or "", supplier_id=row.get("supplier_id") or "",
             supplier_name=row.get("supplier_name") or "", unit_price=float(row.get("unit_price") or 0),
-            discount_pct=float(row.get("discount_pct") or 0), tax_pct=float(row.get("tax_pct") or 0),
-            shipping_cost=float(row.get("shipping_cost") or 0), other_cost=float(row.get("other_cost") or 0),
+            discount_pct=0 if supplier_summaries is not None else float(row.get("discount_pct") or 0),
+            tax_pct=0 if supplier_summaries is not None else float(row.get("tax_pct") or 0),
+            shipping_cost=0 if supplier_summaries is not None else float(row.get("shipping_cost") or 0),
+            other_cost=0 if supplier_summaries is not None else float(row.get("other_cost") or 0),
             line_total=float(row.get("final_total") or 0), delivery_days=int(row.get("delivery_days") or 0),
             payment_terms=row.get("payment_terms") or "", price_valid_until=row.get("price_valid_until") or "",
             notes=row.get("notes") or "",
@@ -790,7 +840,11 @@ def create_approval_from_comparison(
         ))
         if duplicate:
             raise HTTPException(409, {"message": "تم إنشاء اعتماد لهذه المقارنة من قبل", "approval_id": duplicate.id})
-        approval = _create_approval(session, comparison, _calculated_selected_rows(session, comparison), body)
+        selection = _calculated_selected_rows(session, comparison)
+        approval = _create_approval(
+            session, comparison, selection["rows"], body,
+            supplier_summaries=selection["supplier_summaries"],
+        )
         return {"ok": True, "approval": _approval_detail(session, approval, include_token=True)}
 
 
@@ -1055,8 +1109,12 @@ def _review_workspace_comparison(session, approval: EngineerApproval) -> dict | 
         .where(PriceComparisonRow.comparison_id == comparison.id)
         .order_by(PriceComparisonRow.position)
     ).all()
+    offers = session.scalars(select(PriceComparisonSupplierOffer).where(
+        PriceComparisonSupplierOffer.comparison_id == comparison.id,
+    )).all()
     calculations = calculate_comparison(
         comparison.comparison_date, [_comparison_row_document(row) for row in rows],
+        supplier_offers=[_comparison_offer_document(offer) for offer in offers],
     )
     return {
         "id": comparison.id, "comparison_number": comparison.comparison_number,
@@ -1379,15 +1437,19 @@ def create_approval_revision(
         if not comparison:
             raise HTTPException(409, "تعذر العثور على المقارنة المصدر")
         if previous.approval_type == "comparison_workflow":
-            snapshot_rows = _calculated_selected_rows(session, comparison)
+            selection = _calculated_selected_rows(session, comparison)
+            snapshot_rows = selection["rows"]
         create_body = ApprovalCreateIn(
             comparison_id=comparison.id, engineer_name=previous.engineer_name,
             engineer_email=previous.engineer_email, engineer_phone=previous.engineer_phone,
             expiry_at=previous.expiry_at, created_by=current_user.username,
             approval_type=previous.approval_type,
         )
-        new_approval = _create_approval(session, comparison, snapshot_rows, create_body,
-                                        revision=next_revision, previous_id=previous.id)
+        new_approval = _create_approval(
+            session, comparison, snapshot_rows, create_body,
+            revision=next_revision, previous_id=previous.id,
+            supplier_summaries=(selection["supplier_summaries"] if previous.approval_type == "comparison_workflow" else None),
+        )
         return {"ok": True, "approval": _approval_detail(session, new_approval, include_token=True)}
 
 

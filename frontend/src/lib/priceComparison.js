@@ -13,10 +13,6 @@ export const emptyComparisonRow = () => ({
   quantity: "1",
   unit: "",
   unit_price: "",
-  discount_pct: "",
-  tax_pct: "",
-  shipping_cost: "",
-  other_cost: "",
   delivery_days: "",
   payment_terms: "",
   availability: "available",
@@ -49,6 +45,64 @@ const lowestBy = (rows, field) => (
   [...rows].sort(ascendingNumber(field))[0] || null
 );
 
+const supplierKey = (row) => (
+  row.supplier_id || row.supplier_code || row.manual_supplier_key || row.supplier_name
+);
+
+export const calculateSupplierTotal = (itemSubtotal, offer = {}) => {
+  const subtotal = round(itemSubtotal);
+  const discount = round(subtotal * number(offer.discount_pct) / 100);
+  const afterDiscount = round(subtotal - discount);
+  const vat = round(afterDiscount * number(offer.tax_pct) / 100);
+  const shipping = round(offer.shipping_cost);
+  const other = round(offer.other_cost);
+  return {
+    items_subtotal: subtotal,
+    total_discounts: discount,
+    amount_after_discount: afterDiscount,
+    total_taxes: vat,
+    total_shipping: shipping,
+    total_other_costs: other,
+    final_offer_total: round(afterDiscount + vat + shipping + other),
+  };
+};
+
+export const supplierOffersFromRows = (rows, comparisonDate) => {
+  const groups = {};
+  rows.forEach((row) => {
+    const key = supplierKey(row);
+    if (key) (groups[key] ||= []).push(row);
+  });
+  return Object.values(groups).map((groupRows) => {
+    const eligible = groupRows.filter((row) => (
+      isOfferComplete(row) && row.availability === "available"
+      && !(row.price_valid_until && row.price_valid_until < comparisonDate)
+    ));
+    const subtotal = eligible.reduce(
+      (sum, row) => sum + number(row.quantity) * number(row.unit_price), 0,
+    );
+    const discount = eligible.reduce((sum, row) => (
+      sum + number(row.quantity) * number(row.unit_price)
+      * number(row.discount_pct) / 100
+    ), 0);
+    const taxable = subtotal - discount;
+    const vat = eligible.reduce((sum, row) => (
+      sum + number(row.quantity) * number(row.unit_price)
+      * (1 - number(row.discount_pct) / 100) * number(row.tax_pct) / 100
+    ), 0);
+    const first = groupRows[0];
+    return {
+      supplier_id: first.supplier_id || "",
+      supplier_code: first.supplier_code || supplierKey(first),
+      supplier_name: first.supplier_name || "",
+      discount_pct: subtotal ? discount / subtotal * 100 : 0,
+      tax_pct: taxable ? vat / taxable * 100 : 0,
+      shipping_cost: eligible.reduce((sum, row) => sum + number(row.shipping_cost), 0),
+      other_cost: eligible.reduce((sum, row) => sum + number(row.other_cost), 0),
+    };
+  });
+};
+
 export const isOfferComplete = (row) => {
   const hasSupplier = Boolean(
     row.supplier_id || row.supplier_code || row.manual_supplier_key
@@ -65,11 +119,6 @@ export const isOfferComplete = (row) => {
 
 export function calculateLine(row, comparisonDate) {
   const subtotal = number(row.quantity) * number(row.unit_price);
-  const discountAmount = subtotal * number(row.discount_pct) / 100;
-  const taxableAmount = subtotal - discountAmount;
-  const taxAmount = taxableAmount * number(row.tax_pct) / 100;
-  const finalTotal = taxableAmount + taxAmount
-    + number(row.shipping_cost) + number(row.other_cost);
   const isExpired = Boolean(
     row.price_valid_until && row.price_valid_until < comparisonDate,
   );
@@ -79,10 +128,7 @@ export function calculateLine(row, comparisonDate) {
   return {
     ...row,
     subtotal: round(subtotal),
-    discount_amount: round(discountAmount),
-    amount_after_discount: round(taxableAmount),
-    tax_amount: round(taxAmount),
-    final_total: round(finalTotal),
+    final_total: round(subtotal),
     is_expired: isExpired,
     is_missing_price: isMissingPrice,
     is_unavailable: isUnavailable,
@@ -96,7 +142,12 @@ export function calculateLine(row, comparisonDate) {
   };
 }
 
-export function calculateComparison(rows, items, suppliers, comparisonDate) {
+export function calculateComparison(rows, items, suppliers, comparisonDate, supplierOffers) {
+  const normalizedOffers = supplierOffers == null
+    ? supplierOffersFromRows(rows, comparisonDate) : supplierOffers;
+  const offersBySupplier = new Map(normalizedOffers.map((offer) => [
+    supplierKey(offer), offer,
+  ]));
   const itemMap = Object.fromEntries(items.map((item) => [item.id, item]));
   const supplierMap = Object.fromEntries(suppliers.map((supplier) => [supplier.id, supplier]));
   const calculatedRows = rows.map((source) => {
@@ -193,6 +244,10 @@ export function calculateComparison(rows, items, suppliers, comparisonDate) {
     )).map(rowItemKey));
     const eligibleProducts = new Set(eligible.map(rowItemKey));
     const first = groupRows[0];
+    const offer = offersBySupplier.get(supplierKey(first)) || {};
+    const offerTotals = calculateSupplierTotal(eligible.reduce(
+      (sum, row) => sum + number(row.subtotal), 0,
+    ), offer);
     return {
       supplier_id: first.supplier_id,
       supplier_code: first.supplier_code,
@@ -200,24 +255,11 @@ export function calculateComparison(rows, items, suppliers, comparisonDate) {
       products_quoted: new Set(groupRows.map(rowItemKey)).size,
       unavailable_products: groupRows.filter((row) => row.is_unavailable).length,
       available_products: availableProducts.size,
-      items_subtotal: round(eligible.reduce(
-        (sum, row) => sum + number(row.subtotal), 0,
-      )),
-      total_discounts: round(eligible.reduce(
-        (sum, row) => sum + number(row.discount_amount), 0,
-      )),
-      total_taxes: round(eligible.reduce(
-        (sum, row) => sum + number(row.tax_amount), 0,
-      )),
-      total_shipping: round(eligible.reduce(
-        (sum, row) => sum + number(row.shipping_cost), 0,
-      )),
-      total_other_costs: round(eligible.reduce(
-        (sum, row) => sum + number(row.other_cost), 0,
-      )),
-      final_offer_total: round(eligible.reduce(
-        (sum, row) => sum + number(row.final_total), 0,
-      )),
+      discount_pct: number(offer.discount_pct),
+      tax_pct: number(offer.tax_pct),
+      shipping_cost: number(offer.shipping_cost),
+      other_cost: number(offer.other_cost),
+      ...offerTotals,
       maximum_delivery_days: eligible.length
         ? Math.max(...eligible.map((row) => number(row.delivery_days))) : null,
       availability_pct: round(
@@ -250,9 +292,14 @@ export function calculateComparison(rows, items, suppliers, comparisonDate) {
     const lowestOffer = lowestBy(eligible, "final_total");
     return lowestOffer ? [lowestOffer] : [];
   });
-  const mixedTotal = round(mixedRows.reduce(
-    (sum, row) => sum + number(row.final_total), 0,
-  ));
+  const mixedGroups = {};
+  mixedRows.forEach((row) => ((mixedGroups[supplierKey(row)] ||= []).push(row)));
+  const mixedTotal = round(Object.entries(mixedGroups).reduce((sum, [key, selected]) => (
+    sum + calculateSupplierTotal(
+      selected.reduce((subtotal, row) => subtotal + number(row.subtotal), 0),
+      offersBySupplier.get(key) || {},
+    ).final_offer_total
+  ), 0));
   const singleTotal = cheapestComplete?.final_offer_total ?? null;
   const savings = singleTotal == null ? null : round(singleTotal - mixedTotal);
   const mixedSupplierCount = new Set(mixedRows.map(
@@ -261,6 +308,7 @@ export function calculateComparison(rows, items, suppliers, comparisonDate) {
 
   return {
     rows: calculatedRows,
+    supplier_offers: normalizedOffers,
     product_summaries: productSummaries,
     supplier_summaries: supplierSummaries,
     scenario_summary: {

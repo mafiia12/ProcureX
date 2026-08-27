@@ -32,6 +32,7 @@ try:
         migrate_purchase_request_item_review,
         migrate_rfq_supplier_quotations,
         migrate_po_payment_ledger,
+        migrate_supplier_offer_adjustments,
     )
 except ImportError:
     from db_migrations import (
@@ -43,6 +44,7 @@ except ImportError:
         migrate_purchase_request_item_review,
         migrate_rfq_supplier_quotations,
         migrate_po_payment_ledger,
+        migrate_supplier_offer_adjustments,
     )
 
 
@@ -450,7 +452,8 @@ def init_db() -> Optional[Path]:
         required = {
             "business_code_sequences", "incoming_purchase_requests",
             "incoming_purchase_request_items", "price_comparisons",
-            "price_comparison_rows", "purchase_request_documents",
+            "price_comparison_rows", "price_comparison_supplier_offers",
+            "engineer_approval_supplier_offers", "purchase_request_documents",
             "purchase_request_document_files", "purchase_request_extracted_items",
             "document_processing_jobs",
             "construction_import_runs", "construction_categories",
@@ -478,9 +481,10 @@ def init_db() -> Optional[Path]:
     portal_attachments_backup = migrate_site_portal_attachments(engine)
     rfq_backup = migrate_rfq_supplier_quotations(engine)
     po_payment_backup = migrate_po_payment_ledger(engine)
+    supplier_offer_backup = migrate_supplier_offer_adjustments(engine)
     Base.metadata.create_all(engine)
     return (
-        po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
+        supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
         or classification_backup
     )
 

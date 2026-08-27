@@ -24,6 +24,7 @@ SITE_PORTAL_REQUESTS_SCHEMA_VERSION = 13
 SITE_PORTAL_ATTACHMENTS_SCHEMA_VERSION = 14
 RFQ_SUPPLIER_QUOTATIONS_SCHEMA_VERSION = 15
 PO_PAYMENT_LEDGER_SCHEMA_VERSION = 16
+SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION = 18
 
 
 INCOMING_REQUEST_TABLES = {
@@ -1127,6 +1128,93 @@ def migrate_po_payment_ledger(engine) -> Path | None:
     with engine.begin() as connection:
         connection.exec_driver_sql(
             f"PRAGMA user_version = {PO_PAYMENT_LEDGER_SCHEMA_VERSION}"
+        )
+    return backup_path
+
+
+def migrate_supplier_offer_adjustments(engine) -> Path | None:
+    """Add supplier-offer adjustments and preserve effective legacy totals."""
+    required_tables = {
+        "price_comparison_supplier_offers", "engineer_approval_supplier_offers",
+    }
+    tables = set(inspect(engine).get_table_names())
+    with engine.connect() as connection:
+        current_version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+    if required_tables.issubset(tables) and current_version >= SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION:
+        return None
+    database_path = _database_path(engine)
+    backup_path = None
+    if tables:
+        if database_path is None:
+            raise RuntimeError("A file-backed SQLite database is required for safe migration")
+        backup_path = create_verified_backup(database_path, label="supplier-offer-adjustments")
+    try:
+        from . import price_comparisons as _price_comparisons  # noqa: F401
+        from .database import Base
+    except ImportError:  # pragma: no cover
+        import price_comparisons as _price_comparisons  # noqa: F401
+        from database import Base
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        if {"price_comparisons", "price_comparison_rows"}.issubset(tables):
+            comparisons = {
+                row["id"]: row["comparison_date"]
+                for row in connection.exec_driver_sql(
+                    "SELECT id, comparison_date FROM price_comparisons"
+                ).mappings()
+            }
+            rows = connection.exec_driver_sql(
+                "SELECT * FROM price_comparison_rows ORDER BY comparison_id, position"
+            ).mappings().all()
+            groups = {}
+            for row in rows:
+                supplier_code = str(row.get("supplier_code") or "")
+                if supplier_code:
+                    groups.setdefault((row["comparison_id"], supplier_code), []).append(row)
+            for (comparison_id, supplier_code), group_rows in groups.items():
+                exists = connection.exec_driver_sql(
+                    "SELECT 1 FROM price_comparison_supplier_offers "
+                    "WHERE comparison_id = ? AND supplier_code = ?",
+                    (comparison_id, supplier_code),
+                ).first()
+                if exists:
+                    continue
+                comparison_date = comparisons.get(comparison_id, "")
+                eligible = [row for row in group_rows if (
+                    float(row.get("quantity") or 0) > 0
+                    and float(row.get("unit_price") or 0) > 0
+                    and row.get("availability") == "available"
+                    and not (row.get("price_valid_until") and row["price_valid_until"] < comparison_date)
+                )]
+                subtotal = sum(float(row["quantity"]) * float(row["unit_price"]) for row in eligible)
+                discount = sum(
+                    float(row["quantity"]) * float(row["unit_price"])
+                    * float(row.get("discount_pct") or 0) / 100 for row in eligible
+                )
+                taxable = subtotal - discount
+                vat = sum(
+                    float(row["quantity"]) * float(row["unit_price"])
+                    * (1 - float(row.get("discount_pct") or 0) / 100)
+                    * float(row.get("tax_pct") or 0) / 100 for row in eligible
+                )
+                first = group_rows[0]
+                connection.exec_driver_sql(
+                    "INSERT INTO price_comparison_supplier_offers "
+                    "(id, comparison_id, supplier_id, supplier_code, supplier_name, "
+                    "discount_pct, tax_pct, shipping_cost, other_cost) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        f"{comparison_id}:{supplier_code}", comparison_id,
+                        first.get("supplier_id"), supplier_code,
+                        first.get("supplier_name") or "",
+                        discount / subtotal * 100 if subtotal else 0,
+                        vat / taxable * 100 if taxable else 0,
+                        sum(float(row.get("shipping_cost") or 0) for row in eligible),
+                        sum(float(row.get("other_cost") or 0) for row in eligible),
+                    ),
+                )
+        connection.exec_driver_sql(
+            f"PRAGMA user_version = {SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION}"
         )
     return backup_path
 
