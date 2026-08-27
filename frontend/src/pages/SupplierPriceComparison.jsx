@@ -142,7 +142,7 @@ function ComparisonMatrix({
           {tr("الصنف", "Item")}
         </div>
         {itemOrder.map((item, rowIndex) => (
-          <div key={item.itemKey} className="sticky start-0 z-10 min-w-0 border-b border-e bg-card px-3 py-1" style={{ gridColumn: 1, gridRow: rowIndex + 2 }}>
+          <div key={item.itemKey} className={cn("sticky start-0 z-10 min-w-0 border-b border-e px-3 py-1", rowIndex % 2 ? "bg-muted/15" : "bg-card")} style={{ gridColumn: 1, gridRow: rowIndex + 2 }}>
             <div className="truncate text-xs font-bold leading-4 text-foreground" title={item.product_name}>{item.product_name}</div>
             <div className="text-[10px] leading-4 text-muted-foreground">{tr("الكمية", "Qty")}: <span className="tabular-nums">{fmt(item.quantity)}</span> {item.unit}</div>
           </div>
@@ -159,7 +159,7 @@ function ComparisonMatrix({
           const quotation = quotationForGroup(group);
           return (
             <div key={group.key} data-testid="supplier-offer-card" style={{ display: "contents" }}>
-              <div className={cn("sticky top-0 z-20 border-b border-e bg-card/95 p-2 backdrop-blur", isCheapestComplete && "bg-emerald-50/95 dark:bg-emerald-950/30")} style={{ gridColumn: col, gridRow: 1 }}>
+              <div className={cn("sticky top-0 z-20 border-b border-e bg-card/95 p-1.5 backdrop-blur", isCheapestComplete && "bg-emerald-50/95 dark:bg-emerald-950/30")} style={{ gridColumn: col, gridRow: 1 }}>
                 {!group.supplierId ? (
                   <div data-testid="supplier-column-selector">
                     <SearchableSelect
@@ -173,8 +173,8 @@ function ComparisonMatrix({
                   </div>
                 ) : (
                   <>
-                    <div className="truncate text-sm font-bold text-foreground">{group.supplierName}</div>
-                    <div className="truncate text-[10.5px] text-muted-foreground" dir="ltr">{group.supplierCode}</div>
+                    <div className="truncate text-xs font-bold text-foreground">{group.supplierName}</div>
+                    <div className="truncate text-[10px] text-muted-foreground" dir="ltr">{group.supplierCode}</div>
                   </>
                 )}
                 <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -197,14 +197,14 @@ function ComparisonMatrix({
                 const row = group.rowsByItem.get(item.itemKey);
                 if (!row) {
                   return (
-                    <div key={item.itemKey} className="flex items-center justify-center border-b border-e bg-muted/20 px-2 py-1 text-center text-[10px] text-muted-foreground" style={{ gridColumn: col, gridRow: rowIndex + 2 }}>
+                    <div key={item.itemKey} className={cn("flex items-center justify-center border-b border-e px-2 py-1 text-center text-[10px] text-muted-foreground", rowIndex % 2 ? "bg-muted/20" : "bg-muted/10")} style={{ gridColumn: col, gridRow: rowIndex + 2 }}>
                       <span data-testid="not-offered-badge" className="inline-flex rounded-full border border-dashed bg-background px-2 py-0.5 font-semibold">{tr("غير مقدم", "Not quoted")}</span>
                     </div>
                   );
                 }
-                const tone = row.selected_for_purchase ? "bg-primary/5" : row.is_unavailable ? "bg-destructive/5" : row.is_incomplete ? "bg-amber-500/5" : row.is_lowest_final_total ? "bg-emerald-500/5" : "";
+                const tone = row.selected_for_purchase ? "border-s-2 border-s-primary bg-primary/5" : row.is_unavailable ? "bg-destructive/5" : row.is_incomplete ? "bg-amber-500/5" : row.is_lowest_final_total ? "bg-emerald-500/5" : rowIndex % 2 ? "bg-muted/15" : "bg-card";
                 return (
-                  <div key={item.itemKey} data-testid="comparison-row" className={cn("border-b border-e px-2 py-1", tone)} style={{ gridColumn: col, gridRow: rowIndex + 2 }}>
+                  <div key={item.itemKey} data-testid="comparison-row" className={cn("border-b border-e px-2 py-1 transition-colors focus-within:bg-primary/5", tone)} style={{ gridColumn: col, gridRow: rowIndex + 2 }}>
                     <div className="flex items-center gap-1.5">
                       <Input type="number" min="0" step="0.01" value={row.unit_price || ""} onChange={(event) => onPrice(row.key, event.target.value)} className="h-6 w-20 px-1 text-end font-mono text-xs tabular-nums" data-testid={`inline-unit-price-${row.key}`} />
                       <span className="flex-1 text-end font-mono text-xs font-bold tabular-nums text-foreground" dir="ltr">{formatMoney(row.final_total)}</span>
@@ -228,7 +228,7 @@ function ComparisonMatrix({
                 );
               })}
 
-              <div className="border-t-2 border-e bg-muted/20 p-2" style={{ gridColumn: col, gridRow: footerRow }} data-testid="supplier-offer-summary">
+              <div className="border-t-2 border-e bg-muted/20 p-1.5" style={{ gridColumn: col, gridRow: footerRow }} data-testid="supplier-offer-summary">
                 <div className="mb-2 grid grid-cols-2 gap-1">
                   {[
                     ["discount_pct", tr("الخصم %", "Discount %")],
@@ -1434,7 +1434,7 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
   };
   return (
     <div className={cn("relative isolate space-y-2 supplier-comparison-page", rows.length && "pb-16 sm:pb-14")} data-testid="supplier-price-comparison-page">
-      <section className="border bg-card px-3 py-2 print:border-0 print:p-0" data-testid="comparison-command-bar">
+      <section className="border bg-card px-2.5 py-1.5 print:border-0 print:p-0" data-testid="comparison-command-bar">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -1442,7 +1442,7 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
               <span className="border bg-muted px-1.5 py-0.5 font-mono text-[11px]" dir="ltr">{comparisonNumber || tr("CMP جديد", "New CMP")}</span>
               <StatusBadge tone={hasUnsavedChanges ? "warning" : comparisonId ? "success" : "neutral"}>{hasUnsavedChanges ? tr("تغييرات غير محفوظة", "Unsaved changes") : comparisonId ? tr("مسودة محفوظة", "Saved draft") : tr("مسودة جديدة", "New draft")}</StatusBadge>
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10.5px] text-muted-foreground">
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0 text-[10px] text-muted-foreground">
               <span>{tr("المشروع", "Project")}: <b className="text-foreground">{projectName || "-"}</b></span>
               <span>REQ: <b className="font-mono text-foreground" dir="ltr">{sourceRequestNumber || "-"}</b></span>
               <span>RFQ: <b className="font-mono text-foreground" dir="ltr">{sourceRfqNumber || (sourceRfqId ? sourceRfqId : "-")}</b></span>
@@ -1454,13 +1454,13 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
             <Button size="icon" variant="ghost" className="h-7 w-7" onClick={openSaved} title={tr("فتح مقارنة", "Open comparison")}><FolderOpen className="h-3.5 w-3.5" /></Button>
             <Button size="icon" variant="ghost" className="h-7 w-7" onClick={exportExcel} title={tr("تصدير Excel", "Export Excel")}><Download className="h-3.5 w-3.5" /></Button>
             <Button size="icon" variant="ghost" className="h-7 w-7" data-testid="comparison-print" onClick={() => window.print()} title={tr("طباعة", "Print")}><Printer className="h-3.5 w-3.5" /></Button>
-            <Button size="sm" variant={hasUnsavedChanges || !comparisonId ? "default" : "outline"} className="h-8" onClick={save} disabled={saving} data-testid="comparison-save"><Save className="h-3.5 w-3.5" />{saving ? tr("جارٍ الحفظ", "Saving") : tr("حفظ", "Save")}</Button>
-            <Button size="sm" variant="outline" className="h-8" onClick={selectCheapestComplete} data-testid="select-cheapest-complete-offer">{tr("اختيار الأرخص كاملًا", "Choose cheapest complete")}</Button>
-            <Button size="sm" variant={comparisonId && !hasUnsavedChanges && selectedPurchaseItemCount === allComparisonItemsCount && allComparisonItemsCount > 0 ? "default" : "outline"} className="h-8" onClick={sendForApproval} data-testid="comparison-send"><Send className="h-3.5 w-3.5" />{tr("إرسال للاعتماد", "Send for approval")}</Button>
+            <Button size="sm" variant={hasUnsavedChanges || !comparisonId ? "default" : "outline"} className="h-7 px-2 text-xs" onClick={save} disabled={saving} data-testid="comparison-save"><Save className="h-3.5 w-3.5" />{saving ? tr("جارٍ الحفظ", "Saving") : tr("حفظ", "Save")}</Button>
+            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={selectCheapestComplete} data-testid="select-cheapest-complete-offer">{tr("اختيار الأرخص كاملًا", "Choose cheapest complete")}</Button>
+            <Button size="sm" variant={comparisonId && !hasUnsavedChanges && selectedPurchaseItemCount === allComparisonItemsCount && allComparisonItemsCount > 0 ? "default" : "outline"} className="h-7 px-2 text-xs" onClick={sendForApproval} data-testid="comparison-send"><Send className="h-3.5 w-3.5" />{tr("إرسال للاعتماد", "Send for approval")}</Button>
             {comparisonId && <div className="relative"><Button type="button" size="icon" variant="ghost" className="h-7 w-7" aria-label={tr("مزيد من الإجراءات", "More actions")} onClick={() => setMoreMenuOpen((value) => !value)} data-testid="comparison-more-actions"><MoreHorizontal className="h-4 w-4" /></Button>{moreMenuOpen && <div className="absolute end-0 z-30 mt-1 w-52 border bg-card p-1 shadow-md" data-testid="comparison-more-menu"><button type="button" className="flex w-full items-center gap-2 px-2 py-1.5 text-start text-xs font-semibold text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={deleting} onClick={() => { setMoreMenuOpen(false); deleteComparison(); }} data-testid="delete-comparison"><Trash2 className="h-3.5 w-3.5" />{deleting ? tr("جارٍ الحذف", "Deleting") : tr("حذف مسودة المقارنة", "Delete draft comparison")}</button></div>}</div>}
           </div>
         </div>
-        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 border-t pt-1.5">
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2 border-t pt-1">
           <div className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground" data-testid="compact-workflow">
             {["REQ", "RFQ", "CMP", "APR", "PO", tr("استلام", "Receiving")].map((stage, index) => <span key={stage} className="flex items-center gap-1"><span className={cn("px-1 py-0.5", index < 2 && "text-emerald-700 dark:text-emerald-300", index === 2 && "bg-primary/10 text-primary")}>{stage}{index < 2 ? " ✓" : index === 2 ? " ●" : ""}</span>{index < 5 && <span aria-hidden="true">{direction === "rtl" ? "←" : "→"}</span>}</span>)}
           </div>
@@ -1475,17 +1475,23 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
           </details>
         </div>
       </section>
-      {!!sourceAttachments.length && <details className="border bg-card comparison-print-hidden" data-testid="source-request-attachments">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-xs font-semibold text-muted-foreground"><Paperclip className="h-3.5 w-3.5 text-primary" />{tr("مرفقات طلب الشراء", "Purchase request attachments")}<span className="font-mono" dir="ltr">({sourceAttachments.length})</span></summary>
-        <div className="grid gap-2 border-t p-2 lg:grid-cols-2">{sourceAttachments.length ? sourceAttachments.map((attachment) => <RequestAttachmentCard key={attachment.id} attachment={attachment} tr={tr} />) : <div className="border border-dashed p-2 text-center text-xs text-muted-foreground">{tr("لا توجد مرفقات محفوظة لهذا الطلب.", "No saved attachments for this request.")}</div>}</div>
-      </details>}
-{sourceRequest && (
-  <details className="border bg-card comparison-print-hidden" data-testid="source-request-items-table">
-    <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-1.5">
-      <span className="text-xs font-semibold text-muted-foreground">{tr("أصناف طلب الشراء", "Purchase request items")} · <span className="font-mono" dir="ltr">{sourceRequest.request_number}</span> · {(sourceRequest.items || []).filter((item) => item.review_status === "approved").length} {tr("مؤهل", "eligible")}</span>
-      <Button type="button" size="sm" className="h-7" onClick={(event) => { event.preventDefault(); addAllSourceRequestItems(); }} data-testid="add-all-request-items"><Plus className="h-3.5 w-3.5" />{tr("إضافة الكل", "Add all")}</Button>
-    </summary>
-    <div className="overflow-x-auto border-t">
+      {(sourceRequest || sourceAttachments.length > 0) && (
+      <details className="border bg-card comparison-print-hidden" data-testid="source-context">
+        <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-1.5">
+          <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] font-semibold text-muted-foreground">
+            <Paperclip className="h-3.5 w-3.5 shrink-0 text-primary" />
+            {tr("مصدر المقارنة", "Comparison source")}
+            {sourceRequest && <><span>·</span><span className="font-mono text-foreground" dir="ltr">{sourceRequest.request_number}</span><span>· {(sourceRequest.items || []).filter((item) => item.review_status === "approved").length} {tr("صنف مؤهل", "eligible items")}</span></>}
+            {!!sourceAttachments.length && <span>· {sourceAttachments.length} {tr("مرفق", "attachments")}</span>}
+          </span>
+          {sourceRequest && <Button type="button" size="sm" className="h-6 px-2 text-[10.5px]" onClick={(event) => { event.preventDefault(); addAllSourceRequestItems(); }} data-testid="add-all-request-items"><Plus className="h-3.5 w-3.5" />{tr("إضافة الكل", "Add all")}</Button>}
+        </summary>
+        <div className="border-t">
+          {!!sourceAttachments.length && <div className="grid gap-2 border-b p-2 lg:grid-cols-2" data-testid="source-request-attachments">
+            <div className="lg:col-span-2 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">{tr("مرفقات طلب الشراء", "Purchase request attachments")}</div>
+            {sourceAttachments.map((attachment) => <RequestAttachmentCard key={attachment.id} attachment={attachment} tr={tr} />)}
+          </div>}
+          {sourceRequest && <div className="overflow-x-auto" data-testid="source-request-items-table">
       <table className="w-full min-w-[760px] text-xs">
         <thead className="bg-muted/70"><tr><th className="p-2 text-start">#</th><th className="p-2 text-start">{tr("الصنف", "Item")}</th><th className="p-2 text-start">{tr("المواصفات", "Specification")}</th><th className="p-2 text-center">{tr("الكمية", "Qty")}</th><th className="p-2 text-center">{tr("الوحدة", "Unit")}</th><th className="p-2 text-center">{tr("المراجعة", "Review")}</th><th className="p-2 text-center">{tr("حالة المقارنة", "Comparison")}</th><th className="p-2 text-end">{tr("الإجراء", "Action")}</th></tr></thead>
         <tbody>{(sourceRequest.items || []).map((item) => {
@@ -1495,9 +1501,10 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
           return <tr key={item.id} className="border-t hover:bg-muted/30"><td className="p-2">{item.position}</td><td className="p-2 font-semibold">{item.product_name}</td><td className="max-w-64 truncate p-2 text-muted-foreground" title={item.specifications}>{item.specifications || "-"}</td><td className="p-2 text-center tabular-nums">{item.quantity}</td><td className="p-2 text-center">{item.unit}</td><td className="p-2 text-center"><StatusBadge tone={eligible ? "success" : item.review_status === "rejected" ? "danger" : "warning"}>{reviewLabel}</StatusBadge></td><td className="p-2 text-center">{alreadyAdded ? tr("مضاف", "Added") : eligible ? tr("جاهز", "Ready") : tr("مستبعد", "Excluded")}</td><td className="p-2 text-end"><Button type="button" size="sm" variant="outline" disabled={!eligible || alreadyAdded} onClick={() => addSourceRequestItem(item)} data-testid={`add-request-item-${item.id}`}><Plus className="h-3.5 w-3.5" />{tr("إضافة للمقارنة", "Add to comparison")}</Button></td></tr>;
         })}</tbody>
       </table>
-    </div>
-  </details>
-)}
+          </div>}
+        </div>
+      </details>
+      )}
 
       <section className="space-y-2 border bg-card p-2" data-testid="added-offers-section">
         <div className="flex flex-wrap items-center justify-between gap-2">

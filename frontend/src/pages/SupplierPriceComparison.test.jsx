@@ -278,7 +278,10 @@ test("reopens a multi-supplier comparison and renders core columns and highlight
   expect(renderedRows.some((row) => row.className.includes("bg-destructive/5"))).toBe(true);
   expect(container.textContent).toContain("المورد الأخضر");
   expect(container.textContent).toContain("المورد غير المتاح");
-  expect(container.querySelector('[data-testid="comparison-command-bar"]')).not.toBeNull();
+  const commandBar = container.querySelector('[data-testid="comparison-command-bar"]');
+  expect(commandBar).not.toBeNull();
+  expect(commandBar.classList.contains("py-1.5")).toBe(true);
+  expect(container.querySelector('[data-testid="comparison-save"]').classList.contains("h-7")).toBe(true);
   expect(container.querySelector('[data-testid="compact-workflow"]').textContent).toContain("CMP ●");
   expect(container.textContent).toContain("مصفوفة الأسعار");
   for (const section of ["3 — مقارنة المنتجات", "4 — ملخص الموردين", "5 — ملخص الشراء المختلط والتوفير"]) expect(container.textContent).toContain(section);
@@ -405,6 +408,9 @@ test("cheapest complete action selects every eligible row and excludes an incomp
     .find((element) => element.style.gridColumn === "1" && element.style.gridRow === "2");
   expect(itemCell.classList.contains("sticky")).toBe(true);
   expect(itemCell.classList.contains("py-1")).toBe(true);
+  const alternateItemCell = [...matrix.children[0].children]
+    .find((element) => element.style.gridColumn === "1" && element.style.gridRow === "3");
+  expect(alternateItemCell.classList.contains("bg-muted/15")).toBe(true);
   const supplierHeader = [...matrix.querySelectorAll("div")]
     .find((element) => element.style.gridColumn === "2" && element.style.gridRow === "1");
   expect(supplierHeader.classList.contains("sticky")).toBe(true);
@@ -515,6 +521,9 @@ test("shows source request attachments without extraction controls", async () =>
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => { root.render(<SupplierPriceComparison initialComparison={withAttachment} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
+  const sourceContext = container.querySelector('[data-testid="source-context"]');
+  expect(sourceContext).not.toBeNull();
+  expect(sourceContext.hasAttribute("open")).toBe(false);
   expect(container.querySelector('[data-testid="source-request-attachments"]')).not.toBeNull();
   expect(container.textContent).toContain("مرفقات طلب الشراء");
   expect(container.textContent).toContain("site-request.png");
