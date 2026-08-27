@@ -173,9 +173,10 @@ test("renders operational comparison controls in English", async () => {
   });
 
   for (const label of [
-    "Comparison details", "Supplier offers", "Add supplier column",
-    "Save comparison", "Print", "Advanced filters", "All availability states",
+    "Supplier price comparison", "Comparison settings", "Price matrix",
+    "Add supplier", "Save", "Filters", "All availability",
   ]) expect(container.textContent).toContain(label);
+  expect(container.querySelector('[data-testid="comparison-print"]').title).toBe("Print");
   expect(container.textContent).not.toContain("Add supplier offer");
   expect(container.textContent).not.toContain("بيانات المقارنة");
 
@@ -224,7 +225,7 @@ test("compact summary bar shows item and supplier counts once the comparison has
   container.remove();
 });
 
-test("mixed-selection summary appears only once items are selected from more than one supplier", async () => {
+test("bottom decision summary identifies a mixed supplier selection", async () => {
   const mixedDetail = {
     ...detail,
     rows: [
@@ -244,10 +245,12 @@ test("mixed-selection summary appears only once items are selected from more tha
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
 
-  const mixed = container.querySelector('[data-testid="mixed-selection-summary"]');
-  expect(mixed).not.toBeNull();
-  expect(mixed.textContent).toContain("المورد الأخضر");
-  expect(mixed.textContent).toContain("المورد غير المتاح");
+  const mixed = [...container.querySelectorAll('[data-testid="comparison-summary-bar"] span')]
+    .find((element) => element.textContent.includes("اختيار مختلط"));
+  expect(mixed).toBeTruthy();
+  expect(mixed.textContent).toContain("2 موردين");
+  expect(mixed.title).toContain("المورد الأخضر");
+  expect(mixed.title).toContain("المورد غير المتاح");
 
   await act(async () => root.unmount());
   container.remove();
@@ -275,15 +278,50 @@ test("reopens a multi-supplier comparison and renders core columns and highlight
   expect(renderedRows.some((row) => row.className.includes("bg-destructive/5"))).toBe(true);
   expect(container.textContent).toContain("المورد الأخضر");
   expect(container.textContent).toContain("المورد غير المتاح");
-  for (const section of [
-    "1 — بيانات المقارنة", "2 — عروض الموردين",
-    "3 — مقارنة المنتجات", "4 — ملخص الموردين", "5 — ملخص الشراء المختلط والتوفير",
-  ]) expect(container.textContent).toContain(section);
+  expect(container.querySelector('[data-testid="comparison-command-bar"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="compact-workflow"]').textContent).toContain("CMP ●");
+  expect(container.textContent).toContain("مصفوفة الأسعار");
+  for (const section of ["3 — مقارنة المنتجات", "4 — ملخص الموردين", "5 — ملخص الشراء المختلط والتوفير"]) expect(container.textContent).toContain(section);
   expect(container.querySelectorAll('[data-testid="supplier-offer-card"]')).toHaveLength(2);
   expect(container.querySelector('[data-testid="select-cheapest-complete-offer"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="offers-category-filter"] option[value="رئيسي"]')).not.toBeNull();
   await act(async () => container.querySelector('[data-testid="comparison-print"]').click());
   expect(window.print).toHaveBeenCalledTimes(1);
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("collapsed filters drive the aligned matrix without changing supplier totals", async () => {
+  const filteredDetail = {
+    ...detail,
+    rows: [
+      { ...detail.rows[0], id: "filter-a1", item_id: "item-1", product_name: "منتج أول", main_category: "تصنيف أ" },
+      { ...detail.rows[1], id: "filter-a2", item_id: "item-1", product_name: "منتج أول", main_category: "تصنيف أ", availability: "available" },
+      { ...detail.rows[0], id: "filter-b1", item_id: "item-2", item_code: "ITM-2", product_name: "منتج ثان", main_category: "تصنيف ب" },
+      { ...detail.rows[1], id: "filter-b2", item_id: "item-2", item_code: "ITM-2", product_name: "منتج ثان", main_category: "تصنيف ب", availability: "available" },
+    ],
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison initialComparison={filteredDetail} />);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+
+  const filters = container.querySelector('[data-testid="advanced-filters"]');
+  expect(filters.hasAttribute("open")).toBe(false);
+  const category = container.querySelector('[data-testid="offers-category-filter"]');
+  await act(async () => {
+    category.value = "تصنيف أ";
+    category.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const matrix = container.querySelector('[data-testid="comparison-matrix"]');
+  expect(matrix.textContent).toContain("منتج اختبار");
+  expect(matrix.textContent).not.toContain("منتج ثان");
+  expect(matrix.querySelectorAll('[data-testid="comparison-row"]')).toHaveLength(2);
+  expect(matrix.querySelectorAll('[data-testid="supplier-offer-summary"]')).toHaveLength(2);
 
   await act(async () => root.unmount());
   container.remove();
@@ -353,6 +391,7 @@ test("cheapest complete action selects every eligible row and excludes an incomp
   await act(async () => { root.render(<SupplierPriceComparison initialComparison={twoItemDetail} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
 
   const matrix = container.querySelector('[data-testid="comparison-matrix"]');
+  expect(matrix.classList.contains("max-h-[calc(100vh-15rem)]")).toBe(true);
   expect(matrix.querySelectorAll('[data-testid="complete-offer-badge"]')).toHaveLength(1);
   expect(matrix.querySelectorAll('[data-testid="incomplete-offer-badge"]')).toHaveLength(1);
   expect(matrix.querySelectorAll('[data-testid="lowest-offer-badge"]')).toHaveLength(1);
@@ -365,6 +404,14 @@ test("cheapest complete action selects every eligible row and excludes an incomp
     .find((element) => element.style.gridColumn === "1" && element.style.gridRow === "2");
   expect(itemCell.classList.contains("sticky")).toBe(true);
   expect(itemCell.classList.contains("py-1")).toBe(true);
+  const supplierHeader = [...matrix.querySelectorAll("div")]
+    .find((element) => element.style.gridColumn === "2" && element.style.gridRow === "1");
+  expect(supplierHeader.classList.contains("sticky")).toBe(true);
+  expect(supplierHeader.classList.contains("top-0")).toBe(true);
+  expect(container.querySelector('[data-testid="supplier-pager"]').textContent).toContain("1–2 من 2");
+  const decisionBar = container.querySelector('[data-testid="comparison-summary-bar"]');
+  expect(decisionBar.classList.contains("sticky")).toBe(true);
+  expect(decisionBar.classList.contains("bottom-2")).toBe(true);
 
   await act(async () => container.querySelector('[data-testid="select-cheapest-complete-offer"]').click());
   const completeCard = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')]
@@ -487,7 +534,7 @@ test("renders supplier quotation attachments inside the matching supplier offer"
 
   const supplierCard = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')]
     .find((card) => card.textContent.includes("المورد الأخضر"));
-  expect(supplierCard.textContent).toContain("مرفق عرض المورد");
+  expect(supplierCard.textContent).toContain("مستلم");
   expect(supplierCard.textContent).toContain("supplier-offer.pdf");
   expect(container.textContent).not.toContain("مرفق عام للمقارنة");
 

@@ -37,7 +37,7 @@ const dashboard = {
     delivery_problem_count: 1, completed_count: 1,
     attention: [{ po_number: "PO-000010", supplier_name: "مورد ب" }],
   },
-  project_procurement_summary: [{ project_name: "مشروع أ", formal_po_value: 900 }],
+  project_procurement_summary: [{ project_name: "مشروع أ", formal_po_value: 900, actual_paid: 300, outstanding: 600 }],
   attention_items: [
     { type: "delivery_problem", reference: "PO-000010", project_name: "مشروع ب", reason: "مشكلة في التوريد", path: "/purchase-orders/po-problem-1" },
     { type: "needs_clarification", reference: "REQ-000004", project_name: "مشروع أ", reason: "بانتظار استكمال التوضيح المطلوب", path: "/incoming-requests" },
@@ -61,16 +61,17 @@ async function renderDashboard(data = dashboard) {
 
 afterEach(() => mockNavigate.mockClear());
 
-test("renders only the six formal decision KPIs", async () => {
+test("renders only the five highest-value operational KPIs", async () => {
   const { container, root } = await renderDashboard();
   expect(mockGet).toHaveBeenCalledWith("/dashboard");
   const section = container.querySelector('[data-testid="formal-procurement-kpis"]');
-  expect(section.querySelectorAll("article")).toHaveLength(6);
-  expect(section.textContent).toContain("طلبات تحتاج إجراء2");
-  expect(section.textContent).toContain("اعتمادات معلقة1");
-  expect(section.textContent).toContain("900 ج.م");
-  expect(section.textContent).toContain("300 ج.م");
+  expect(section.querySelectorAll("article")).toHaveLength(5);
+  expect(section.textContent).toContain("يحتاج إجراء2");
+  expect(section.textContent).toContain("قرارات اعتماد معلقة1");
+  expect(section.textContent).toContain("مشكلات التوريد والاستلام2");
   expect(section.textContent).toContain("600 ج.م");
+  expect(section.textContent).not.toContain("900 ج.م");
+  expect(section.textContent).not.toContain("300 ج.م");
   expect(section.textContent).not.toContain("250 ج.م");
   await act(async () => root.unmount());
   container.remove();
@@ -109,7 +110,11 @@ test("renders a pricing-ready request as sourcing work for Procurement Responsib
 
 test("keeps one useful project chart and compact workflow health", async () => {
   const { container, root } = await renderDashboard();
-  expect(container.querySelector('[data-testid="chart-project-value"]')).toBeTruthy();
+  const exposure = container.querySelector('[data-testid="chart-project-value"]');
+  expect(exposure).toBeTruthy();
+  expect(exposure.textContent).toContain("900 ج.م");
+  expect(exposure.textContent).toContain("300 ج.م");
+  expect(exposure.textContent).toContain("600 ج.م");
   expect(container.querySelector('[data-testid="request-pipeline"]').textContent).toContain("تحت التوريد");
   expect(container.querySelector('[data-testid="po-status-section"]').textContent).toContain("استلام جزئي");
   await act(async () => root.unmount());
