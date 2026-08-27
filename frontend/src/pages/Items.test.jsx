@@ -58,6 +58,9 @@ test("shows only the compact item columns and hides removed fields from the main
   const { container, root } = await renderItems();
 
   expect(mockGet).toHaveBeenCalledWith("/items");
+  expect(container.querySelector('[data-testid="items-management-header"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="items-management-toolbar"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="items-row"]').classList.contains("h-8")).toBe(true);
   expect(container.textContent).toContain("كود الصنف");
   expect(container.textContent).toContain("دهان أبيض");
   expect(container.textContent).toContain("دهانات");
@@ -86,6 +89,11 @@ test("search filters the item list", async () => {
 
   expect(container.textContent).toContain("دهان أزرق");
   expect(container.textContent).not.toContain("دهان أبيض");
+  const clear = container.querySelector('[data-testid="items-clear-filters"]');
+  expect(clear).not.toBeNull();
+  await click(clear);
+  expect(container.textContent).toContain("دهان أبيض");
+  expect(container.textContent).toContain("دهان أزرق");
 
   await act(async () => root.unmount());
   container.remove();

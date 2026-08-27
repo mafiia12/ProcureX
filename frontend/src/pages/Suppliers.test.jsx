@@ -66,6 +66,9 @@ test("shows only the compact supplier columns and hides removed fields from the 
   const { container, root } = await renderSuppliers();
 
   expect(mockGet).toHaveBeenCalledWith("/suppliers", { params: { include_procurement: true } });
+  expect(container.querySelector('[data-testid="suppliers-management-header"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="suppliers-management-toolbar"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="suppliers-row"]').classList.contains("h-8")).toBe(true);
   expect(container.textContent).toContain("كود المورد");
   expect(container.textContent).toContain("مورد اختبار");
   expect(container.textContent).toContain("01000000000");

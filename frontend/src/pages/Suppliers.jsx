@@ -43,7 +43,7 @@ function SupplierDrawer({ supplier, tr, onEdit, onViewHistory, onReload }) {
   };
 
   return (
-    <div className="mt-2 space-y-5">
+    <div className="mt-1 space-y-4">
       <div>
         <div className="text-lg font-bold text-foreground">{supplier.name}</div>
         <div className="mt-0.5 flex items-center gap-2">
@@ -54,7 +54,7 @@ function SupplierDrawer({ supplier, tr, onEdit, onViewHistory, onReload }) {
 
       <section>
         <h3 className="mb-2 text-xs font-bold text-muted-foreground">{tr("التواصل", "Contact")}</h3>
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-3">
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
           <DetailRow label={tr("الهاتف", "Phone")} value={supplier.phone} dir="ltr" />
           <DetailRow
             label={tr("واتساب", "WhatsApp")}
@@ -71,7 +71,7 @@ function SupplierDrawer({ supplier, tr, onEdit, onViewHistory, onReload }) {
 
       <section>
         <h3 className="mb-2 text-xs font-bold text-muted-foreground">{tr("بيانات العمل", "Business")}</h3>
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-3">
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
           <DetailRow label={tr("التخصص", "Specialty")} value={supplier.specialty} />
           <DetailRow label={tr("المجموعة", "Group")} value={supplier.group_name} />
           <DetailRow label={tr("شروط الدفع", "Payment terms")} value={supplier.payment_terms} />
@@ -81,14 +81,14 @@ function SupplierDrawer({ supplier, tr, onEdit, onViewHistory, onReload }) {
 
       <section>
         <h3 className="mb-2 text-xs font-bold text-muted-foreground">{tr("مرجع المشتريات", "Procurement reference")}</h3>
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-3">
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
           <DetailRow label={tr("آخر أمر شراء رسمي", "Last purchase order")} value={supplier.last_formal_po_date} />
           <DetailRow label={tr("عدد أوامر الشراء الرسمية", "Formal PO count")} value={supplier.formal_po_count ?? 0} />
           <DetailRow label={tr("قيمة أوامر الشراء الرسمية", "Formal PO value")} value={supplier.formal_po_total != null ? fmtEGP(supplier.formal_po_total) : "-"} />
         </dl>
       </section>
 
-      <div className="flex flex-wrap gap-2 border-t pt-4">
+      <div className="flex flex-wrap gap-2 border-t pt-3">
         <Button size="sm" onClick={onEdit} className="gap-1.5"><Pencil className="h-3.5 w-3.5" /> {tr("تعديل", "Edit")}</Button>
         <Button size="sm" variant="outline" onClick={toggleStatus} disabled={toggling} className="gap-1.5">
           <Power className="h-3.5 w-3.5" /> {isActive ? tr("تعطيل", "Deactivate") : tr("تفعيل", "Activate")}
@@ -119,6 +119,7 @@ export default function Suppliers() {
       searchPlaceholder={tr("ابحث بالكود أو اسم المورد أو الهاتف...", "Search by code, supplier name, or phone...")}
       emptyTitle={tr("لا يوجد موردون", "No suppliers")}
       emptyDescription={tr("ابدأ بإضافة أول مورد.", "Start by adding your first supplier.")}
+      compactManagement
       endpoint="suppliers"
       listParams={{ include_procurement: true }}
       testPrefix="suppliers"
