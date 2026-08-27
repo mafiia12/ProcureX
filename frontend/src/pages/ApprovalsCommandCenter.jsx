@@ -13,11 +13,10 @@ import {
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import ProcurementProgress from "@/components/ProcurementProgress";
 import { buildApprovalUrl, buildEmailUrl, buildWhatsAppUrl } from "@/lib/approvalSharing";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
-import { Callout, EmptyState, KpiStrip, PageHeader, StatusBadge, Timeline } from "@/components/procurement-ui";
+import { Callout, EmptyState, KpiStrip, StatusBadge, Timeline } from "@/components/procurement-ui";
 import {
   APPROVAL_STAGES, APPROVAL_STAGE_LABELS, approvalProgressStage,
 } from "@/lib/approvalStages";
@@ -132,8 +131,11 @@ export default function ApprovalsCommandCenter() {
   const canAct = selected?.approval_type === "comparison_workflow" && selected.status === "pending_approval" && (role === "admin" || selected.responsible_role === role);
   const currentStage = approvalProgressStage(selected?.approval_stage);
 
-  return <div className="space-y-4" data-testid="approvals-command-center">
-    <PageHeader title={tr("مركز الاعتمادات", "Approval Center")} description={tr("راجع ملخص القرار أولًا ثم افتح التفاصيل التي تحتاجها فقط.", "Review the decision summary first, then open only the supporting detail you need.")} actions={<div className="border bg-card px-3 py-1.5"><div className="text-[11px] text-muted-foreground">{tr("دورك الحالي", "Your role")}</div><div className="text-sm font-bold">{dictionaryLabel(roleLabels, role, tr, role)}</div></div>} />
+  return <div className="space-y-3" data-testid="approvals-command-center">
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2" data-testid="approval-command-header">
+      <div><h1 className="text-base font-bold tracking-tight">{tr("مركز الاعتمادات", "Approval Center")}</h1><p className="mt-0.5 text-xs text-muted-foreground">{tr("القرار الحالي أولًا، والتفاصيل الداعمة عند الحاجة.", "Current decision first; supporting detail on demand.")}</p></div>
+      <div className="flex items-center gap-2 border bg-card px-2 py-1 text-xs"><span className="text-muted-foreground">{tr("الدور", "Role")}</span><b>{dictionaryLabel(roleLabels, role, tr, role)}</b></div>
+    </div>
     <KpiStrip
       items={[
         { label: tr("اعتماد المقارنة", "Comparison approval"), value: pendingTechnical, tone: "info" },
@@ -142,15 +144,15 @@ export default function ApprovalsCommandCenter() {
         { label: tr("جاهز لأمر شراء", "Ready for PO"), value: internalItems.filter((item) => item.status === "approved" && item.approval_stage === APPROVAL_STAGES.PO_READY && !item.has_purchase_order).length, tone: "success" },
       ]}
     />
-    <div className="grid gap-2 border bg-card p-2.5 md:grid-cols-[1fr_220px_1fr]"><Input placeholder={tr("رقم الاعتماد أو المشروع", "Approval number or project")} value={filters.search} onChange={(event) => setFilters((value) => ({ ...value, search: event.target.value }))} /><select className="h-9 rounded-md border bg-background px-3" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}><option value="">{tr("كل حالات الاعتماد", "All approval statuses")}</option>{Object.entries(statusLabels).map(([value, labels]) => <option key={value} value={value}>{tr(...labels)}</option>)}</select><Input placeholder={tr("اسم منفذ الإجراء", "Action owner name")} value={actor} onChange={(event) => setActor(event.target.value)} /></div>
-    <div className="grid gap-3 xl:grid-cols-[300px_minmax(0,1fr)]">
-      <section className="space-y-2">{loading ? <div className="border bg-card p-8 text-center text-muted-foreground">{tr("جارٍ التحميل...", "Loading...")}</div> : !data.items.length ? <EmptyState compact title={tr("لا توجد اعتمادات مطابقة", "No matching approvals")} description={tr("ستظهر هنا الاعتمادات التي تدخل المسار الرسمي.", "Formal workflow approvals will appear here.")} /> : <>{internalItems.map((item) => <ApprovalCard key={item.id} item={item} selected={selected} onOpen={open} tr={tr} />)}{!!legacyItems.length && <details className="border bg-card p-3"><summary className="cursor-pointer font-bold text-muted-foreground">{tr(`المسار الخارجي القديم (${legacyItems.length})`, `Legacy external workflow (${legacyItems.length})`)}</summary><div className="mt-3 space-y-2">{legacyItems.map((item) => <ApprovalCard key={item.id} item={item} selected={selected} onOpen={open} tr={tr} />)}</div></details>}</>}</section>
-      <section className="min-h-[440px] border bg-card">{!selected ? <EmptyState className="min-h-[400px]" title={tr("اختر اعتمادًا", "Select an approval")} description={tr("اعرض ملخص القرار والمستندات الداعمة هنا.", "Its decision summary and supporting documents will appear here.")} /> : <div>
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b p-3"><div><h3 className="text-base font-bold" dir="ltr">{selected.approval_number}</h3><p className="text-xs text-muted-foreground">{selected.project_name || tr("بدون مشروع", "No project")} · {tr(`الإصدار ${selected.revision_number + 1}`, `Revision ${selected.revision_number + 1}`)}</p></div><StatusBadge tone={statusTones[selected.status] || "neutral"}>{dictionaryLabel(statusLabels, selected.status, tr, selected.status)}</StatusBadge></div>
-        <div className="grid grid-cols-2 gap-2 border-b bg-muted/40 p-3 text-sm lg:grid-cols-4" data-testid="approval-decision-summary">
-          {[["APR", selected.approval_number], [tr("المشروع", "Project"), selected.project_name || "-"], ["REQ", selected.source_request_number || "-"], ["CMP", selected.comparison_number || "-"], [tr("الإجمالي", "Total"), fmtEGP(selected.final_total)], [tr("المرحلة الحالية", "Current stage"), stageLabel(selected.approval_stage, tr)], [tr("المسؤول", "Responsible role"), dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)], [tr("القرار المطلوب", "Decision required"), stageLabel(selected.approval_stage, tr)]].map(([label, value]) => <div key={label}><div className="text-[11px] text-muted-foreground">{label}</div><div className="mt-0.5 font-semibold" dir={["APR", "REQ", "CMP"].includes(label) ? "ltr" : "auto"}>{value}</div></div>)}
+    <div className="grid gap-2 border bg-card p-2 md:grid-cols-[1fr_220px_1fr]"><Input className="h-8 text-xs" placeholder={tr("رقم الاعتماد أو المشروع", "Approval number or project")} value={filters.search} onChange={(event) => setFilters((value) => ({ ...value, search: event.target.value }))} /><select className="h-8 rounded-md border bg-background px-2 text-xs" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}><option value="">{tr("كل حالات الاعتماد", "All approval statuses")}</option>{Object.entries(statusLabels).map(([value, labels]) => <option key={value} value={value}>{tr(...labels)}</option>)}</select><Input className="h-8 text-xs" placeholder={tr("اسم منفذ الإجراء", "Action owner name")} value={actor} onChange={(event) => setActor(event.target.value)} /></div>
+    <div className="grid gap-3 xl:grid-cols-[280px_minmax(0,1fr)]">
+      <section className="space-y-1.5">{loading ? <div className="border bg-card p-6 text-center text-xs text-muted-foreground">{tr("جارٍ التحميل...", "Loading...")}</div> : !data.items.length ? <EmptyState compact title={tr("لا توجد اعتمادات مطابقة", "No matching approvals")} description={tr("ستظهر هنا الاعتمادات التي تدخل المسار الرسمي.", "Formal workflow approvals will appear here.")} /> : <>{internalItems.map((item) => <ApprovalCard key={item.id} item={item} selected={selected} onOpen={open} tr={tr} />)}{!!legacyItems.length && <details className="border bg-card p-2"><summary className="cursor-pointer text-xs font-bold text-muted-foreground">{tr(`المسار الخارجي القديم (${legacyItems.length})`, `Legacy external workflow (${legacyItems.length})`)}</summary><div className="mt-2 space-y-1.5">{legacyItems.map((item) => <ApprovalCard key={item.id} item={item} selected={selected} onOpen={open} tr={tr} />)}</div></details>}</>}</section>
+      <section className="border bg-card">{!selected ? <EmptyState className="min-h-[240px]" title={tr("اختر اعتمادًا", "Select an approval")} description={tr("اعرض ملخص القرار والمستندات الداعمة هنا.", "Its decision summary and supporting documents will appear here.")} /> : <div>
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b px-3 py-2"><div><h3 className="text-sm font-bold" dir="ltr">{selected.approval_number}</h3><p className="text-[10.5px] text-muted-foreground">{selected.project_name || tr("بدون مشروع", "No project")} · {tr(`الإصدار ${selected.revision_number + 1}`, `Revision ${selected.revision_number + 1}`)}</p></div><StatusBadge tone={statusTones[selected.status] || "neutral"}>{dictionaryLabel(statusLabels, selected.status, tr, selected.status)}</StatusBadge></div>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 border-b bg-muted/30 px-3 py-2 text-xs md:grid-cols-3 xl:grid-cols-6" data-testid="approval-decision-summary">
+          {[[tr("المشروع", "Project"), selected.project_name || "-"], ["REQ", selected.source_request_number || "-"], ["CMP", selected.comparison_number || "-"], [tr("الإجمالي", "Total"), fmtEGP(selected.final_total)], [tr("المرحلة", "Stage"), stageLabel(selected.approval_stage, tr)], [tr("المسؤول", "Responsible"), dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)]].map(([label, value]) => <div key={label} className="min-w-0"><div className="text-[9.5px] uppercase tracking-wide text-muted-foreground">{label}</div><div className="mt-0.5 truncate font-semibold" title={String(value)} dir={["REQ", "CMP"].includes(label) ? "ltr" : "auto"}>{value}</div></div>)}
         </div>
-        <div className="space-y-3 p-3">
+        <div className="space-y-2 p-2.5">
           {selected.approval_type === "comparison_workflow" ? <InternalApproval selected={selected} role={role} note={note} setNote={setNote} canAct={canAct} currentStage={currentStage} requestDecision={requestDecision} action={legacyAction} releaseFunds={releaseFunds} releaseMethod={releaseMethod} setReleaseMethod={setReleaseMethod} createDraftPO={createDraftPO} navigate={navigate} tr={tr} /> : <LegacyApproval selected={selected} actor={actor} cashCode={cashCode} setCashCode={setCashCode} action={legacyAction} share={share} tr={tr} />}
           <ReviewWorkspace workspace={workspace} timeline={selected.timeline || []} />
         </div>
@@ -185,6 +187,19 @@ export default function ApprovalsCommandCenter() {
   </div>;
 }
 
+function ApprovalProgressInline({ currentStage, tr }) {
+  const stages = [
+    ["REQ", 1], ["CMP", 2], ["APR", 3], [tr("تجاري", "Commercial"), 4],
+    [tr("إتاحة", "Funds"), 5], ["PO", 6],
+  ];
+  return <div className="flex items-center gap-1 overflow-x-auto border bg-muted/25 px-2 py-1 text-[9.5px] font-semibold text-muted-foreground" data-testid="approval-progress-inline">
+    {stages.map(([label, value], index) => <span key={value} className="flex shrink-0 items-center gap-1">
+      <span className={value === currentStage ? "bg-primary/10 px-1 py-0.5 text-primary" : value < currentStage ? "text-emerald-700 dark:text-emerald-300" : ""}>{label}{value < currentStage ? " ✓" : value === currentStage ? " ●" : ""}</span>
+      {index < stages.length - 1 && <span aria-hidden="true">{tr("←", "→")}</span>}
+    </span>)}
+  </div>;
+}
+
 function InternalApproval({ selected, role, note, setNote, canAct, currentStage, requestDecision, action, releaseFunds, releaseMethod, setReleaseMethod, createDraftPO, navigate, tr }) {
   const isRelease = selected.status === "pending_approval" && selected.approval_stage === APPROVAL_STAGES.FUNDS_AVAILABILITY;
   const readyForPO = selected.status === "approved" && selected.approval_stage === APPROVAL_STAGES.PO_READY;
@@ -192,8 +207,8 @@ function InternalApproval({ selected, role, note, setNote, canAct, currentStage,
   const hasPurchaseOrders = readyForPO && linkedOrders.length > 0;
   const canReleaseFunds = role === "admin" || role === "commercial_manager";
   const canCreatePO = role === "admin" || role === "procurement_responsible";
-  return <><ProcurementProgress currentStage={currentStage} /><Callout tone={readyForPO ? "success" : "info"} className="block"><div className="text-xs font-bold text-muted-foreground">{tr("المطلوب الآن", "Decision required now")}</div><div className="mt-1 text-base font-bold">{hasPurchaseOrders ? tr("تم إنشاء أمر الشراء", "Purchase order created") : stageLabel(selected.approval_stage, tr)}</div><div className="mt-1 text-sm text-muted-foreground">{tr("المسؤول", "Responsible")}: {dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)}</div></Callout>
-    {selected.status === "pending_approval" && !isRelease && <div className="space-y-3">{canAct ? <div className="sticky bottom-3 z-10 flex flex-wrap gap-2 border bg-card/95 p-2 shadow-sm backdrop-blur"><Button onClick={() => requestDecision("approved")} className="bg-emerald-700 text-white hover:bg-emerald-800"><ShieldCheck className="h-4 w-4" /> {selected.approval_stage === APPROVAL_STAGES.COMPARISON_TECHNICAL ? tr("اعتماد المقارنة", "Approve comparison") : tr("موافقة تجارية / اعتماد الصرف", "Commercial / expenditure approval")}</Button><Button variant="outline" onClick={() => requestDecision("revision_requested")}><Undo2 className="h-4 w-4" />{tr("تعديل مطلوب", "Request revision")}</Button><Button variant="destructive" onClick={() => requestDecision("rejected")}><XCircle className="h-4 w-4" />{tr("رفض", "Reject")}</Button></div> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
+  return <><ApprovalProgressInline currentStage={currentStage} tr={tr} /><div className={`flex flex-wrap items-center justify-between gap-2 border px-2.5 py-2 ${readyForPO ? "border-emerald-500/30 bg-emerald-500/5" : "border-primary/20 bg-primary/5"}`} data-testid="approval-next-decision"><div><div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">{tr("المطلوب الآن", "Decision required now")}</div><div className="mt-0.5 text-sm font-bold">{hasPurchaseOrders ? tr("تم إنشاء أمر الشراء", "Purchase order created") : stageLabel(selected.approval_stage, tr)}</div></div><div className="text-xs text-muted-foreground">{tr("المسؤول", "Responsible")}: <b className="text-foreground">{dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)}</b></div></div>
+    {selected.status === "pending_approval" && !isRelease && <div>{canAct ? <div className="sticky bottom-2 z-10 flex flex-wrap gap-1.5 border bg-card/95 p-1.5 shadow-sm backdrop-blur" data-testid="approval-decision-actions"><Button size="sm" onClick={() => requestDecision("approved")} className="h-8 bg-emerald-700 text-white hover:bg-emerald-800"><ShieldCheck className="h-4 w-4" /> {selected.approval_stage === APPROVAL_STAGES.COMPARISON_TECHNICAL ? tr("اعتماد المقارنة", "Approve comparison") : tr("موافقة تجارية / اعتماد الصرف", "Commercial / expenditure approval")}</Button><Button size="sm" variant="outline" className="h-8" onClick={() => requestDecision("revision_requested")}><Undo2 className="h-4 w-4" />{tr("تعديل مطلوب", "Request revision")}</Button><Button size="sm" variant="destructive" className="h-8" onClick={() => requestDecision("rejected")}><XCircle className="h-4 w-4" />{tr("رفض", "Reject")}</Button></div> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
     {isRelease && <Callout tone="primary" className="block space-y-3"><div className="font-bold text-foreground">{tr("الموافقة التجارية / اعتماد الصرف مكتمل — المبلغ لم يُتح بعد", "Commercial approval is complete — funds are not yet available")}</div><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={releaseMethod} onChange={(event) => setReleaseMethod(event.target.value)}><option value="">{tr("طريقة الإتاحة (اختياري)", "Availability method (optional)")}</option><option value="cash">{tr("نقدي", "Cash")}</option><option value="transfer">{tr("تحويل", "Transfer")}</option><option value="custody">{tr("عهدة", "Custody")}</option><option value="other">{tr("أخرى", "Other")}</option></select><Input value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("ملاحظة اختيارية", "Optional note")} />{canReleaseFunds ? <Button className="w-full" onClick={releaseFunds}><WalletCards className="h-5 w-5" />{tr("تأكيد إتاحة المبلغ لمسؤول المشتريات", "Confirm funds availability for procurement")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</Callout>}
     {readyForPO && (hasPurchaseOrders
       ? <Callout tone="success" testId="po-created-state" className="block">
@@ -223,7 +238,7 @@ function RoleNotice({ selected, role, tr }) {
 }
 
 function ApprovalCard({ item, selected, onOpen, tr }) {
-  return <button type="button" onClick={() => onOpen(item.id)} className={`w-full rounded-lg border bg-card p-3 text-start hover:border-primary/40 ${selected?.id === item.id ? "ring-2 ring-primary/50" : ""}`}><div className="flex items-start justify-between gap-3"><div><b dir="ltr">{item.approval_number}</b><div className="mt-1 text-sm text-muted-foreground">{item.project_name || tr("بدون مشروع", "No project")} · {tr(`الإصدار ${item.revision_number + 1}`, `Revision ${item.revision_number + 1}`)}</div></div><StatusBadge tone={statusTones[item.status] || "neutral"}>{dictionaryLabel(statusLabels, item.status, tr, item.status)}</StatusBadge></div><div className="mt-2 flex items-end justify-between gap-2"><div className="text-xs text-muted-foreground">{stageLabel(item.approval_stage, tr)}<br/>{tr("المسؤول", "Responsible")}: {dictionaryLabel(roleLabels, item.responsible_role, tr, "-")}</div><b dir="ltr">{fmtEGP(item.final_total)}</b></div></button>;
+  return <button type="button" onClick={() => onOpen(item.id)} className={`w-full border bg-card p-2 text-start transition-colors hover:border-primary/40 ${selected?.id === item.id ? "border-primary bg-primary/5 ring-1 ring-primary/30" : ""}`}><div className="flex items-start justify-between gap-2"><div className="min-w-0"><b className="text-sm" dir="ltr">{item.approval_number}</b><div className="mt-0.5 truncate text-xs text-muted-foreground">{item.project_name || tr("بدون مشروع", "No project")} · {tr(`الإصدار ${item.revision_number + 1}`, `Revision ${item.revision_number + 1}`)}</div></div><StatusBadge tone={statusTones[item.status] || "neutral"}>{dictionaryLabel(statusLabels, item.status, tr, item.status)}</StatusBadge></div><div className="mt-1.5 flex items-end justify-between gap-2"><div className="min-w-0 truncate text-[10.5px] text-muted-foreground">{stageLabel(item.approval_stage, tr)} · {dictionaryLabel(roleLabels, item.responsible_role, tr, "-")}</div><b className="shrink-0 text-xs" dir="ltr">{fmtEGP(item.final_total)}</b></div></button>;
 }
 
 function LegacyApproval({ selected, actor, cashCode, setCashCode, action, share, tr }) {
@@ -296,9 +311,9 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
   const quotations = workspace.supplier_quotations || [];
   const comparison = workspace.comparison || null;
 
-  return <Tabs defaultValue="request" dir={direction} className="rounded-lg border bg-muted/30 p-3" data-testid="review-workspace">
-    <TabsList className="flex h-auto w-full justify-start overflow-x-auto">
-      {[["request", tr("الطلب", "Request")], ["technical", tr("المراجعة الفنية", "Technical review")], ["quotations", tr("عروض الموردين", "Supplier quotations")], ["comparison", tr("المقارنة", "Comparison")], ["attachments", tr("المرفقات", "Attachments")], ["history", tr("السجل", "History")]].map(([value, label]) => <TabsTrigger key={value} value={value}>{label}</TabsTrigger>)}
+  return <Tabs defaultValue="request" dir={direction} className="border bg-muted/20 p-2" data-testid="review-workspace">
+    <TabsList className="flex h-8 w-full justify-start overflow-x-auto">
+      {[["request", tr("الطلب", "Request")], ["technical", tr("المراجعة الفنية", "Technical review")], ["quotations", tr("عروض الموردين", "Supplier quotations")], ["comparison", tr("المقارنة", "Comparison")], ["attachments", tr("المرفقات", "Attachments")], ["history", tr("السجل", "History")]].map(([value, label]) => <TabsTrigger key={value} value={value} className="h-7 px-2 text-xs">{label}</TabsTrigger>)}
     </TabsList>
 
     <TabsContent value="request" forceMount className="data-[state=inactive]:hidden"><section className="rounded-lg border bg-card p-3" data-testid="review-workspace-request">

@@ -242,6 +242,24 @@ test("workspace renders the REQ section", async () => {
   container.remove();
 });
 
+test("keeps the current decision ahead of compact supporting detail", async () => {
+  mockApproval = TECHNICAL_STAGE_APPROVAL;
+  mockWorkspace = richWorkspace;
+  const { container, root } = await renderCenter("procurement_engineer");
+
+  expect(container.querySelector('[data-testid="approval-command-header"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="approval-decision-summary"]').children).toHaveLength(6);
+  expect(container.querySelector('[data-testid="approval-progress-inline"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="approval-next-decision"]')).not.toBeNull();
+  const actions = container.querySelector('[data-testid="approval-decision-actions"]');
+  expect(actions).not.toBeNull();
+  expect(actions.querySelector("button").classList.contains("h-8")).toBe(true);
+  expect(container.querySelector('[data-testid="review-workspace"]').classList.contains("p-2")).toBe(true);
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("RFQ section renders when present", async () => {
   mockApproval = TECHNICAL_STAGE_APPROVAL;
   mockWorkspace = richWorkspace;
