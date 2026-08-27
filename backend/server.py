@@ -1769,6 +1769,12 @@ async def record_po_payment(
     amount = money(amount)
 
     with SessionLocal() as session:
+        approval_id = order.get("approval_id")
+        if approval_id:
+            approval = session.get(EngineerApproval, approval_id)
+            if not approval or approval.status != "approved":
+                raise HTTPException(409, "لا يمكن تسجيل الدفعة — اعتماد الصرف المرتبط بأمر الشراء لم يعد ساريًا")
+
         existing = session.scalar(
             select(PurchaseOrderPayment).where(
                 PurchaseOrderPayment.purchase_order_id == purchase_order_id,

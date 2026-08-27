@@ -6718,6 +6718,51 @@ def test_po_payment_mutation_authorization_matrix(s, admin_headers):
     assert recorded_by_admin.status_code == 200, recorded_by_admin.text
 
 
+def test_po_payment_allowed_while_linked_approval_is_approved(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"pay-appr-ok-mgr-{suffix}", role="commercial_manager")
+    manager_headers = _login_headers(s, f"pay-appr-ok-mgr-{suffix}")
+
+    po, approval, *_rest = _make_payable_purchase_order(s, suffix, admin_headers)
+    assert po.get("approval_id") == approval["id"]
+
+    recorded = s.post(PO_PAYMENTS_API(po["id"]), headers=manager_headers, json={
+        "payment_date": "2026-08-25", "amount": 10, "payment_method": "bank_transfer",
+        "payment_reference": "TX-1", "notes": "", "idempotency_key": f"appr-ok-{suffix}",
+    })
+    assert recorded.status_code == 200, recorded.text
+
+
+def test_po_payment_rejected_when_linked_approval_is_no_longer_approved(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"pay-appr-bad-mgr-{suffix}", role="commercial_manager")
+    manager_headers = _login_headers(s, f"pay-appr-bad-mgr-{suffix}")
+
+    po, approval, *_rest = _make_payable_purchase_order(s, suffix, admin_headers)
+    assert po.get("approval_id") == approval["id"]
+
+    # Simulate an approval reverted/invalidated after the PO was already
+    # issued - e.g. a revision requested post-hoc on the same approval row.
+    with SessionLocal.begin() as session:
+        session.get(EngineerApproval, approval["id"]).status = "revision_requested"
+
+    rejected = s.post(PO_PAYMENTS_API(po["id"]), headers=manager_headers, json={
+        "payment_date": "2026-08-25", "amount": 10, "payment_method": "bank_transfer",
+        "payment_reference": "TX-1", "notes": "", "idempotency_key": f"appr-bad-{suffix}",
+    })
+    assert rejected.status_code == 409, rejected.text
+    assert "اعتماد الصرف" in rejected.json()["detail"]
+
+    with SessionLocal() as session:
+        count = session.scalar(
+            select(func.count()).select_from(PurchaseOrderPayment)
+            .where(PurchaseOrderPayment.purchase_order_id == po["id"])
+        )
+    assert count == 0
+
+
 def test_po_payment_recording_and_summary_accuracy(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
