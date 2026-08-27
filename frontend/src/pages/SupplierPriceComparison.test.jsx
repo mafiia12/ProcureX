@@ -391,7 +391,8 @@ test("cheapest complete action selects every eligible row and excludes an incomp
   await act(async () => { root.render(<SupplierPriceComparison initialComparison={twoItemDetail} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
 
   const matrix = container.querySelector('[data-testid="comparison-matrix"]');
-  expect(matrix.classList.contains("max-h-[calc(100vh-15rem)]")).toBe(true);
+  expect(matrix.classList.contains("max-h-[calc(100dvh-18rem)]")).toBe(true);
+  expect(matrix.classList.contains("sm:max-h-[calc(100dvh-15rem)]")).toBe(true);
   expect(matrix.querySelectorAll('[data-testid="complete-offer-badge"]')).toHaveLength(1);
   expect(matrix.querySelectorAll('[data-testid="incomplete-offer-badge"]')).toHaveLength(1);
   expect(matrix.querySelectorAll('[data-testid="lowest-offer-badge"]')).toHaveLength(1);
@@ -411,7 +412,14 @@ test("cheapest complete action selects every eligible row and excludes an incomp
   expect(container.querySelector('[data-testid="supplier-pager"]').textContent).toContain("1–2 من 2");
   const decisionBar = container.querySelector('[data-testid="comparison-summary-bar"]');
   expect(decisionBar.classList.contains("sticky")).toBe(true);
-  expect(decisionBar.classList.contains("bottom-2")).toBe(true);
+  expect(decisionBar.classList.contains("bottom-0")).toBe(true);
+  expect(decisionBar.classList.contains("w-full")).toBe(true);
+  expect(decisionBar.className).toContain("safe-area-inset-bottom");
+  const summaryMetrics = container.querySelector('[data-testid="comparison-summary-metrics"]');
+  expect(summaryMetrics.classList.contains("overflow-x-auto")).toBe(true);
+  expect(container.querySelector('[data-testid="comparison-summary-send"]').classList.contains("shrink-0")).toBe(true);
+  expect(container.querySelector('[data-testid="supplier-price-comparison-page"]').classList.contains("pb-16")).toBe(true);
+  expect(matrix.classList.contains("scroll-pb-16")).toBe(true);
 
   await act(async () => container.querySelector('[data-testid="select-cheapest-complete-offer"]').click());
   const completeCard = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')]

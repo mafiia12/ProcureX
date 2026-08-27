@@ -133,7 +133,7 @@ function ComparisonMatrix({
   const colCount = Math.max(visibleSupplierGroups.length, 1);
   const footerRow = itemOrder.length + 2;
   return (
-    <div className="max-h-[calc(100vh-15rem)] overflow-auto rounded-md border bg-card" data-testid="comparison-matrix">
+    <div className="max-h-[calc(100dvh-18rem)] scroll-pb-16 overflow-auto rounded-md border bg-card sm:max-h-[calc(100dvh-15rem)]" data-testid="comparison-matrix">
       <div
         className="grid min-w-[640px]"
         style={{ gridTemplateColumns: `minmax(220px,1.25fr) repeat(${colCount}, minmax(210px,1fr))` }}
@@ -1433,7 +1433,7 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
     } catch (error) { toast.error(errMsg(error)); }
   };
   return (
-    <div className="space-y-2 supplier-comparison-page" data-testid="supplier-price-comparison-page">
+    <div className={cn("relative isolate space-y-2 supplier-comparison-page", rows.length && "pb-16 sm:pb-14")} data-testid="supplier-price-comparison-page">
       <section className="border bg-card px-3 py-2 print:border-0 print:p-0" data-testid="comparison-command-bar">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
@@ -1666,15 +1666,21 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
         </div>}
       </section>
 
-      {!!rows.length && <div className="sticky bottom-2 z-20 flex flex-wrap items-center gap-x-3 gap-y-1 border border-primary/20 bg-card/95 px-3 py-2 text-[10.5px] shadow-sm backdrop-blur comparison-print-hidden" data-testid="comparison-summary-bar">
-        <span><span className="text-muted-foreground">{tr("الأصناف المختارة", "Selected items")}</span> <b className="tabular-nums">{selectedPurchaseItemCount}/{allComparisonItemsCount}</b></span>
-        <span><span className="text-muted-foreground">{tr("الموردون المقارنون", "Compared suppliers")}</span> <b className="tabular-nums">{suppliersInComparisonCount}</b></span>
-        <span><span className="text-muted-foreground">{tr("إجمالي الشراء المتوقع", "Expected purchase total")}</span> <b className="font-mono text-primary" dir="ltr">{formatMoney(selectedPurchaseTotal)}</b></span>
-        <span><span className="text-muted-foreground">{tr("الفرق عن الأرخص كاملًا", "Saving vs cheapest complete")}</span> <b className={cheapestSelectableGroup && Number(cheapestSelectableGroup.summary.final_offer_total) - selectedPurchaseTotal >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{selectedPurchaseRows.length && cheapestSelectableGroup ? formatMoney(Number(cheapestSelectableGroup.summary.final_offer_total) - selectedPurchaseTotal) : "-"}</b></span>
-        <span><span className="text-muted-foreground">{tr("غير مختار", "Unselected")}</span> <b className={unselectedPurchaseItemCount ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300"}>{unselectedPurchaseItemCount}</b></span>
-        {selectedSupplierName && <span className="hidden text-muted-foreground xl:inline">{tr("المورد", "Supplier")}: <b className="text-foreground">{selectedSupplierName}</b></span>}
-        {selectedPurchaseSupplierCount > 1 && <span className="hidden text-muted-foreground xl:inline" title={mixedSelectionBreakdown.map(([name, count]) => `${name}: ${count}`).join(" · ")}>{tr(`اختيار مختلط من ${selectedPurchaseSupplierCount} موردين`, `Mixed selection from ${selectedPurchaseSupplierCount} suppliers`)}</span>}
-        <Button type="button" size="sm" className="ms-auto h-8" onClick={sendForApproval} data-testid="comparison-summary-send"><Send className="h-3.5 w-3.5" />{tr("إرسال للاعتماد", "Send for approval")}</Button>
+      {!!rows.length && <div className="sticky bottom-0 z-10 w-full max-w-full pt-2 [padding-bottom:max(0.5rem,env(safe-area-inset-bottom))] comparison-print-hidden" data-testid="comparison-summary-bar">
+        <div className="flex min-h-12 w-full max-w-full items-center gap-2 overflow-hidden rounded-md border border-primary/20 bg-card/95 px-2 py-1.5 text-[10.5px] shadow-sm backdrop-blur">
+          <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain" data-testid="comparison-summary-metrics">
+            <div className="flex w-max min-w-full items-center gap-x-3 whitespace-nowrap px-1">
+              <span><span className="text-muted-foreground">{tr("الأصناف المختارة", "Selected items")}</span> <b className="tabular-nums">{selectedPurchaseItemCount}/{allComparisonItemsCount}</b></span>
+              <span><span className="text-muted-foreground">{tr("الموردون المقارنون", "Compared suppliers")}</span> <b className="tabular-nums">{suppliersInComparisonCount}</b></span>
+              <span><span className="text-muted-foreground">{tr("إجمالي الشراء المتوقع", "Expected purchase total")}</span> <b className="font-mono text-primary" dir="ltr">{formatMoney(selectedPurchaseTotal)}</b></span>
+              <span><span className="text-muted-foreground">{tr("الفرق عن الأرخص كاملًا", "Saving vs cheapest complete")}</span> <b className={cheapestSelectableGroup && Number(cheapestSelectableGroup.summary.final_offer_total) - selectedPurchaseTotal >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{selectedPurchaseRows.length && cheapestSelectableGroup ? formatMoney(Number(cheapestSelectableGroup.summary.final_offer_total) - selectedPurchaseTotal) : "-"}</b></span>
+              <span><span className="text-muted-foreground">{tr("غير مختار", "Unselected")}</span> <b className={unselectedPurchaseItemCount ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300"}>{unselectedPurchaseItemCount}</b></span>
+              {selectedSupplierName && <span className="hidden text-muted-foreground xl:inline">{tr("المورد", "Supplier")}: <b className="text-foreground">{selectedSupplierName}</b></span>}
+              {selectedPurchaseSupplierCount > 1 && <span className="hidden text-muted-foreground xl:inline" title={mixedSelectionBreakdown.map(([name, count]) => `${name}: ${count}`).join(" · ")}>{tr(`اختيار مختلط من ${selectedPurchaseSupplierCount} موردين`, `Mixed selection from ${selectedPurchaseSupplierCount} suppliers`)}</span>}
+            </div>
+          </div>
+          <Button type="button" size="sm" className="h-8 shrink-0" onClick={sendForApproval} data-testid="comparison-summary-send"><Send className="h-3.5 w-3.5" />{tr("إرسال للاعتماد", "Send for approval")}</Button>
+        </div>
       </div>}
 
       {!!rows.length && <details className="comparison-summary rounded-lg border bg-card p-3">
