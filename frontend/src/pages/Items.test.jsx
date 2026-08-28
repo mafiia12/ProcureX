@@ -60,7 +60,8 @@ test("shows only the compact item columns and hides removed fields from the main
   expect(mockGet).toHaveBeenCalledWith("/items");
   expect(container.querySelector('[data-testid="items-management-header"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="items-management-toolbar"]')).not.toBeNull();
-  expect(container.querySelector('[data-testid="items-row"]').classList.contains("h-8")).toBe(true);
+  expect(container.querySelector('[data-testid="items-row"]').classList.contains("h-[34px]")).toBe(true);
+  expect(container.querySelector('[data-testid="items-table-viewport"]').classList.contains("max-h-[calc(100dvh-149px)]")).toBe(true);
   expect(container.textContent).toContain("كود الصنف");
   expect(container.textContent).toContain("دهان أبيض");
   expect(container.textContent).toContain("دهانات");

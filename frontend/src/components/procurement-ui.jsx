@@ -285,10 +285,10 @@ export function AttachmentBlock({ title = "المرفقات", attachments = [], 
   );
 }
 
-export function ActionMenu({ actions, label = "إجراءات", testId }) {
+export function ActionMenu({ actions, label = "إجراءات", testId, className }) {
   const { direction } = useBilingualPreferences();
   return (
-    <DropdownMenu dir={direction}><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8" aria-label={label} data-testid={testId}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">{actions.filter(Boolean).map((action) => <DropdownMenuItem key={action.label} disabled={action.disabled} onSelect={action.onSelect} className={action.destructive ? "text-destructive focus:text-destructive" : undefined} data-testid={action.testId}>{action.icon}{action.label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
+    <DropdownMenu dir={direction}><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className={cn("h-8 w-8", className)} aria-label={label} data-testid={testId}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">{actions.filter(Boolean).map((action) => <DropdownMenuItem key={action.label} disabled={action.disabled} onSelect={action.onSelect} className={action.destructive ? "text-destructive focus:text-destructive" : undefined} data-testid={action.testId}>{action.icon}{action.label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
   );
 }
 

@@ -295,22 +295,26 @@ export default function CrudPage({
   };
 
   return (
-    <div className={cn("space-y-4", compactManagement && "space-y-2.5")} data-testid={`${testPrefix}-page`}>
-      {compactManagement ? <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2" data-testid={`${testPrefix}-management-header`}>
-        <div className="min-w-0"><h1 className="text-base font-bold tracking-tight text-foreground">{heading || title}</h1>{description && <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>}</div>
-        <div className="flex items-center gap-2"><span className="text-[10.5px] text-muted-foreground">{tr("السجلات", "Records")}: <b className="text-foreground tabular-nums">{rows.length}</b></span><Button size="sm" className="h-8 gap-1.5" data-testid={`${testPrefix}-add-button`} onClick={openNew}><Plus className="h-3.5 w-3.5" /> {tr("إضافة", "Add")} {title}</Button></div>
+    <div className={cn("space-y-4", compactManagement && "space-y-1.5")} data-testid={`${testPrefix}-page`}>
+      {compactManagement ? <div className="flex min-h-8 flex-wrap items-center justify-between gap-2 border-b pb-1" data-testid={`${testPrefix}-management-header`}>
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="truncate text-[15px] font-bold tracking-tight text-foreground">{heading || title}</h1>
+          <span className="shrink-0 border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"><b className="text-foreground tabular-nums">{rows.length}</b> {language === "en" ? String(heading || title).toLowerCase() : title}</span>
+          {description && <p className="sr-only">{description}</p>}
+        </div>
+        <Button size="sm" className="h-8 gap-1.5 px-2.5 text-xs" data-testid={`${testPrefix}-add-button`} onClick={openNew}><Plus className="h-3.5 w-3.5" /> {tr("إضافة", "Add")} {title}</Button>
       </div> : <PageHeader
         title={heading || title}
         description={description}
         actions={<Button data-testid={`${testPrefix}-add-button`} onClick={openNew} className="gap-2"><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>}
       />}
-      <div className={cn("flex flex-wrap items-center gap-2", compactManagement && "border bg-card p-2")} data-testid={`${testPrefix}-management-toolbar`}>
-        <SearchInput data-testid={`${testPrefix}-search-input`} className={cn("w-full sm:w-80", compactManagement && "h-8 sm:min-w-80 sm:flex-1")} placeholder={searchPlaceholder} value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div className={cn("flex flex-wrap items-center gap-2", compactManagement && "gap-1.5 border-b pb-1.5")} data-testid={`${testPrefix}-management-toolbar`}>
+        <SearchInput data-testid={`${testPrefix}-search-input`} className={cn("w-full sm:w-80", compactManagement && "h-8 text-[13px] sm:min-w-80 sm:flex-1")} placeholder={searchPlaceholder} value={search} onChange={(e) => setSearch(e.target.value)} />
         {filters.map((filter) => (
           <select
             key={filter.key}
             data-testid={`${testPrefix}-filter-${filter.key}`}
-            className={cn("h-8 rounded-md border border-input bg-background px-2.5 text-sm text-foreground", compactManagement && "text-xs")}
+            className={cn("h-8 rounded-md border border-input bg-background px-2.5 text-sm text-foreground", compactManagement && "text-[13px]")}
             value={filterValues[filter.key] || ""}
             onChange={(e) => setFilterValues((current) => ({ ...current, [filter.key]: e.target.value }))}
           >
@@ -321,22 +325,22 @@ export default function CrudPage({
           </select>
         ))}
         {compactManagement && hasActiveFilters && <Button type="button" size="sm" variant="ghost" className="h-8 gap-1 px-2 text-xs" onClick={clearFilters} data-testid={`${testPrefix}-clear-filters`}><X className="h-3.5 w-3.5" />{tr("مسح", "Clear")}</Button>}
-        {compactManagement && <span className="ms-auto text-[10.5px] text-muted-foreground">{tr("ظاهر", "Showing")} <b className="text-foreground tabular-nums">{filtered.length}</b> / {rows.length}</span>}
+        {compactManagement && <span className="ms-auto text-[11px] text-muted-foreground">{tr("ظاهر", "Showing")} <b className="text-foreground tabular-nums">{filtered.length}</b> / {rows.length}</span>}
       </div>
 
-      <div className={cn("overflow-auto border bg-card", compactManagement ? "max-h-[calc(100dvh-190px)] rounded-md" : "max-h-[calc(100vh-240px)] rounded-lg")}>
+      <div className={cn("overflow-auto border bg-card", compactManagement ? "max-h-[calc(100dvh-149px)]" : "max-h-[calc(100vh-240px)] rounded-lg")} data-testid={`${testPrefix}-table-viewport`}>
         <Table>
           <TableHeader className="sticky top-0 z-10">
-            <TableRow className={cn("bg-muted/90", compactManagement && "h-8")}>
+            <TableRow className={cn("bg-muted/90", compactManagement && "h-[30px]")}>
               {columns.map((c) => (
                 <TableHead
                   key={c.key}
-                  className={cn("whitespace-nowrap text-start text-[11px] font-bold uppercase tracking-wide text-muted-foreground", compactManagement && "h-8 px-2", c.hideOnMobile && "hidden md:table-cell")}
+                  className={cn("whitespace-nowrap text-start text-[11px] font-bold uppercase tracking-wide text-muted-foreground", compactManagement && "h-[30px] px-2", c.hideOnMobile && "hidden md:table-cell")}
                 >
                   {c.label}
                 </TableHead>
               ))}
-              <TableHead className={cn("w-24 text-start text-[11px] font-bold uppercase tracking-wide text-muted-foreground", compactManagement && "h-8 px-2")}>{tr("إجراءات", "Actions")}</TableHead>
+              <TableHead className={cn("w-20 text-start text-[11px] font-bold uppercase tracking-wide text-muted-foreground", compactManagement && "h-[30px] px-2")}>{tr("إجراءات", "Actions")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -348,7 +352,7 @@ export default function CrudPage({
               filtered.map((row) => (
                 <TableRow
                   key={row.id}
-                  className={cn(compactManagement ? "h-8 hover:bg-muted/40" : "h-9 hover:bg-muted/50", renderDrawer && "cursor-pointer")}
+                  className={cn(compactManagement ? "h-[34px] hover:bg-muted/40" : "h-9 hover:bg-muted/50", renderDrawer && "cursor-pointer")}
                   data-testid={`${testPrefix}-row`}
                   onClick={renderDrawer ? () => setDrawerRow(row) : undefined}
                 >
@@ -358,7 +362,7 @@ export default function CrudPage({
                       <TableCell
                         key={c.key}
                         className={cn(
-                          compactManagement ? "px-2 py-0.5 text-xs" : "py-1 text-sm",
+                          compactManagement ? "px-2 py-0.5 text-[13px] leading-4" : "py-1 text-sm",
                           c.hideOnMobile && "hidden md:table-cell",
                           c.truncate ? "max-w-[220px] truncate" : "whitespace-nowrap",
                           c.className,
@@ -373,6 +377,7 @@ export default function CrudPage({
                   <TableCell className={compactManagement ? "px-2 py-0.5" : "py-1.5"} onClick={(e) => e.stopPropagation()}>
                     <ActionMenu
                       testId={`${testPrefix}-actions`}
+                      className={compactManagement ? "h-7 w-7" : undefined}
                       actions={[
                         renderDrawer && { label: tr("عرض التفاصيل", "View details"), icon: <Eye className="me-2 h-3.5 w-3.5" />, onSelect: () => setDrawerRow(row), testId: `${testPrefix}-view-button` },
                         rowAction && { label: rowAction.label, onSelect: () => rowAction.onClick(row), testId: `${testPrefix}-row-action` },

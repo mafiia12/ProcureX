@@ -69,6 +69,32 @@ test("main sidebar can be collapsed and expanded from the dashboard header", asy
   container.remove();
 });
 
+test("mobile navigation opens as an off-canvas drawer without consuming workspace width", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = jest.fn(() => ({ matches: true }));
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  await act(async () => { root.render(<Layout />); });
+  const sidebar = container.querySelector('[data-testid="sidebar"]');
+  const toggle = container.querySelector('[data-testid="sidebar-toggle"]');
+  expect(sidebar.classList.contains("translate-x-full")).toBe(true);
+  expect(container.querySelector('[data-testid="dashboard-content"]').parentElement.parentElement.className).toContain("md:ms-60");
+
+  await act(async () => toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  expect(sidebar.classList.contains("translate-x-0")).toBe(true);
+  const backdrop = container.querySelector('[aria-label="إغلاق القائمة الرئيسية"]');
+  expect(backdrop).not.toBeNull();
+
+  await act(async () => backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  expect(sidebar.classList.contains("translate-x-full")).toBe(true);
+
+  await act(async () => root.unmount());
+  container.remove();
+  window.matchMedia = originalMatchMedia;
+});
+
 test("shared navigation does not expose the removed construction calculator", async () => {
   const container = document.createElement("div");
   document.body.appendChild(container);

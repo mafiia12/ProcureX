@@ -280,12 +280,17 @@ test("reopens a multi-supplier comparison and renders core columns and highlight
   expect(container.textContent).toContain("المورد غير المتاح");
   const commandBar = container.querySelector('[data-testid="comparison-command-bar"]');
   expect(commandBar).not.toBeNull();
-  expect(commandBar.classList.contains("py-1.5")).toBe(true);
+  expect(commandBar.classList.contains("py-1")).toBe(true);
   expect(container.querySelector('[data-testid="comparison-save"]').classList.contains("h-7")).toBe(true);
-  expect(container.querySelector('[data-testid="compact-workflow"]').textContent).toContain("CMP ●");
+  expect(container.querySelector('[data-testid="compact-workflow"]').textContent).toContain("المرحلة: المقارنة");
   expect(container.textContent).toContain("مصفوفة الأسعار");
   for (const section of ["3 — مقارنة المنتجات", "4 — ملخص الموردين", "5 — ملخص الشراء المختلط والتوفير"]) expect(container.textContent).toContain(section);
   expect(container.querySelectorAll('[data-testid="supplier-offer-card"]')).toHaveLength(2);
+  const mobileList = container.querySelector('[data-testid="mobile-comparison-list"]');
+  expect(mobileList).not.toBeNull();
+  expect(mobileList.classList.contains("sm:hidden")).toBe(true);
+  expect(mobileList.querySelectorAll('[data-testid="mobile-comparison-row"]')).toHaveLength(2);
+  expect(mobileList.querySelector('[data-testid^="mobile-inline-unit-price-"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="select-cheapest-complete-offer"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="offers-category-filter"] option[value="رئيسي"]')).not.toBeNull();
   await act(async () => container.querySelector('[data-testid="comparison-print"]').click());
@@ -394,15 +399,16 @@ test("cheapest complete action selects every eligible row and excludes an incomp
   await act(async () => { root.render(<SupplierPriceComparison initialComparison={twoItemDetail} />); await new Promise((resolve) => setTimeout(resolve, 30)); });
 
   const matrix = container.querySelector('[data-testid="comparison-matrix"]');
-  expect(matrix.classList.contains("max-h-[calc(100dvh-18rem)]")).toBe(true);
-  expect(matrix.classList.contains("sm:max-h-[calc(100dvh-15rem)]")).toBe(true);
+  expect(matrix.classList.contains("min-h-0")).toBe(true);
+  expect(matrix.classList.contains("flex-1")).toBe(true);
+  expect(container.querySelector('[data-testid="comparison-workspace"]').classList.contains("h-[calc(100dvh-69px)]")).toBe(true);
   expect(matrix.querySelectorAll('[data-testid="complete-offer-badge"]')).toHaveLength(1);
   expect(matrix.querySelectorAll('[data-testid="incomplete-offer-badge"]')).toHaveLength(1);
   expect(matrix.querySelectorAll('[data-testid="lowest-offer-badge"]')).toHaveLength(1);
   expect(matrix.querySelectorAll('[data-testid="not-offered-badge"]')).toHaveLength(1);
   expect(matrix.querySelectorAll('[data-testid="supplier-offer-summary"]')).toHaveLength(2);
   const priceInput = matrix.querySelector('[data-testid^="inline-unit-price-"]');
-  expect(priceInput.classList.contains("h-6")).toBe(true);
+  expect(priceInput.classList.contains("h-7")).toBe(true);
   expect(priceInput.classList.contains("tabular-nums")).toBe(true);
   const itemCell = [...matrix.children[0].children]
     .find((element) => element.style.gridColumn === "1" && element.style.gridRow === "2");
@@ -417,15 +423,13 @@ test("cheapest complete action selects every eligible row and excludes an incomp
   expect(supplierHeader.classList.contains("top-0")).toBe(true);
   expect(container.querySelector('[data-testid="supplier-pager"]').textContent).toContain("1–2 من 2");
   const decisionBar = container.querySelector('[data-testid="comparison-summary-bar"]');
-  expect(decisionBar.classList.contains("sticky")).toBe(true);
-  expect(decisionBar.classList.contains("bottom-0")).toBe(true);
-  expect(decisionBar.classList.contains("w-full")).toBe(true);
-  expect(decisionBar.className).toContain("safe-area-inset-bottom");
+  expect(decisionBar.classList.contains("sticky")).toBe(false);
+  expect(decisionBar.classList.contains("shrink-0")).toBe(true);
   const summaryMetrics = container.querySelector('[data-testid="comparison-summary-metrics"]');
   expect(summaryMetrics.classList.contains("overflow-x-auto")).toBe(true);
   expect(container.querySelector('[data-testid="comparison-summary-send"]').classList.contains("shrink-0")).toBe(true);
-  expect(container.querySelector('[data-testid="supplier-price-comparison-page"]').classList.contains("pb-16")).toBe(true);
-  expect(matrix.classList.contains("scroll-pb-16")).toBe(true);
+  expect(container.querySelector('[data-testid="supplier-price-comparison-page"]').classList.contains("pb-16")).toBe(false);
+  expect(matrix.classList.contains("scroll-pb-16")).toBe(false);
 
   await act(async () => container.querySelector('[data-testid="select-cheapest-complete-offer"]').click());
   const completeCard = [...container.querySelectorAll('[data-testid="supplier-offer-card"]')]

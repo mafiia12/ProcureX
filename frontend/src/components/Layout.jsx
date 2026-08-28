@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -81,6 +81,10 @@ export default function Layout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true",
   );
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileMode, setMobileMode] = useState(
+    () => window.matchMedia?.("(max-width: 767px)").matches || false,
+  );
   const isErpUser = user?.account_type === "erp";
   const isAdmin = isErpUser && user?.role === "admin";
   const handleLogout = () => {
@@ -94,6 +98,22 @@ export default function Layout() {
       return nextValue;
     });
   };
+  const handleMenuToggle = () => {
+    if (mobileMode) {
+      setMobileSidebarOpen((open) => !open);
+      return;
+    }
+    toggleSidebar();
+  };
+  useEffect(() => { setMobileSidebarOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    const media = window.matchMedia?.("(max-width: 767px)");
+    if (!media) return undefined;
+    const updateMode = () => setMobileMode(media.matches);
+    updateMode();
+    media.addEventListener?.("change", updateMode);
+    return () => media.removeEventListener?.("change", updateMode);
+  }, []);
   const visibleGroups = NAV_GROUPS.map((group) => ({
     ...group,
     items: group.items.filter((item) => !item.adminOnly || isAdmin),
@@ -112,25 +132,33 @@ export default function Layout() {
     (location.pathname.includes("/documents/")
       ? NAV.find((n) => n.key === "incoming")
       : null);
+  const isDenseWorkspace = [
+    "/items",
+    "/suppliers",
+    "/supplier-price-comparison",
+  ].includes(location.pathname);
   return (
     <div className="flex min-h-screen bg-background">
+      {mobileSidebarOpen && <button type="button" className="fixed inset-0 z-20 bg-black/45 md:hidden" onClick={() => setMobileSidebarOpen(false)} aria-label={tr("إغلاق القائمة الرئيسية", "Close main menu")} />}
       <aside
         id="main-sidebar"
-        className={`shrink-0 border-e bg-card flex flex-col fixed inset-y-0 start-0 z-30 overflow-hidden transition-[width] duration-300 ${
-          sidebarCollapsed ? "w-16" : "w-60"
-        }`}
+        className={`fixed inset-y-0 start-0 z-30 flex w-60 shrink-0 flex-col overflow-hidden border-e bg-card transition-[width,transform] duration-300 md:translate-x-0 ${
+          sidebarCollapsed ? "md:w-16" : "md:w-60"
+        } ${mobileSidebarOpen ? "translate-x-0" : direction === "rtl" ? "translate-x-full" : "-translate-x-full"}`}
         data-testid="sidebar"
         data-collapsed={sidebarCollapsed}
+        aria-hidden={mobileMode && !mobileSidebarOpen ? true : undefined}
+        inert={mobileMode && !mobileSidebarOpen ? true : undefined}
       >
         <div
           className={`flex items-center border-b py-4 ${
-            sidebarCollapsed ? "justify-center px-2" : "gap-3 px-4"
+            sidebarCollapsed ? "gap-3 px-4 md:justify-center md:gap-0 md:px-2" : "gap-3 px-4"
           }`}
         >
           <div className="h-9 w-9 bg-primary flex items-center justify-center">
             <Building2 className="h-5 w-5 text-white" />
           </div>
-          {!sidebarCollapsed && <div>
+          {(!sidebarCollapsed || mobileSidebarOpen) && <div>
             <div
               className="text-sm font-bold leading-tight text-foreground"
               style={{ fontFamily: "Cairo" }}
@@ -142,14 +170,14 @@ export default function Layout() {
         </div>
         {isErpUser && (
           <div
-            className={`${sidebarCollapsed ? "px-2" : "px-4"} border-b py-3`}
+            className={`${sidebarCollapsed ? "px-4 md:px-2" : "px-4"} border-b py-3`}
             data-testid="sidebar-user"
           >
-            <div className={`flex items-center min-w-0 ${sidebarCollapsed ? "justify-center" : "gap-2"}`}>
+            <div className={`flex items-center min-w-0 ${sidebarCollapsed ? "gap-2 md:justify-center md:gap-0" : "gap-2"}`}>
               <div className="flex h-8 w-8 shrink-0 items-center justify-center border bg-muted">
                 <UserRound className="h-4 w-4 text-muted-foreground" />
               </div>
-              {!sidebarCollapsed && <div className="min-w-0">
+              {(!sidebarCollapsed || mobileSidebarOpen) && <div className="min-w-0">
                 <div className="truncate text-sm font-bold text-foreground" data-testid="sidebar-user-name">
                   {user.display_name || user.username}
                 </div>
@@ -165,27 +193,28 @@ export default function Layout() {
               title={sidebarCollapsed ? tr("تسجيل الخروج", "Sign out") : undefined}
               aria-label={tr("تسجيل الخروج", "Sign out")}
               className={`mt-2 flex w-full items-center justify-center rounded-md border py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive ${
-                sidebarCollapsed ? "px-1" : "gap-1.5"
+                sidebarCollapsed ? "gap-1.5 px-1 md:gap-0" : "gap-1.5"
               }`}
             >
               <LogOut className="h-3.5 w-3.5" />
-              {!sidebarCollapsed && tr("تسجيل الخروج", "Sign out")}
+              {(!sidebarCollapsed || mobileSidebarOpen) && tr("تسجيل الخروج", "Sign out")}
             </button>
           </div>
         )}
         <nav className="flex-1 overflow-y-auto px-2 py-2 scrollbar-thin">
           {visibleGroups.map((group, groupIndex) => <div key={group.key} className={groupIndex ? "mt-3" : ""}>
-            {!sidebarCollapsed && <div className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{tr(...group.label)}</div>}
+            {(!sidebarCollapsed || mobileSidebarOpen) && <div className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{tr(...group.label)}</div>}
             <div className="space-y-0.5">{group.items.map(({ to, key, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
+              onClick={() => setMobileSidebarOpen(false)}
               data-testid={`nav-${to === "/" ? "dashboard" : to.slice(1)}`}
               title={sidebarCollapsed ? t(`nav.${key}`) : undefined}
               aria-label={t(`nav.${key}`)}
               className={({ isActive }) =>
                 `flex items-center py-1.5 text-sm transition-colors duration-200 ${
-                  sidebarCollapsed ? "justify-center px-2" : "gap-3 px-3"
+                  sidebarCollapsed ? "gap-3 px-3 md:justify-center md:gap-0 md:px-2" : "gap-3 px-3"
                 } ${
                   isActive
                     ? "bg-primary text-primary-foreground font-bold"
@@ -194,11 +223,11 @@ export default function Layout() {
               }
             >
               <Icon className="h-4 w-4 shrink-0" />
-              {!sidebarCollapsed && t(`nav.${key}`)}
+              {(!sidebarCollapsed || mobileSidebarOpen) && t(`nav.${key}`)}
             </NavLink>
           ))}</div></div>)}
         </nav>
-        {!sidebarCollapsed && (
+        {(!sidebarCollapsed || mobileSidebarOpen) && (
           <div className="border-t px-4 py-2.5 text-[11px] text-muted-foreground">
             © RE DECOR & MORE
           </div>
@@ -206,17 +235,17 @@ export default function Layout() {
       </aside>
       <div
         className={`flex-1 flex flex-col min-w-0 transition-[margin] duration-300 ${
-          sidebarCollapsed ? "ms-16" : "ms-60"
+          sidebarCollapsed ? "md:ms-16" : "md:ms-60"
         }`}
       >
         <header className="sticky top-0 z-20 flex items-center justify-between border-b bg-card/95 px-4 py-2.5 backdrop-blur md:px-5">
           <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
-              onClick={toggleSidebar}
+              onClick={handleMenuToggle}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-controls="main-sidebar"
-              aria-expanded={!sidebarCollapsed}
+              aria-expanded={mobileMode ? mobileSidebarOpen : !sidebarCollapsed}
               aria-label={sidebarCollapsed ? t("expandMenu") : t("collapseMenu")}
               title={sidebarCollapsed ? t("expandMenu") : t("collapseMenu")}
               data-testid="sidebar-toggle"
@@ -243,7 +272,9 @@ export default function Layout() {
             <PreferenceControls compact />
           </div>
         </header>
-        <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-4 md:px-5 md:py-5">
+        <main className={`mx-auto w-full max-w-[1600px] flex-1 ${
+          isDenseWorkspace ? "px-3 py-2 md:px-4 md:py-2" : "px-4 py-4 md:px-5 md:py-5"
+        }`}>
           <Outlet />
         </main>
       </div>
