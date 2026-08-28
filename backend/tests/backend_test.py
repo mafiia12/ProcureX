@@ -69,8 +69,8 @@ from server import (  # noqa: E402
 )
 from database import (  # noqa: E402
     Base, BusinessCodeSequence, Item, LocalCollection, Payment, Purchase,
-    Project, PurchaseOrder, PurchaseOrderItem, PurchaseOrderPayment, Supplier,
-    PurchaseOrderReceipt, SessionLocal,
+    PriceHistory, Project, PurchaseOrder, PurchaseOrderItem, PurchaseOrderPayment,
+    Supplier, PurchaseOrderReceipt, SessionLocal,
 )
 from document_capture.domain import ExtractedLineItem, OCRResult  # noqa: E402
 from document_capture.jobs import run_once  # noqa: E402
@@ -5892,6 +5892,159 @@ def test_quotation_lines_remain_linked_to_source_ids(s):
     assert history_line["unit_price"] == 55.5
     assert history_line["adjusted_unit_price"] == 56.94
     assert history_line["comparison_number"] == ""
+
+
+def _received_quotation_for_item(
+    client, suffix, responsible_headers, unit_price, quotation_date="", item_id=None,
+):
+    """Create RFQ -> supplier -> a *received* quotation with one priced
+    line, against an isolated item (own id, not shared with other tests
+    unless `item_id` is passed to deliberately reuse one). Returns
+    (item_id, supplier, rfq, quotation)."""
+    request_id, _request_number, _project_id, line_id, _ = _make_pricing_request(client, suffix)
+    if item_id:
+        with SessionLocal() as session:
+            line = session.get(IncomingPurchaseRequestItem, line_id)
+            line.item_id = item_id
+            session.commit()
+    rfq = client.post(
+        RFQ_API, headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"source_request_id": request_id},
+    ).json()["rfq"]
+    supplier = client.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
+    client.post(
+        f"{RFQ_API}/{rfq['id']}/suppliers", headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"supplier_id": supplier["id"]},
+    )
+    quotation = client.post(
+        f"{RFQ_API}/{rfq['id']}/quotations", headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"supplier_id": supplier["id"]},
+    ).json()["quotation"]
+    rfq_item_id = rfq["items"][0]["id"]
+    resolved_item_id = rfq["items"][0]["item_id"]
+    body = {
+        "quotation_ref": f"QT-{suffix}", "status": "received",
+        "lines": [{
+            "rfq_item_id": rfq_item_id, "quantity": 3, "unit": "قطعة",
+            "unit_price": unit_price, "discount_pct": 0, "tax_pct": 0,
+            "availability": "available",
+        }],
+    }
+    if quotation_date:
+        body["quotation_date"] = quotation_date
+    updated = client.put(
+        f"{RFQ_API}/{rfq['id']}/quotations/{quotation['id']}",
+        headers={**INTERNAL_HEADERS, **responsible_headers}, json=body,
+    )
+    assert updated.status_code == 200, updated.text
+    return resolved_item_id, supplier, rfq, quotation
+
+
+def test_item_last_formal_price_comes_from_received_quotation(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-formal-item-{suffix}", role="procurement_responsible")
+        own_item_id = _make_portal_item(session, suffix)
+    responsible_headers = _login_headers(s, f"rfq-formal-item-{suffix}")
+    item_id, supplier, _rfq, _quotation = _received_quotation_for_item(
+        s, suffix, responsible_headers, unit_price=1250, quotation_date="2026-08-10",
+        item_id=own_item_id,
+    )
+    assert item_id == own_item_id
+
+    items = s.get(f"{API}/items", headers=responsible_headers).json()
+    item = next(row for row in items if row["id"] == item_id)
+    assert item["last_formal_price"] == 1250
+    assert item["last_formal_supplier"] == supplier["name"]
+    assert item["last_formal_date"] == "2026-08-10"
+
+
+def test_item_last_formal_price_ignores_legacy_price_history(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-legacy-{suffix}", role="procurement_responsible")
+        item_id = _make_portal_item(session, suffix)
+        item = session.get(Item, item_id)
+        session.add(PriceHistory(
+            id=str(uuid.uuid4()), record_no=10_000_000 + int(suffix, 16) % 1_000_000,
+            date="2026-01-01", item_code=item.code, supplier="مورد شراء مباشر قديم",
+            quantity=1, unit_price=9999, final_price=9999,
+        ))
+        session.commit()
+    responsible_headers = _login_headers(s, f"rfq-legacy-{suffix}")
+
+    items = s.get(f"{API}/items", headers=responsible_headers).json()
+    item_row = next(row for row in items if row["id"] == item_id)
+    # The legacy direct-purchase price still fills the old "last_price"
+    # field (untouched), but must never leak into last_formal_price.
+    assert item_row["last_price"] == 9999
+    assert item_row["last_formal_price"] is None
+    assert item_row["last_formal_supplier"] == ""
+
+
+def test_item_without_any_quotation_has_empty_formal_price(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        admin_username = _make_admin(session, suffix)
+        item_id = _make_portal_item(session, suffix)
+    admin_headers = _login_headers(s, admin_username)
+
+    items = s.get(f"{API}/items", headers=admin_headers).json()
+    item_row = next(row for row in items if row["id"] == item_id)
+    assert item_row["last_formal_price"] is None
+    assert item_row["last_formal_supplier"] == ""
+    assert item_row["last_formal_date"] == ""
+
+
+def test_last_formal_prices_endpoint_returns_price_for_matching_supplier_and_item(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-cmp-price-{suffix}", role="procurement_responsible")
+        own_item_id = _make_portal_item(session, suffix)
+    responsible_headers = _login_headers(s, f"rfq-cmp-price-{suffix}")
+    item_id, supplier, _rfq, _quotation = _received_quotation_for_item(
+        s, suffix, responsible_headers, unit_price=1250, quotation_date="2026-08-10",
+        item_id=own_item_id,
+    )
+
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id}:{supplier['id']},{item_id}:no-such-supplier"},
+    )
+    assert response.status_code == 200, response.text
+    prices = response.json()["prices"]
+    assert prices[f"{item_id}|{supplier['id']}"]["unit_price"] == 1250
+    assert prices[f"{item_id}|{supplier['id']}"]["date"] == "2026-08-10"
+    assert f"{item_id}|no-such-supplier" not in prices
+
+
+def test_last_formal_price_uses_the_most_recent_received_quotation(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-latest-{suffix}", role="procurement_responsible")
+        own_item_id = _make_portal_item(session, suffix)
+    responsible_headers = _login_headers(s, f"rfq-latest-{suffix}")
+    # Two independent RFQs/quotations against the *same* isolated item and
+    # supplier - only the newer quotation_date should win.
+    old_item_id, old_supplier, _rfq1, _q1 = _received_quotation_for_item(
+        s, f"{suffix}-old", responsible_headers, unit_price=1000, quotation_date="2026-01-01",
+        item_id=own_item_id,
+    )
+    new_item_id, new_supplier, _rfq2, _q2 = _received_quotation_for_item(
+        s, f"{suffix}-new", responsible_headers, unit_price=1400, quotation_date="2026-08-10",
+        item_id=own_item_id,
+    )
+    assert old_item_id == new_item_id == own_item_id
+    assert old_supplier["id"] == new_supplier["id"]
+
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{new_item_id}:{new_supplier['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    price = response.json()["prices"][f"{new_item_id}|{new_supplier['id']}"]
+    assert price["unit_price"] == 1400
+    assert price["date"] == "2026-08-10"
 
 
 def test_pdf_attachment_accepted_for_quotation(s):

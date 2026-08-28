@@ -53,7 +53,7 @@ try:
     )
     from .rfq import (
         RequestForQuotation, RFQItem, RFQSupplier, SupplierQuotation,
-        SupplierQuotationLine, router as rfq_router,
+        SupplierQuotationLine, latest_formal_price_by_item, router as rfq_router,
     )
     from .site_portal import router as portal_router
     from .daily_report import router as daily_report_router
@@ -90,7 +90,7 @@ except ImportError:
     )
     from rfq import (
         RequestForQuotation, RFQItem, RFQSupplier, SupplierQuotation,
-        SupplierQuotationLine, router as rfq_router,
+        SupplierQuotationLine, latest_formal_price_by_item, router as rfq_router,
     )
     from site_portal import router as portal_router
     from daily_report import router as daily_report_router
@@ -533,6 +533,20 @@ async def list_items(
         it["last_price"] = rows[-1].get("unit_price") if rows else None
         it["last_date"] = rows[-1].get("date") if rows else None
         it["last_supplier"] = rows[-1].get("supplier", "") if rows else ""
+
+    # "Last formal price" is a distinct, explicitly-sourced figure: the
+    # latest *received* Supplier Quotation line for the item (see
+    # rfq._formal_quotation_rows). It never mixes with the legacy
+    # price_history above (direct-purchase imports, not formal quotations).
+    with SessionLocal() as session:
+        formal_prices = latest_formal_price_by_item(
+            session, {it["id"] for it in items if it.get("id")},
+        )
+    for it in items:
+        formal = formal_prices.get(it["id"])
+        it["last_formal_price"] = formal["unit_price"] if formal else None
+        it["last_formal_supplier"] = formal["supplier_name"] if formal else ""
+        it["last_formal_date"] = formal["date"] if formal else ""
     return items
 
 

@@ -128,7 +128,7 @@ function ComparisonMatrix({
   itemOrder, visibleSupplierGroups, tr, formatMoney, onPrice, onSelectRow, onSelectSupplier,
   onEdit, onDelete, quotationForGroup, canUpload, onUpload, onViewAttachment,
   cheapestSelectableGroup, supplierOptions, onAssignSupplier,
-  onAdjustment,
+  onAdjustment, lastSupplierPrices, onAddToCatalog,
 }) {
   const colCount = Math.max(visibleSupplierGroups.length, 1);
   const footerRow = itemOrder.length + 2;
@@ -145,6 +145,10 @@ function ComparisonMatrix({
           <div key={item.itemKey} className={cn("sticky start-0 z-20 flex min-h-[50px] min-w-0 flex-col justify-center border-b border-e px-2 py-1", rowIndex % 2 ? "bg-muted/15" : "bg-card")} style={{ gridColumn: 1, gridRow: rowIndex + 2 }}>
             <div className="truncate text-[13px] font-bold leading-4 text-foreground" title={item.product_name}>{item.product_name}</div>
             <div className="truncate text-[11px] leading-4 text-muted-foreground">{tr("الكمية", "Qty")}: <span className="tabular-nums">{fmt(item.quantity)}</span> {item.unit}</div>
+            {!item.item_id && <div className="mt-0.5 flex items-center gap-1">
+              <span className="rounded-full border border-dashed px-1.5 py-0 text-[9px] font-semibold text-muted-foreground" data-testid={`manual-item-badge-${item.itemKey}`}>{tr("صنف يدوي", "Manual item")}</span>
+              <button type="button" className="text-[9px] font-semibold text-primary hover:underline" data-testid={`add-to-catalog-${item.itemKey}`} onClick={() => onAddToCatalog(item)}>{tr("إضافة للدليل", "Add to catalog")}</button>
+            </div>}
           </div>
         ))}
         <div className="sticky start-0 z-20 border-t-2 border-e bg-muted px-2 py-1.5 text-[10px] font-bold uppercase tracking-wide text-foreground" style={{ gridColumn: 1, gridRow: footerRow }}>
@@ -209,6 +213,16 @@ function ComparisonMatrix({
                       <Input type="number" min="0" step="0.01" value={row.unit_price || ""} onChange={(event) => onPrice(row.key, event.target.value)} className="h-7 w-20 px-1 text-end font-mono text-[13px] tabular-nums" data-testid={`inline-unit-price-${row.key}`} />
                       <span className="flex-1 text-end font-mono text-[13px] font-bold tabular-nums text-foreground" dir="ltr">{formatMoney(row.final_total)}</span>
                     </div>
+                    {row.item_id && row.supplier_id && (() => {
+                      const lastPrice = lastSupplierPrices[`${row.item_id}|${row.supplier_id}`];
+                      return (
+                        <div className="truncate text-[9.5px] text-muted-foreground" data-testid={`last-supplier-price-${row.key}`}>
+                          {lastPrice
+                            ? tr(`آخر سعر: ${formatMoney(lastPrice.unit_price)} — ${lastPrice.date}`, `Last price: ${formatMoney(lastPrice.unit_price)} — ${lastPrice.date}`)
+                            : tr("لا يوجد سعر سابق", "No previous price")}
+                        </div>
+                      );
+                    })()}
                     <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground">
                       <span className="shrink-0">{row.availability === "available" ? tr("متاح", "Available") : tr("غير متاح", "Unavailable")} · {row.delivery_days || 0}{tr("ي", "d")}</span>
                       {(row.is_lowest_final_total || row.is_unavailable || row.is_incomplete) && <span className="flex min-w-0 items-center gap-1 overflow-hidden">
@@ -428,6 +442,10 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   const [draft, setDraft] = useState(() => ({ ...emptyComparisonRow(), entry_mode: "system" }));
   const [confirmation, setConfirmation] = useState("");
   const [savingMaster, setSavingMaster] = useState(false);
+  const [lastSupplierPrices, setLastSupplierPrices] = useState({});
+  const [catalogTarget, setCatalogTarget] = useState(null);
+  const [catalogForm, setCatalogForm] = useState({ name: "", unit: "", main_category: "", subcategory: "" });
+  const [savingCatalog, setSavingCatalog] = useState(false);
   const savedFingerprintRef = useRef(comparisonFingerprint({
     projectName: initialComparison?.project_name,
     customerName: initialComparison?.customer_name,
@@ -479,6 +497,23 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     () => calculateComparison(rows, items, suppliers, comparisonDate, supplierOffers),
     [rows, items, suppliers, comparisonDate, supplierOffers],
   );
+
+  const lastSupplierPricePairsKey = useMemo(() => {
+    const pairs = new Set();
+    calculations.rows.forEach((row) => {
+      if (row.item_id && row.supplier_id) pairs.add(`${row.item_id}:${row.supplier_id}`);
+    });
+    return [...pairs].sort().join(",");
+  }, [calculations.rows]);
+
+  useEffect(() => {
+    if (!lastSupplierPricePairsKey) { setLastSupplierPrices({}); return; }
+    let cancelled = false;
+    api.get("/price-comparisons/last-formal-prices", { params: { pairs: lastSupplierPricePairsKey } }).then(({ data }) => {
+      if (!cancelled) setLastSupplierPrices(data.prices || {});
+    }).catch(() => { if (!cancelled) setLastSupplierPrices({}); });
+    return () => { cancelled = true; };
+  }, [lastSupplierPricePairsKey]);
   const productFilterOptions = useMemo(() => {
     const unique = new Map();
     calculations.rows.forEach((row) => unique.set(rowItemKey(row), row.product_name));
@@ -1363,6 +1398,46 @@ const toggleDetails = (key) => setExpandedRows((current) => {
     } catch (error) { toast.error(errMsg(error)); }
   };
 
+  const openAddToCatalog = (item) => {
+    setCatalogTarget(item);
+    setCatalogForm({
+      name: item.product_name || "", unit: item.unit || "",
+      main_category: item.main_category || "", subcategory: item.subcategory || "",
+    });
+  };
+  const submitAddToCatalog = async () => {
+    if (!catalogTarget) return;
+    if (!catalogForm.name.trim() || !catalogForm.unit.trim()) {
+      toast.error(tr("اسم الصنف والوحدة مطلوبان", "Item name and unit are required"));
+      return;
+    }
+    setSavingCatalog(true);
+    try {
+      const { data } = await api.post("/items", {
+        name: catalogForm.name.trim(),
+        product_name: catalogForm.name.trim(),
+        main_category: catalogForm.main_category.trim(),
+        subcategory: catalogForm.subcategory.trim(),
+        unit: catalogForm.unit.trim(),
+        brand: catalogTarget.brand || "",
+        specifications: catalogTarget.specifications || "",
+      });
+      setItems((current) => [...current, data]);
+      const targetKey = catalogTarget.itemKey;
+      setRows((current) => current.map((row) => (
+        rowItemKey(row) === targetKey
+          ? { ...row, item_id: data.id, item_code: data.code, manual_product_key: "" }
+          : row
+      )));
+      toast.success(tr(`تم إضافة الصنف للدليل — ${data.code}`, `Item added to catalog — ${data.code}`));
+      setCatalogTarget(null);
+    } catch (error) {
+      toast.error(errMsg(error));
+    } finally {
+      setSavingCatalog(false);
+    }
+  };
+
   const requestSaveToMaster = (kind) => {
     if (kind === "supplier" && !draft.supplier_name.trim()) {
       toast.error(tr("أدخل اسم المورد أولاً", "Enter the supplier name first")); return;
@@ -1564,7 +1639,7 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
           </div>
         </div>
         <div className="flex min-h-0 flex-1 flex-col pt-1" data-testid="vertical-offer-cards">
-          {visibleSupplierGroups.length && filteredItemOrder.length ? <ComparisonMatrix itemOrder={filteredItemOrder} visibleSupplierGroups={visibleSupplierGroups} tr={tr} formatMoney={formatMoney} onPrice={(keyValue, value) => updateRowField(keyValue, "unit_price", value)} onSelectRow={selectForPurchase} onSelectSupplier={selectSupplierOffer} onEdit={editRow} onDelete={deleteRow} quotationForGroup={quotationForGroup} canUpload={canUploadQuotation} onUpload={uploadQuotationAttachments} onViewAttachment={viewQuotationAttachment} cheapestSelectableGroup={cheapestSelectableGroup} supplierOptions={supplierOptions} onAssignSupplier={assignSupplierToGroup} onAdjustment={updateSupplierAdjustment} /> : <EmptyState compact title={tr("لا توجد عروض مطابقة", "No matching offers")} description={rows.length ? tr("غيّر الفلاتر لعرض المصفوفة.", "Adjust the filters to show the matrix.") : tr("أضف الأصناف المؤهلة ثم اختر المورد لكل عمود.", "Add eligible items, then select a supplier for each column.")} />}
+          {visibleSupplierGroups.length && filteredItemOrder.length ? <ComparisonMatrix itemOrder={filteredItemOrder} visibleSupplierGroups={visibleSupplierGroups} tr={tr} formatMoney={formatMoney} onPrice={(keyValue, value) => updateRowField(keyValue, "unit_price", value)} onSelectRow={selectForPurchase} onSelectSupplier={selectSupplierOffer} onEdit={editRow} onDelete={deleteRow} quotationForGroup={quotationForGroup} canUpload={canUploadQuotation} onUpload={uploadQuotationAttachments} onViewAttachment={viewQuotationAttachment} cheapestSelectableGroup={cheapestSelectableGroup} supplierOptions={supplierOptions} onAssignSupplier={assignSupplierToGroup} onAdjustment={updateSupplierAdjustment} lastSupplierPrices={lastSupplierPrices} onAddToCatalog={openAddToCatalog} /> : <EmptyState compact title={tr("لا توجد عروض مطابقة", "No matching offers")} description={rows.length ? tr("غيّر الفلاتر لعرض المصفوفة.", "Adjust the filters to show the matrix.") : tr("أضف الأصناف المؤهلة ثم اختر المورد لكل عمود.", "Add eligible items, then select a supplier for each column.")} />}
         </div>
         {showDetailedTable && <div className="mt-1 max-h-[42%] shrink-0 overflow-auto border" data-testid="detailed-offers-table">
           <table className="w-full table-fixed text-xs">
@@ -1823,6 +1898,37 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
         <DialogContent className="max-w-md" dir={direction} data-testid="save-master-confirmation">
           <DialogHeader><DialogTitle>{tr("تأكيد الحفظ في البيانات الرئيسية", "Confirm saving to master data")}</DialogTitle><DialogDescription>{tr("سيُضاف", "The")} {confirmation === "supplier" ? tr("المورد", "supplier") : tr("المنتج", "product")} {tr("إلى البيانات الرئيسية. لا يحدث هذا تلقائياً.", "will be added to master data. This does not happen automatically.")}</DialogDescription></DialogHeader>
           <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setConfirmation("")}>{tr("إلغاء", "Cancel")}</Button><Button onClick={confirmSaveToMaster} disabled={savingMaster} data-testid="confirm-save-master">{savingMaster ? tr("جارٍ الحفظ", "Saving") : tr("تأكيد الحفظ", "Confirm save")}</Button></div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!catalogTarget} onOpenChange={(open) => !open && setCatalogTarget(null)}>
+        <DialogContent className="max-w-md" dir={direction} data-testid="add-to-catalog-dialog">
+          <DialogHeader>
+            <DialogTitle className="text-start">{tr("إضافة إلى الأصناف", "Add to Item Master")}</DialogTitle>
+            <DialogDescription className="text-start">{tr("راجع بيانات الصنف اليدوي قبل إضافته إلى دليل الأصناف.", "Review the manual item before adding it to the Item Master.")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <FormField label={tr("اسم الصنف", "Item name")}>
+              <Input data-testid="catalog-form-name" value={catalogForm.name} onChange={(event) => setCatalogForm({ ...catalogForm, name: event.target.value })} />
+            </FormField>
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label={tr("الوحدة", "Unit")}>
+                <Input data-testid="catalog-form-unit" value={catalogForm.unit} onChange={(event) => setCatalogForm({ ...catalogForm, unit: event.target.value })} />
+              </FormField>
+              <FormField label={tr("التصنيف الرئيسي", "Main category")}>
+                <Input list="catalog-main-category-options" data-testid="catalog-form-main-category" value={catalogForm.main_category} onChange={(event) => setCatalogForm({ ...catalogForm, main_category: event.target.value, subcategory: "" })} />
+                <datalist id="catalog-main-category-options">{categoryChoices.filter((option) => option.value).map((option) => <option key={option.value} value={option.label} />)}</datalist>
+              </FormField>
+              <FormField label={tr("التصنيف الفرعي", "Subcategory")} className="col-span-2">
+                <Input list="catalog-subcategory-options" data-testid="catalog-form-subcategory" value={catalogForm.subcategory} onChange={(event) => setCatalogForm({ ...catalogForm, subcategory: event.target.value })} />
+                <datalist id="catalog-subcategory-options">{subcategoryOptions(items, catalogForm.main_category).filter((option) => option.value).map((option) => <option key={option.value} value={option.label} />)}</datalist>
+              </FormField>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setCatalogTarget(null)}>{tr("إلغاء", "Cancel")}</Button>
+            <Button onClick={submitAddToCatalog} disabled={savingCatalog} data-testid="catalog-form-submit">{savingCatalog ? tr("جارٍ الإضافة...", "Adding...") : tr("إضافة إلى الأصناف", "Add to Item Master")}</Button>
+          </div>
         </DialogContent>
       </Dialog>
 

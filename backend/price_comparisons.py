@@ -41,6 +41,7 @@ try:
         SessionLocal,
         Supplier,
     )
+    from .rfq import latest_formal_price_by_item_supplier
 except ImportError:
     from commercial_totals import calculate_supplier_total
     from auth.models import User
@@ -55,6 +56,7 @@ except ImportError:
         SessionLocal,
         Supplier,
     )
+    from rfq import latest_formal_price_by_item_supplier
 
 
 router = APIRouter(prefix="/price-comparisons", tags=["supplier-price-comparisons"])
@@ -1001,6 +1003,36 @@ def _replace_supplier_offers(
             shipping_cost=_number(source.get("shipping_cost")),
             other_cost=_number(source.get("other_cost")),
         ))
+
+
+@router.get("/last-formal-prices")
+def last_formal_prices(
+    pairs: str = "", current_user: User = Depends(require_erp_role()),
+):
+    """Bulk, read-only lookup for the comparison screen: latest formal
+    (received supplier quotation) price per (item, supplier) pair, one
+    query for the whole screen instead of one per row.
+
+    `pairs` is a comma-separated list of "item_id:supplier_id" tokens
+    (both are plain uuid4 strings, so ":" / "," are safe delimiters).
+    """
+    parsed_pairs = set()
+    for token in pairs.split(",")[:500]:
+        item_id, _, supplier_id = token.partition(":")
+        if item_id and supplier_id:
+            parsed_pairs.add((item_id, supplier_id))
+    with SessionLocal() as session:
+        formal_prices = latest_formal_price_by_item_supplier(session, parsed_pairs)
+    return {
+        "prices": {
+            f"{item_id}|{supplier_id}": {
+                "unit_price": row["unit_price"],
+                "date": row["date"],
+                "quotation_id": row["quotation_id"],
+            }
+            for (item_id, supplier_id), row in formal_prices.items()
+        }
+    }
 
 
 @router.get("")

@@ -36,8 +36,9 @@ function ItemDrawer({ item, tr, onEdit, onViewHistory }) {
       <section>
         <h3 className="mb-2 text-xs font-bold text-muted-foreground">{tr("بيانات الشراء", "Procurement info")}</h3>
         <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
-          <DetailRow label={tr("آخر سعر عرض رسمي", "Last formal price")} value={item.last_price != null ? fmtEGP(item.last_price) : "-"} />
-          <DetailRow label={tr("آخر مورد", "Last supplier")} value={item.last_supplier} />
+          <DetailRow label={tr("آخر سعر رسمي", "Last formal price")} value={item.last_formal_price != null ? fmtEGP(item.last_formal_price) : tr("لا يوجد سعر سابق", "No previous price")} />
+          <DetailRow label={tr("المورد", "Supplier")} value={item.last_formal_supplier} />
+          <DetailRow label={tr("التاريخ", "Date")} value={item.last_formal_date} />
           <DetailRow label={tr("المورد المفضل", "Preferred supplier")} value={item.preferred_supplier} />
         </dl>
       </section>
@@ -72,8 +73,8 @@ export default function Items() {
         { key: "product_name", label: tr("اسم الصنف", "Item Name"), truncate: true },
         { key: "main_category", label: tr("التصنيف الرئيسي", "Main Category"), hideOnMobile: true, truncate: true },
         { key: "unit", label: tr("الوحدة", "Unit") },
-        { key: "last_price", label: tr("آخر سعر عرض رسمي", "Last Formal Quoted Price"), hideOnMobile: true, render: (r) => (r.last_price != null ? fmtEGP(r.last_price) : "-") },
-        { key: "last_supplier", label: tr("آخر / مورد مفضل", "Last / Preferred Supplier"), hideOnMobile: true, truncate: true, render: (r) => r.last_supplier || r.preferred_supplier || "-" },
+        { key: "last_formal_price", label: tr("آخر سعر رسمي", "Last Formal Price"), hideOnMobile: true, render: (r) => (r.last_formal_price != null ? fmtEGP(r.last_formal_price) : "-") },
+        { key: "last_formal_supplier", label: tr("آخر مورد رسمي", "Last Formal Supplier"), hideOnMobile: true, truncate: true, render: (r) => r.last_formal_supplier || r.preferred_supplier || "-" },
       ]}
       filters={[
         { key: "main_category", label: tr("التصنيف", "Category"), allLabel: tr("كل التصنيفات", "All categories") },

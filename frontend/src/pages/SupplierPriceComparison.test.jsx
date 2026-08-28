@@ -818,3 +818,117 @@ test("save-to-master remains separate and requires explicit confirmation", async
   await act(async () => root.unmount());
   container.remove();
 });
+
+const findRowCellByItemName = (container, name) => {
+  const matrix = container.querySelector('[data-testid="comparison-matrix"]');
+  const itemCell = [...matrix.children[0].children]
+    .find((el) => el.textContent.includes(name) && el.style.gridColumn === "1");
+  return itemCell;
+};
+
+test("a manual (not-in-catalog) item shows a badge and add-to-catalog button; a linked item does not", async () => {
+  const manualDetail = {
+    ...detail,
+    rows: [{ ...detail.rows[0], item_id: "", item_code: "", manual_product_key: "manual-key-1", product_name: "صنف يدوي بدون دليل" }],
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison initialComparison={manualDetail} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const manualCell = findRowCellByItemName(container, "صنف يدوي بدون دليل");
+  expect(manualCell.textContent).toContain("صنف يدوي");
+  expect(manualCell.querySelector('[data-testid^="add-to-catalog-"]')).not.toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("a catalog-linked item never shows the add-to-catalog button", async () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison initialComparison={detail} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const linkedCell = findRowCellByItemName(container, "منتج اختبار");
+  expect(linkedCell.querySelector('[data-testid^="add-to-catalog-"]')).toBeNull();
+  expect(linkedCell.textContent).not.toContain("صنف يدوي");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("adding a manual item to the catalog links the existing row without losing it", async () => {
+  const manualDetail = {
+    ...detail,
+    rows: [{ ...detail.rows[0], item_id: "", item_code: "", manual_product_key: "manual-key-2", product_name: "صنف يدوي للربط", main_category: "دهانات", subcategory: "دهانات داخلية", unit: "جالون" }],
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison initialComparison={manualDetail} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  await act(async () => {
+    findRowCellByItemName(container, "صنف يدوي للربط")
+      .querySelector('[data-testid^="add-to-catalog-"]').click();
+  });
+  expect(document.querySelector('[data-testid="add-to-catalog-dialog"]')).not.toBeNull();
+  expect(document.querySelector('[data-testid="catalog-form-name"]').value).toBe("صنف يدوي للربط");
+  expect(document.querySelector('[data-testid="catalog-form-unit"]').value).toBe("جالون");
+
+  await act(async () => {
+    document.querySelector('[data-testid="catalog-form-submit"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+
+  expect(mockPost).toHaveBeenCalledWith("/items", expect.objectContaining({
+    name: "صنف يدوي للربط", main_category: "دهانات", subcategory: "دهانات داخلية", unit: "جالون",
+  }));
+  // The row survives the conversion (not dropped/recreated) and now points
+  // at the newly created master item - the badge/button disappear.
+  expect(container.querySelectorAll('[data-testid="comparison-row"]')).toHaveLength(1);
+  expect(container.textContent).toContain("صنف يدوي للربط");
+  const linkedCell = findRowCellByItemName(container, "صنف يدوي للربط");
+  expect(linkedCell.querySelector('[data-testid^="add-to-catalog-"]')).toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("the comparison matrix shows the last formal price for the same supplier and item, and an explicit empty state otherwise", async () => {
+  mockGet.mockImplementation((url, config) => {
+    if (url === "/price-comparisons/last-formal-prices") {
+      return Promise.resolve({ data: { prices: {
+        "item-1|supplier-1": { unit_price: 1250, date: "2026-08-10", quotation_id: "q-1" },
+      } } });
+    }
+    return getResponse(url, config);
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SupplierPriceComparison initialComparison={detail} />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const priceCells = container.querySelectorAll('[data-testid^="last-supplier-price-"]');
+  expect(priceCells.length).toBe(2);
+  const withPrice = [...priceCells].find((el) => el.textContent.includes("1250.00"));
+  const withoutPrice = [...priceCells].find((el) => el.textContent.includes("لا يوجد سعر سابق"));
+  expect(withPrice).toBeTruthy();
+  expect(withPrice.textContent).toContain("2026-08-10");
+  expect(withoutPrice).toBeTruthy();
+
+  await act(async () => root.unmount());
+  container.remove();
+});

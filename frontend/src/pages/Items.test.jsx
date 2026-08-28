@@ -28,6 +28,7 @@ const itemRow = {
   specifications: "مواصفات تجريبية", notes: "ملاحظة", name: "دهان أبيض (قديم)",
   preferred_supplier: "مورد مفضل", last_price: 150, last_supplier: "مورد سابق",
   last_date: "2026-08-18",
+  last_formal_price: 150, last_formal_supplier: "مورد سابق", last_formal_date: "2026-08-18",
 };
 
 async function renderItems(rows = [itemRow]) {
