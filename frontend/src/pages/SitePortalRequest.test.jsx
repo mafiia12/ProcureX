@@ -138,6 +138,31 @@ test("renders the request page for an authenticated site portal user", async () 
   await act(async () => root.unmount());
 });
 
+test("uses a mobile-first request flow with collapsed secondary content and safe sticky actions", async () => {
+  mockContextAndItems({
+    previous: [CEMENT],
+    portalRequests: [{
+      id: "req-1", request_number: "REQ-1", project_name: "مشروع الاختبار",
+      status: "new", created_at: "2026-08-20T10:00:00Z", updated_at: "2026-08-20T10:00:00Z",
+    }],
+  });
+  const { container, root } = await renderPage();
+
+  expect(container.querySelector('[data-testid="portal-request-context"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="portal-items-section"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="portal-request-history"]').hasAttribute("open")).toBe(false);
+  expect(container.querySelector('[data-testid="portal-additional-details"]').hasAttribute("open")).toBe(false);
+  const actions = container.querySelector('[data-testid="portal-sticky-actions"]');
+  expect(actions.classList.contains("sticky")).toBe(true);
+  expect(actions.classList.contains("bottom-0")).toBe(true);
+  expect(actions.className).toContain("safe-area-inset-bottom");
+
+  await click(container.querySelector('[data-testid="portal-previous-item-chip"]'));
+  expect(container.querySelector('[data-testid="portal-request-row"]').className).toContain("grid-cols-[88px_minmax(0,1fr)_32px]");
+
+  await act(async () => root.unmount());
+});
+
 test("required delivery date defaults to the local creation date and prevents earlier dates", async () => {
   mockContextAndItems();
   const { container, root } = await renderPage();

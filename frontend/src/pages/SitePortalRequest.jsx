@@ -274,9 +274,9 @@ export default function SitePortalRequest() {
 
   return (
     <div className="min-h-screen bg-background text-foreground" dir={direction} data-testid="site-portal-request-page">
-      <header className="flex items-center justify-between border-b bg-card px-6 py-3">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-md bg-primary flex items-center justify-center">
+      <header className="flex items-center justify-between border-b bg-card px-3 py-2 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary">
             <Building2 className="h-4 w-4 text-white" />
           </div>
           <div>
@@ -289,27 +289,27 @@ export default function SitePortalRequest() {
           </div>
         </div>
         <Button
-          variant="outline" size="sm" className="gap-2" data-testid="portal-logout-button"
+          variant="ghost" size="sm" className="h-8 shrink-0 gap-1.5 px-2" data-testid="portal-logout-button"
           onClick={() => { logout(); navigate("/login"); }}
         >
-          <LogOut className="h-3.5 w-3.5" /> {tr("تسجيل الخروج", "Sign out")}
+          <LogOut className="h-3.5 w-3.5" /> <span className="hidden sm:inline">{tr("تسجيل الخروج", "Sign out")}</span>
         </Button>
       </header>
 
-      <main className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
-        {!!returnedItems.length && <section className="rounded-lg border border-amber-500/30 bg-card p-4" data-testid="returned-items-section">
-          <div className="mb-3"><h1 className="text-base font-bold">{tr("أصناف تحتاج إجراء", "Items Needing Action")}</h1><p className="mt-1 text-xs text-muted-foreground">{tr("هذه البنود خرجت من مسار التسعير الحالي. صحح البند لإنشاء طلب جديد مرتبط بالأصل.", "These items are excluded from the current sourcing path. Correct an item to create a new request linked to the original.")}</p></div>
-          <div className="space-y-2">{returnedItems.map((item) => <article key={item.id} className="rounded-md border bg-muted/30 p-3" data-testid="returned-item">
+      <main className="mx-auto max-w-4xl space-y-3 px-3 py-3 pb-24 sm:px-5 sm:py-5 sm:pb-6">
+        {!!returnedItems.length && <details className="border border-amber-500/30 bg-card" data-testid="returned-items-section">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2"><div><h1 className="text-sm font-bold">{tr("أصناف تحتاج إجراء", "Items Needing Action")}</h1><p className="text-[10.5px] text-muted-foreground">{tr("صحح البنود المستبعدة وأعد تقديمها عند الحاجة.", "Correct excluded items and resubmit when needed.")}</p></div><span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-bold text-amber-700 dark:text-amber-300">{returnedItems.length}</span></summary>
+          <div className="space-y-2 border-t p-3">{returnedItems.map((item) => <article key={item.id} className="rounded-md border bg-muted/30 p-3" data-testid="returned-item">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0"><div className="flex items-center gap-2"><span className="font-mono text-xs font-bold" dir="ltr">{item.request_number}</span><span className="rounded-full bg-background px-2 py-0.5 text-[11px] ring-1 ring-border">{item.status === "rejected" ? tr("مرفوض", "Rejected") : tr("يحتاج استكمال", "Needs Completion")}</span></div><div className="mt-1 font-semibold">{item.product_name}</div><div className="text-xs text-muted-foreground">{item.quantity} {item.unit} · {item.project_name}</div></div>
               {item.corrected_request ? <div className="text-end text-xs text-emerald-700 dark:text-emerald-300"><div>{tr("أُعيد تقديمه", "Resubmitted")}</div><div className="font-mono font-bold" dir="ltr">{item.corrected_request.request_number}</div></div> : <Button size="sm" variant="outline" onClick={() => openCorrection(item)} data-testid={`correct-returned-item-${item.id}`}><RotateCcw className="h-3.5 w-3.5" />{tr("تصحيح وإعادة الطلب", "Correct and Re-submit Item")}</Button>}
             </div>
             <dl className="mt-3 grid gap-2 rounded-md bg-background/70 p-3 text-xs sm:grid-cols-3"><div><dt className="text-muted-foreground">{tr("السبب", "Reason")}</dt><dd className="mt-1 font-semibold">{item.reason || "-"}</dd></div><div><dt className="text-muted-foreground">{tr("المراجع", "Reviewer")}</dt><dd className="mt-1 font-semibold">{item.reviewer || "-"}</dd></div><div><dt className="text-muted-foreground">{tr("التاريخ", "Date")}</dt><dd className="mt-1 font-semibold">{item.reviewed_at ? new Date(item.reviewed_at).toLocaleString(locale) : "-"}</dd></div></dl>
           </article>)}</div>
-        </section>}
-        {!!portalRequests.length && <section className="rounded-lg border bg-card p-4" data-testid="portal-request-history">
-          <div className="mb-3"><h1 className="text-base font-bold">{tr("طلباتي الأخيرة", "My Recent Requests")}</h1><p className="mt-1 text-xs text-muted-foreground">{tr("طلبات التوضيح تظهر هنا للرد وإعادة إرسال نفس رقم الطلب.", "Clarification requests appear here so you can respond and resubmit the same REQ.")}</p></div>
-          <div className="space-y-2">{portalRequests.slice(0, 8).map((request) => <article key={request.id} className={`rounded-md border p-3 ${request.status === "need_clarification" ? "border-amber-500/40 bg-amber-500/10" : "bg-muted/30"}`} data-testid="portal-request-history-item">
+        </details>}
+        {!!portalRequests.length && <details className="border bg-card" data-testid="portal-request-history">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2"><div><h1 className="text-sm font-bold">{tr("طلباتي الأخيرة", "My Recent Requests")}</h1><p className="text-[10.5px] text-muted-foreground">{tr("المتابعة والردود المطلوبة على الطلبات السابقة.", "Follow-up and required responses for previous requests.")}</p></div><span className="rounded-full bg-muted px-2 py-0.5 text-xs font-bold">{portalRequests.length}</span></summary>
+          <div className="space-y-2 border-t p-3">{portalRequests.slice(0, 8).map((request) => <article key={request.id} className={`rounded-md border p-3 ${request.status === "need_clarification" ? "border-amber-500/40 bg-amber-500/10" : "bg-muted/30"}`} data-testid="portal-request-history-item">
             <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="font-mono text-sm font-bold" dir="ltr">{request.request_number}</div><div className="text-xs text-muted-foreground">{request.project_name} · {new Date(request.updated_at || request.created_at).toLocaleDateString(locale)}</div></div><span className="rounded-full bg-background px-2 py-1 text-xs font-semibold ring-1 ring-border">{request.status === "need_clarification" ? tr("يحتاج توضيح", "Needs Clarification") : request.status === "under_review" ? tr("قيد المراجعة", "Under Review") : request.status === "new" ? tr("جديد", "New") : request.status}</span></div>
             {request.status === "need_clarification" && request.clarification && <div className="mt-3 space-y-3" data-testid="portal-clarification-card">
               <dl className="grid gap-2 rounded-md bg-background/70 p-3 text-xs sm:grid-cols-3"><div><dt className="text-muted-foreground">{tr("سبب التوضيح", "Clarification Reason")}</dt><dd className="mt-1 font-semibold">{request.clarification.reason}</dd></div><div><dt className="text-muted-foreground">{tr("طلبه", "Requested By")}</dt><dd className="mt-1 font-semibold">{request.clarification.requested_by || "-"}</dd></div><div><dt className="text-muted-foreground">{tr("التاريخ", "Date")}</dt><dd className="mt-1 font-semibold">{new Date(request.clarification.requested_at).toLocaleString(locale)}</dd></div></dl>
@@ -319,7 +319,7 @@ export default function SitePortalRequest() {
             </div>}
             {request.status !== "need_clarification" && request.clarification?.response_status === "submitted" && <div className="mt-2 rounded-md bg-emerald-500/10 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-300">{tr("تم إرسال التوضيح وعاد نفس الطلب إلى المراجعة.", "Clarification submitted; the same REQ is back under review.")}</div>}
           </article>)}</div>
-        </section>}
+        </details>}
         {noProjectAssigned && (
           <div
             className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-4 text-sm"
@@ -329,14 +329,15 @@ export default function SitePortalRequest() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-4 rounded-lg border bg-card p-4 md:grid-cols-2">
-          <div>
+        <section className="space-y-3 border bg-card p-3" data-testid="portal-request-context">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="rounded-md bg-muted/30 px-3 py-2">
             <Label className="text-xs text-muted-foreground">{tr("مقدم الطلب", "Requester")}</Label>
             <div className="text-sm font-medium" data-testid="portal-requester-name">
               {context?.requester_name}
             </div>
           </div>
-          <div>
+          <div className="rounded-md bg-muted/30 px-3 py-2">
             <Label className="text-xs text-muted-foreground">{tr("المشروع", "Project")}</Label>
             {projects.length > 1 ? (
               <Select data-testid="portal-project-select" value={projectId} onValueChange={setProjectId}>
@@ -357,7 +358,7 @@ export default function SitePortalRequest() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 rounded-lg border bg-card p-4 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 border-t pt-3 sm:grid-cols-3">
           <div className="space-y-1.5">
             <Label>{tr("تاريخ التسليم المطلوب", "Required Delivery Date")}</Label>
             <Input
@@ -388,6 +389,7 @@ export default function SitePortalRequest() {
             </Select>
           </div>
         </div>
+        </section>
 
         {correctionTarget && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCorrectionTarget(null); }}>
           <section className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-5 shadow-xl" role="dialog" aria-modal="true" aria-label={tr("تصحيح وإعادة طلب الصنف", "Correct and resubmit item")} data-testid="returned-item-correction-dialog">
@@ -405,17 +407,17 @@ export default function SitePortalRequest() {
         </div>}
 
         {/* -------- الأصناف -------- */}
-        <div className="space-y-4 rounded-lg border bg-card p-4">
-          <Label className="block text-xs text-muted-foreground">{tr("الأصناف", "Items")}</Label>
+        <section className="space-y-3 border bg-card p-3" data-testid="portal-items-section">
+          <div className="flex items-center justify-between gap-2"><Label className="block text-xs font-bold text-foreground">{tr("الأصناف المطلوبة", "Requested Items")}</Label><span className="text-[10.5px] text-muted-foreground">{rows.length} {tr("صنف", "items")}</span></div>
 
           {previousItems.length > 0 && (
-            <div className="space-y-2" data-testid="portal-previous-items">
+            <div className="space-y-1.5" data-testid="portal-previous-items">
               <div className="text-xs font-bold text-muted-foreground">{tr("منتجات سابقة", "Previously Requested")}</div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex gap-1.5 overflow-x-auto pb-1">
                 {previousItems.map((item) => (
                   <button
                     key={item.id} type="button" data-testid="portal-previous-item-chip"
-                    className="rounded-full border px-3 py-1.5 text-xs hover:bg-muted"
+                    className="shrink-0 rounded-full border px-2.5 py-1 text-[11px] hover:bg-muted"
                     onClick={() => addMasterItem(item)}
                   >
                     {item.name}
@@ -490,18 +492,18 @@ export default function SitePortalRequest() {
           )}
 
           {rows.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">{tr("لم تتم إضافة أصناف بعد", "No items added yet")}</p>
+            <p className="border border-dashed py-4 text-center text-xs text-muted-foreground">{tr("ابحث أو اختر منتجًا سابقًا لإضافته", "Search or choose a previous product to add it")}</p>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {rows.map((row) => (
                 <div
                   key={row.key}
-                  className="border rounded-md p-3 grid grid-cols-1 md:grid-cols-12 gap-2 items-end"
+                  className="grid grid-cols-[88px_minmax(0,1fr)_32px] items-end gap-2 rounded-md border p-2 sm:grid-cols-12"
                   data-testid="portal-request-row"
                   data-manual={row.item_id ? "false" : "true"}
                 >
-                  <div className="md:col-span-4">
-                    <div className="text-sm font-medium flex items-center gap-1.5">
+                  <div className="col-span-3 min-w-0 sm:col-span-4">
+                    <div className="flex items-center gap-1.5 truncate text-sm font-medium">
                       {row.product_name}
                       {!row.item_id && (
                         <span
@@ -514,7 +516,7 @@ export default function SitePortalRequest() {
                     </div>
                     <div className="text-xs text-slate-400">{row.unit}</div>
                   </div>
-                  <div className="md:col-span-2 space-y-1">
+                  <div className="space-y-1 sm:col-span-2">
                     <Label className="text-xs">{tr("الكمية", "Quantity")}</Label>
                     <Input
                       type="number" min="0" step="any"
@@ -523,7 +525,7 @@ export default function SitePortalRequest() {
                       onChange={(e) => updateRow(row.key, { quantity: e.target.value })}
                     />
                   </div>
-                  <div className="md:col-span-5 space-y-1">
+                  <div className="min-w-0 space-y-1 sm:col-span-5">
                     <Label className="text-xs">{tr("ملاحظات / مواصفات", "Notes / Specifications")}</Label>
                     <Input
                       data-testid="portal-row-note"
@@ -531,8 +533,8 @@ export default function SitePortalRequest() {
                       onChange={(e) => updateRow(row.key, { note: e.target.value })}
                     />
                   </div>
-                  <div className="md:col-span-1">
-                    <Button variant="ghost" size="icon" onClick={() => removeRow(row.key)}>
+                  <div className="sm:col-span-1">
+                    <Button className="h-8 w-8" variant="ghost" size="icon" onClick={() => removeRow(row.key)} aria-label={tr("حذف الصنف", "Remove item")}>
                       <Trash2 className="h-4 w-4 text-red-500" />
                     </Button>
                   </div>
@@ -540,10 +542,12 @@ export default function SitePortalRequest() {
               ))}
             </div>
           )}
-        </div>
+        </section>
 
-        {/* -------- مرفقات الطلب -------- */}
-        <div className="space-y-3 rounded-lg border bg-card p-4">
+        {/* -------- التفاصيل الإضافية -------- */}
+        <details className="border bg-card" data-testid="portal-additional-details">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-bold"><span>{tr("مرفقات وملاحظات", "Attachments and Notes")}</span><span className="font-normal text-muted-foreground">{files.length ? tr(`${files.length} ملفات`, `${files.length} files`) : tr("اختياري", "Optional")}</span></summary>
+          <div className="space-y-3 border-t p-3">
           <Label className="block text-xs text-muted-foreground">{tr("مرفقات الطلب", "Request Attachments")}</Label>
           <div>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted">
@@ -584,23 +588,26 @@ export default function SitePortalRequest() {
               ))}
             </ul>
           )}
-        </div>
+          <div className="space-y-1.5 border-t pt-3">
+            <Label>{tr("ملاحظات عامة", "General Notes")}</Label>
+            <Textarea
+              data-testid="portal-general-notes" value={notes}
+              onChange={(e) => setNotes(e.target.value)} rows={2}
+            />
+          </div>
+          </div>
+        </details>
 
-        <div className="space-y-1.5 rounded-lg border bg-card p-4">
-          <Label>{tr("ملاحظات عامة", "General Notes")}</Label>
-          <Textarea
-            data-testid="portal-general-notes" value={notes}
-            onChange={(e) => setNotes(e.target.value)} rows={3}
-          />
+        <div className="sticky bottom-0 z-20 -mx-3 flex items-center gap-3 border-t bg-card/95 px-3 py-2 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] backdrop-blur [padding-bottom:max(0.5rem,env(safe-area-inset-bottom))] sm:static sm:mx-0 sm:justify-end sm:border sm:shadow-none" data-testid="portal-sticky-actions">
+          <div className="min-w-0 flex-1 text-xs text-muted-foreground sm:text-end"><b className="text-foreground tabular-nums">{rows.length}</b> {tr("صنف في الطلب", "items in request")}</div>
+          <Button
+            className="min-w-44 shrink-0" data-testid="portal-submit-button"
+            disabled={submitting || noProjectAssigned}
+            onClick={submit}
+          >
+            {submitting ? tr("جارٍ الإرسال...", "Submitting...") : tr("إرسال طلب الشراء", "Submit Purchase Request")}
+          </Button>
         </div>
-
-        <Button
-          className="w-full" data-testid="portal-submit-button"
-          disabled={submitting || noProjectAssigned}
-          onClick={submit}
-        >
-          {submitting ? tr("جارٍ الإرسال...", "Submitting...") : tr("إرسال طلب الشراء", "Submit Purchase Request")}
-        </Button>
       </main>
     </div>
   );
