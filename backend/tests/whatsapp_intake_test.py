@@ -33,11 +33,19 @@ if _STANDALONE:
     os.environ.setdefault("PROCUREX_BACKUP_DIR", str(Path(_TEST_DIR.name) / "backups"))
     os.environ.setdefault("PROCUREX_LOG_DIR", str(Path(_TEST_DIR.name) / "logs"))
 
-os.environ.setdefault("WHATSAPP_ENABLED", "true")
-os.environ.setdefault("WHATSAPP_PHONE_NUMBER_ID", "test-phone-number-id")
-os.environ.setdefault("WHATSAPP_ACCESS_TOKEN", "test-access-token")
-os.environ.setdefault("WHATSAPP_VERIFY_TOKEN", "test-verify-token")
-os.environ.setdefault("WHATSAPP_APP_SECRET", "test-app-secret")
+# Unconditional, not setdefault: a developer's real backend/.env (e.g. from
+# live Meta testing per WHATSAPP-INTAKE-CLOSURE) already has real
+# WHATSAPP_* values by the time database.py's load_dotenv() runs during
+# collection of an earlier test file - setdefault would then keep that real
+# value instead of this suite's known-fake one. A later import of database.py
+# (dotenv's own setdefault-like behavior) never overwrites what we set here.
+os.environ["WHATSAPP_ENABLED"] = "true"
+os.environ["WHATSAPP_PHONE_NUMBER_ID"] = "test-phone-number-id"
+os.environ["WHATSAPP_ACCESS_TOKEN"] = "test-access-token"
+os.environ["WHATSAPP_VERIFY_TOKEN"] = "test-verify-token"
+os.environ["WHATSAPP_APP_SECRET"] = "test-app-secret"
+os.environ.pop("PUBLIC_BASE_URL", None)
+os.environ.pop("TRUSTED_HOSTS", None)
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -675,6 +683,37 @@ def test_settings_response_never_contains_secret_values(client):
     assert os.environ["WHATSAPP_ACCESS_TOKEN"] not in body
     assert os.environ["WHATSAPP_APP_SECRET"] not in body
     assert os.environ["WHATSAPP_VERIFY_TOKEN"] not in body
+
+
+# ---------- PUBLIC_BASE_URL webhook URL (never fall back to localhost for Meta) ----------
+
+def test_webhook_url_is_empty_and_unconfigured_without_public_base_url(client, monkeypatch):
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    response = client.get(f"{API}/admin/whatsapp/settings", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["webhook_url"] == ""
+    assert data["webhook_url_configured"] is False
+    # a request-derived localhost URL must never be presented as if valid for Meta
+    assert "127.0.0.1" not in data["webhook_url"]
+    assert data["local_backend_url"]  # diagnostic field is still populated
+    public_webhook_category = next(c for c in data["setup_categories"] if c["key"] == "public_webhook")
+    assert public_webhook_category["ready"] is False
+
+
+def test_webhook_url_uses_public_base_url_when_configured(client, monkeypatch):
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://researcher-briefing-highways-holes.trycloudflare.com/")
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    response = client.get(f"{API}/admin/whatsapp/settings", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["webhook_url"] == (
+        "https://researcher-briefing-highways-holes.trycloudflare.com/api/integrations/whatsapp/webhook"
+    )
+    assert data["webhook_url_configured"] is True
 
 
 def test_test_connection_success_caches_business_number(client, monkeypatch):

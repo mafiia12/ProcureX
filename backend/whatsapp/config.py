@@ -50,6 +50,15 @@ def access_token() -> str:
     return os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 
 
+def public_base_url() -> str:
+    """The externally-reachable base URL Meta must call back to (e.g. the
+    permanent hosted domain, or - for local live-testing - the current
+    Cloudflare tunnel URL). Empty means "not configured yet": callers must
+    never fall back to a request-derived localhost URL and present that as
+    if it were a valid Meta callback."""
+    return os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+
+
 def build_provider():
     """Real Meta provider when credentials are configured; a safe no-op
     otherwise (used automatically in dev/tests so nothing ever tries a live

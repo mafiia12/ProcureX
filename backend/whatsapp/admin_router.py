@@ -38,9 +38,27 @@ class EnabledUpdate(BaseModel):
     enabled: bool
 
 
-def _webhook_url(request: Request) -> str:
+def _local_backend_url(request: Request) -> str:
+    """Diagnostic only - wherever the admin's own browser happens to be
+    hitting the backend from. Never a valid Meta callback (Meta cannot
+    reach 127.0.0.1/localhost), so this is never returned as webhook_url."""
     host = request.headers.get("host") or request.url.netloc
     return f"{request.url.scheme}://{host}/api/integrations/whatsapp/webhook"
+
+
+def _webhook_urls(request: Request) -> dict:
+    base = config.public_base_url()
+    if base:
+        return {
+            "webhook_url": f"{base}/api/integrations/whatsapp/webhook",
+            "webhook_url_configured": True,
+            "local_backend_url": _local_backend_url(request),
+        }
+    return {
+        "webhook_url": "",
+        "webhook_url_configured": False,
+        "local_backend_url": _local_backend_url(request),
+    }
 
 
 def _recent(iso_timestamp: str) -> bool:
@@ -75,11 +93,15 @@ def _settings_payload(session, request: Request) -> dict:
     else:
         display_status = "not_configured"
 
+    urls = _webhook_urls(request)
     return {
         "enabled": row.enabled,
         "setup_categories": [
             {"key": "meta_credentials", "label_ar": "بيانات اعتماد Meta", "ready": capability["available"]},
-            {"key": "public_webhook", "label_ar": "الاتصال بالويب هوك العام", "ready": webhook_ready},
+            {
+                "key": "public_webhook", "label_ar": "الاتصال بالويب هوك العام",
+                "ready": urls["webhook_url_configured"] and webhook_ready,
+            },
         ],
         "connection_status": display_status,
         "connection_error": row.connection_error if display_status == "error" else "",
@@ -87,8 +109,8 @@ def _settings_payload(session, request: Request) -> dict:
         "business_number": row.business_number,
         "business_name": row.business_name,
         "webhook_status": "connected" if webhook_ready else "waiting",
-        "webhook_url": _webhook_url(request),
         "engineers": _engineer_counts(session),
+        **urls,
     }
 
 

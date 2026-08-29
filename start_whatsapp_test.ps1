@@ -81,10 +81,24 @@ if (-not $tunnelUrl) {
 $tunnelHostName = ([Uri]$tunnelUrl).Host
 Write-Host "Tunnel is up: $tunnelUrl"
 
-# Merge the tunnel hostname into backend/.env's TRUSTED_HOSTS (idempotent,
-# and drops any previous *.trycloudflare.com entry from an earlier run so
-# this doesn't accumulate stale hosts over time).
+# Merge the tunnel hostname into backend/.env's TRUSTED_HOSTS, and point
+# PUBLIC_BASE_URL (what Settings displays as the Meta webhook URL) at this
+# same tunnel - both idempotent, and both drop any previous
+# *.trycloudflare.com value from an earlier run so nothing accumulates or
+# goes stale across restarts.
+function Set-EnvLine([string[]]$lines, [string]$key, [string]$value) {
+    $index = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match "^\s*$key\s*=") { $index = $i; break }
+    }
+    $newLine = "$key=$value"
+    $changed = ($index -lt 0) -or ($lines[$index] -ne $newLine)
+    if ($index -ge 0) { $lines[$index] = $newLine } else { $lines += $newLine }
+    return , $lines, $changed
+}
+
 $envLines = if (Test-Path $envPath) { @(Get-Content $envPath) } else { @() }
+
 $trustedLineIndex = -1
 for ($i = 0; $i -lt $envLines.Count; $i++) {
     if ($envLines[$i] -match '^\s*TRUSTED_HOSTS\s*=') { $trustedLineIndex = $i; break }
@@ -97,17 +111,22 @@ if ($trustedLineIndex -ge 0) {
     $existingHosts = $baseHosts
 }
 $newHosts = @($existingHosts + $tunnelHostName | Select-Object -Unique)
-$newLine = "TRUSTED_HOSTS=" + ($newHosts -join ',')
+
+$trustedResult = Set-EnvLine $envLines "TRUSTED_HOSTS" ($newHosts -join ',')
+$envLines = $trustedResult[0]
+$trustedHostsChanged = $trustedResult[1]
+
+$publicUrlResult = Set-EnvLine $envLines "PUBLIC_BASE_URL" $tunnelUrl
+$envLines = $publicUrlResult[0]
+$publicUrlChanged = $publicUrlResult[1]
 
 $backendWasRunning = Test-PortOpen 8000
-$trustedHostsChanged = ($trustedLineIndex -lt 0) -or ($envLines[$trustedLineIndex] -ne $newLine)
-if ($trustedLineIndex -ge 0) { $envLines[$trustedLineIndex] = $newLine } else { $envLines += $newLine }
 # Windows PowerShell 5.1's -Encoding utf8 writes a BOM; write plain UTF-8
 # without one so python-dotenv/.env tooling never has to think about it.
 [System.IO.File]::WriteAllLines($envPath, $envLines, (New-Object System.Text.UTF8Encoding $false))
 
-if ($backendWasRunning -and $trustedHostsChanged) {
-    Write-Host "Backend is already running but does not trust this tunnel's hostname yet - restarting it..." -ForegroundColor Yellow
+if ($backendWasRunning -and ($trustedHostsChanged -or $publicUrlChanged)) {
+    Write-Host "Backend is already running but its trusted host/public URL config is stale for this tunnel - restarting it..." -ForegroundColor Yellow
     try {
         $conn = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction Stop
         Stop-Process -Id $conn.OwningProcess -Force

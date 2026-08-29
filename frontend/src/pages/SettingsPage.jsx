@@ -173,7 +173,14 @@ export default function SettingsPage() {
               <ol className="list-decimal space-y-1.5 ps-4 text-xs text-muted-foreground" data-testid="whatsapp-setup-checklist">
                 <li>{tr("اربط رقم واتساب بزنس الخاص بالشركة", "Connect the company's WhatsApp Business number")}</li>
                 <li>{tr("أضف بيانات اعتماد Meta على السيرفر", "Configure Meta credentials on the server")}</li>
-                <li>{tr("سجّل رابط الويب هوك التالي في إعدادات Meta", "Register the webhook URL below in Meta's settings")}: <code className="rounded bg-muted px-1.5 py-0.5 text-[11px]" dir="ltr">{whatsapp.webhook_url}</code></li>
+                <li>
+                  {tr("سجّل رابط الويب هوك الظاهر أدناه في إعدادات Meta", "Register the webhook URL shown below in Meta's settings")}:{" "}
+                  {whatsapp.webhook_url_configured ? (
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-[11px]" dir="ltr">{whatsapp.webhook_url}</code>
+                  ) : (
+                    <span className="italic">{tr("الرابط العام للويب هوك غير مهيأ", "Public webhook URL is not configured")}</span>
+                  )}
+                </li>
                 <li>{tr("اختبر الاتصال", "Test the connection")}</li>
                 <li>{tr("فعّل طلبات واتساب", "Enable WhatsApp Requests")}</li>
               </ol>
@@ -195,9 +202,23 @@ export default function SettingsPage() {
                     <StatusBadge tone={webhookReady ? "success" : "neutral"}>
                       {webhookReady ? tr("متصل ✅", "Connected ✅") : tr("بانتظار Meta", "Waiting for Meta")}
                     </StatusBadge>
-                    <code className="truncate rounded bg-card px-2 py-1 text-[11px]" dir="ltr">{whatsapp.webhook_url}</code>
-                    <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={copyWebhookUrl}><Copy className="h-3.5 w-3.5" />{tr("نسخ", "Copy")}</Button>
+                    {whatsapp.webhook_url_configured ? (
+                      <>
+                        <code className="truncate rounded bg-card px-2 py-1 text-[11px]" dir="ltr">{whatsapp.webhook_url}</code>
+                        <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={copyWebhookUrl}><Copy className="h-3.5 w-3.5" />{tr("نسخ", "Copy")}</Button>
+                      </>
+                    ) : (
+                      <span className="text-xs italic text-muted-foreground" data-testid="whatsapp-webhook-url-missing">
+                        {tr("الرابط العام للويب هوك غير مهيأ", "Public webhook URL is not configured")}
+                      </span>
+                    )}
                   </div>
+                  {!whatsapp.webhook_url_configured && whatsapp.local_backend_url && (
+                    <div className="mt-1 text-[10.5px] text-muted-foreground">
+                      {tr("الرابط المحلي (لتشخيص فقط، ليس صالحًا لـ Meta): ", "Local URL (diagnostic only, not valid for Meta): ")}
+                      <code dir="ltr">{whatsapp.local_backend_url}</code>
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center justify-between rounded-md bg-muted/60 p-3 text-sm sm:col-span-2">
                   <div>
