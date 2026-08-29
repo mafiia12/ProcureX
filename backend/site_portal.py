@@ -597,6 +597,7 @@ def create_incoming_request(
     session, *, user: User, project: Project, items: list[dict],
     required_delivery_date: str, priority: str, delivery_destination: str,
     notes: str, prepared_attachments: list[dict], intake_note: str,
+    source: str = "",
 ) -> tuple[str, str]:
     """Create one formal Incoming Purchase Request. This is the single place
     that constructs the IncomingPurchaseRequest/-Item/-Attachment/
@@ -644,7 +645,7 @@ def create_incoming_request(
             submission_token=str(uuid.uuid4()),
             content_fingerprint=hashlib.sha256(f"portal:{request_id}".encode()).hexdigest(),
             requester_user_id=user.id, delivery_destination=delivery_destination,
-            created_at=created_at, updated_at=created_at,
+            source=source, created_at=created_at, updated_at=created_at,
         )
         session.add(row)
 
@@ -774,6 +775,7 @@ async def submit_portal_request(
             delivery_destination=body.delivery_destination, notes=body.notes,
             prepared_attachments=prepared,
             intake_note="تم استلام الطلب من بوابة طلبات الموقع",
+            source="site_portal",
         )
 
     return {"ok": True, "request_number": request_number, "request_id": request_id}

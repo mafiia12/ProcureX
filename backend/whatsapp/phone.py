@@ -25,3 +25,14 @@ def normalize_e164(raw: str) -> str:
     if not digits.isdigit() or not (8 <= len(digits) <= 15):
         return ""
     return "+" + digits
+
+
+def mask_phone(phone_e164: str) -> str:
+    """For audit/history text a human might casually read — never the raw
+    number. Keeps enough to recognize a number, hides the rest: "+2010****678"."""
+    digits = phone_e164.lstrip("+")
+    if len(digits) <= 7:
+        return "+" + "*" * len(digits)
+    visible_head, visible_tail = digits[:4], digits[-3:]
+    masked_middle = "*" * (len(digits) - len(visible_head) - len(visible_tail))
+    return f"+{visible_head}{masked_middle}{visible_tail}"

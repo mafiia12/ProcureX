@@ -10,7 +10,7 @@ that data, they only reference it (confirmed_request_id/number).
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, Integer, String
+from sqlalchemy import JSON, Boolean, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 try:
@@ -61,3 +61,29 @@ class WhatsAppDraft(Base):
     created_at: Mapped[str] = mapped_column(String)
     updated_at: Mapped[str] = mapped_column(String)
     expires_at: Mapped[str] = mapped_column(String)
+
+
+WHATSAPP_SETTINGS_ID = "whatsapp"
+
+
+class WhatsAppSettings(Base):
+    """Singleton row (fixed id "whatsapp") holding the Admin-controlled
+    on/off switch and the last-known Meta connection/webhook state.
+
+    Never holds secrets — access_token/app_secret/verify_token stay in the
+    environment (see config.py) and are never written here. business_number/
+    business_name are display-only values fetched from Meta on a successful
+    Test Connection, not admin-editable text."""
+
+    __tablename__ = "whatsapp_settings"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    business_number: Mapped[str] = mapped_column(String, default="", server_default="")
+    business_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    connection_status: Mapped[str] = mapped_column(String, default="unknown", server_default="unknown")
+    connection_error: Mapped[str] = mapped_column(String, default="", server_default="")
+    last_checked_at: Mapped[str] = mapped_column(String, default="", server_default="")
+    last_webhook_verified_at: Mapped[str] = mapped_column(String, default="", server_default="")
+    last_webhook_event_at: Mapped[str] = mapped_column(String, default="", server_default="")
+    updated_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    updated_at: Mapped[str] = mapped_column(String, default="", server_default="")

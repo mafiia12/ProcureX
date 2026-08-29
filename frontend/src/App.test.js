@@ -115,6 +115,7 @@ import App from "@/App";
 beforeEach(() => {
   mockGet.mockImplementation((url) => {
     if (url === "/dashboard") return Promise.resolve({ data: mockDashboard });
+    if (url === "/admin/whatsapp/settings") return Promise.resolve({ data: null });
     return Promise.resolve({ data: [] });
   });
 });

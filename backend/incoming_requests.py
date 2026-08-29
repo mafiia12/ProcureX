@@ -133,6 +133,11 @@ class IncomingPurchaseRequest(Base):
     # "site" | "warehouse" for Site Portal submissions; empty for the
     # anonymous public-intake flow, which has no such concept.
     delivery_destination: Mapped[str] = mapped_column(String, default="", server_default="")
+    # Intake channel: "" (anonymous public intake, unchanged default),
+    # "site_portal", or "whatsapp" (see site_portal.create_incoming_request).
+    # Unrelated to source_request_id/source_item_id above, which track
+    # corrected-item ancestry, not the intake channel.
+    source: Mapped[str] = mapped_column(String, index=True, default="", server_default="")
     created_at: Mapped[str] = mapped_column(String, index=True)
     updated_at: Mapped[str] = mapped_column(String)
 
@@ -537,6 +542,7 @@ def _request_summary(row: IncomingPurchaseRequest, item_count: int = 0) -> dict:
         "project_location": row.project_location,
         "delivery_location": row.delivery_location,
         "delivery_destination": row.delivery_destination,
+        "source": row.source,
         "requester_user_id": row.requester_user_id,
         "source_request_id": row.source_request_id,
         "source_item_id": row.source_item_id,

@@ -521,7 +521,14 @@ export default function IncomingPurchaseRequests() {
             {requests.map((request) => (
               <button key={request.id} type="button" onClick={() => loadDetail(request.id)} className={`block w-full px-2.5 py-2 text-start text-xs transition-colors hover:bg-muted/50 ${selected?.id === request.id ? "bg-primary/5" : ""}`} data-testid="incoming-request-list-item">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-xs font-bold text-foreground" dir="ltr">{request.request_number}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="font-mono text-xs font-bold text-foreground" dir="ltr">{request.request_number}</span>
+                    {request.source === "whatsapp" && (
+                      <StatusBadge tone="success">
+                        <MessageCircle className="h-3 w-3" /> {tr("واتساب", "WhatsApp")}
+                      </StatusBadge>
+                    )}
+                  </span>
                   <StatusBadge tone={request.priority === "urgent" || request.priority === "high" ? "danger" : request.priority === "normal" ? "warning" : "neutral"}>{priorityLabel(request.priority, language)}</StatusBadge>
                 </div>
                 <div className="mt-1 truncate font-semibold text-foreground">{request.project_name || tr("بدون مشروع", "No project")}</div>
@@ -550,7 +557,10 @@ export default function IncomingPurchaseRequests() {
                       <StatusBadge tone={statusTone(selected.status)}>{statusLabel(selected.status, language)}</StatusBadge>
                       <StatusBadge tone={selected.priority === "urgent" || selected.priority === "high" ? "danger" : selected.priority === "normal" ? "warning" : "neutral"}>{priorityLabel(selected.priority, language)}</StatusBadge>
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">{selected.project_name || tr("بدون مشروع", "No project")} · {tr("تم الاستلام", "Received")} {new Date(selected.created_at).toLocaleString(locale)}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {selected.project_name || tr("بدون مشروع", "No project")} · {tr("تم الاستلام", "Received")} {new Date(selected.created_at).toLocaleString(locale)}
+                      {selected.source === "whatsapp" && ` · ${tr("المصدر: واتساب", "Source: WhatsApp")}`}
+                    </div>
                   </div>
                   <div className="flex items-center gap-1.5">
                     {selected.project_id ? (

@@ -40,3 +40,21 @@ class MetaWhatsAppProvider:
         data = response.json()
         messages = data.get("messages") or [{}]
         return messages[0].get("id", "")
+
+    def get_phone_number_info(self) -> dict:
+        """The lightest read-only Graph call available: fetch the configured
+        phone number's own metadata. Used only for "Test Connection" — never
+        sends a message, never touches a conversation."""
+        url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{self._phone_number_id}"
+        response = httpx.get(
+            url,
+            params={"fields": "display_phone_number,verified_name"},
+            headers={"Authorization": f"Bearer {self._access_token}"},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "display_phone_number": data.get("display_phone_number", ""),
+            "verified_name": data.get("verified_name", ""),
+        }

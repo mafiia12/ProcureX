@@ -27,6 +27,7 @@ PO_PAYMENT_LEDGER_SCHEMA_VERSION = 16
 SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION = 18
 DAILY_REPORT_SCHEMA_VERSION = 19
 WHATSAPP_INTAKE_SCHEMA_VERSION = 20
+WHATSAPP_SETTINGS_SCHEMA_VERSION = 21
 
 
 INCOMING_REQUEST_TABLES = {
@@ -1290,6 +1291,53 @@ def migrate_whatsapp_intake(engine) -> Path | None:
     with engine.begin() as connection:
         connection.exec_driver_sql(
             f"PRAGMA user_version = {WHATSAPP_INTAKE_SCHEMA_VERSION}"
+        )
+    return backup_path
+
+
+def migrate_whatsapp_settings_and_source(engine) -> Path | None:
+    """Add incoming_purchase_requests.source (intake channel, for the list
+    badge) and the whatsapp_settings singleton table (Admin on/off toggle +
+    last-known connection/webhook state) after a verified backup."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "incoming_purchase_requests" not in tables:
+        return None
+    request_columns = {column["name"] for column in inspector.get_columns("incoming_purchase_requests")}
+    required_tables = {"whatsapp_settings"}
+    with engine.connect() as connection:
+        current_version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+    if (
+        "source" in request_columns
+        and required_tables.issubset(tables)
+        and current_version >= WHATSAPP_SETTINGS_SCHEMA_VERSION
+    ):
+        return None
+
+    database_path = _database_path(engine)
+    if database_path is None:
+        raise RuntimeError("A file-backed SQLite database is required for safe migration")
+    backup_path = create_verified_backup(database_path, label="whatsapp-settings-and-source")
+
+    with engine.begin() as connection:
+        if "source" not in request_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE incoming_purchase_requests ADD COLUMN source VARCHAR NOT NULL DEFAULT ''"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_incoming_purchase_requests_source "
+                "ON incoming_purchase_requests(source)"
+            )
+    try:
+        from .whatsapp import models as _whatsapp_models  # noqa: F401
+        from .database import Base
+    except ImportError:  # pragma: no cover
+        from whatsapp import models as _whatsapp_models  # noqa: F401
+        from database import Base
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            f"PRAGMA user_version = {WHATSAPP_SETTINGS_SCHEMA_VERSION}"
         )
     return backup_path
 

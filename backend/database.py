@@ -35,6 +35,7 @@ try:
         migrate_supplier_offer_adjustments,
         migrate_daily_reports,
         migrate_whatsapp_intake,
+        migrate_whatsapp_settings_and_source,
     )
 except ImportError:
     from db_migrations import (
@@ -49,6 +50,7 @@ except ImportError:
         migrate_supplier_offer_adjustments,
         migrate_daily_reports,
         migrate_whatsapp_intake,
+        migrate_whatsapp_settings_and_source,
     )
 
 
@@ -465,7 +467,7 @@ def init_db() -> Optional[Path]:
             "construction_calculation_sessions", "construction_calculation_snapshots",
             "users", "user_project_access",
             "daily_reports",
-            "whatsapp_drafts", "whatsapp_processed_messages",
+            "whatsapp_drafts", "whatsapp_processed_messages", "whatsapp_settings",
         }
         existing = set(inspect(engine).get_table_names())
         if not required.issubset(existing):
@@ -490,9 +492,10 @@ def init_db() -> Optional[Path]:
     supplier_offer_backup = migrate_supplier_offer_adjustments(engine)
     daily_report_backup = migrate_daily_reports(engine)
     whatsapp_intake_backup = migrate_whatsapp_intake(engine)
+    whatsapp_settings_backup = migrate_whatsapp_settings_and_source(engine)
     Base.metadata.create_all(engine)
     return (
-        whatsapp_intake_backup or daily_report_backup or supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
+        whatsapp_settings_backup or whatsapp_intake_backup or daily_report_backup or supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
         or classification_backup
     )
 

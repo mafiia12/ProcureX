@@ -21,12 +21,14 @@ try:
     from . import parser
     from .matching import match_item_master, match_project
     from .models import WhatsAppDraft
+    from .phone import mask_phone
 except ImportError:  # pragma: no cover - direct backend execution
     from database import Item, Project, SessionLocal
     from site_portal import _assigned_projects, create_incoming_request
     from whatsapp import parser
     from whatsapp.matching import match_item_master, match_project
     from whatsapp.models import WhatsAppDraft
+    from whatsapp.phone import mask_phone
 
 logger = logging.getLogger("whatsapp.session")
 
@@ -265,11 +267,17 @@ def _confirm_and_create(session, user, draft: WhatsAppDraft) -> str:
             "preferred_brand": "", "main_category": "", "subcategory": "",
             "specifications": "", "quantity": item["quantity"], "unit": item["unit"],
         } for item in draft.items_json]
+        engineer_name = user.display_name or user.username
         request_id, request_number = create_incoming_request(
             session, user=user, project=project, items=resolved_items,
             required_delivery_date=draft.required_delivery_date,
             priority="normal", delivery_destination="site", notes="",
-            prepared_attachments=[], intake_note="تم استلام الطلب عبر واتساب",
+            prepared_attachments=[],
+            intake_note=(
+                f"تم تسجيل طلب الشراء عبر واتساب — المهندس: {engineer_name}"
+                f" — الهاتف: {mask_phone(draft.phone_e164)}"
+            ),
+            source="whatsapp",
         )
         draft.status = "confirmed"
         draft.confirmed_request_id = request_id

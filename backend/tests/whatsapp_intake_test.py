@@ -48,8 +48,10 @@ from server import app  # noqa: E402
 from auth.models import User, UserProjectAccess  # noqa: E402
 from auth.security import hash_password  # noqa: E402
 from incoming_requests import IncomingPurchaseRequest, IncomingPurchaseRequestItem  # noqa: E402
+import whatsapp.admin_router as wa_admin_router  # noqa: E402
 import whatsapp.config as wa_config  # noqa: E402
-from whatsapp import parser, session_service  # noqa: E402
+import whatsapp.router as wa_router  # noqa: E402
+from whatsapp import parser, session_service, settings_service  # noqa: E402
 from whatsapp.models import WhatsAppDraft, WhatsAppProcessedMessage  # noqa: E402
 
 if _STANDALONE:
@@ -73,6 +75,16 @@ def _cleanup_standalone_database():
         from database import engine
         engine.dispose()
         _TEST_DIR.cleanup()
+
+
+@pytest.fixture(autouse=True)
+def _reset_whatsapp_enabled():
+    """whatsapp_settings is a singleton row shared by every test in this
+    file — force it back to the default (enabled) after each test so a
+    disabled-service test can never leak into an unrelated one."""
+    yield
+    with SessionLocal() as session:
+        settings_service.set_enabled(session, True, actor="test-reset")
 
 
 @pytest.fixture
@@ -213,10 +225,13 @@ def test_webhook_post_rejects_invalid_signature(client, fake_provider):
     assert fake_provider == []
 
 
-def test_webhook_returns_404_when_disabled(client, fake_provider, monkeypatch):
+def test_webhook_env_var_no_longer_gates_availability(client, fake_provider, monkeypatch):
+    """WHATSAPP_ENABLED used to 404 the whole webhook; it's now only the
+    one-time seed for the Admin toggle (whatsapp_settings.enabled) — the
+    webhook itself must stay reachable regardless."""
     monkeypatch.setenv("WHATSAPP_ENABLED", "false")
-    response = _post_webhook(client, "201000000002", "wamid.disabled", "تأكيد")
-    assert response.status_code == 404
+    response = _post_webhook(client, "201000000002", f"wamid.{uuid.uuid4().hex}", "تأكيد")
+    assert response.status_code == 200
 
 
 # ---------- Phone -> engineer resolution (spec item 5) ----------
@@ -391,6 +406,7 @@ def test_confirmation_creates_the_existing_incoming_request(client, fake_provide
         assert row.status == "new"
         assert row.project_id == project_id
         assert row.requester_user_id == engineer.id
+        assert row.source == "whatsapp"
         items = session.scalars(
             select(IncomingPurchaseRequestItem).where(IncomingPurchaseRequestItem.request_id == request_id)
         ).all()
@@ -408,6 +424,23 @@ def test_confirmation_creates_the_existing_incoming_request(client, fake_provide
     assert detail.status_code == 200, detail.text
     assert detail.json()["status"] == "new"
     assert detail.json()["project_name"] == f"مشروع واتساب {suffix}"
+    assert detail.json()["source"] == "whatsapp"
+
+    list_response = client.get(
+        f"{API}/internal/incoming-purchase-requests",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+        params={"search": request_id},
+    )
+    assert list_response.status_code == 200, list_response.text
+    matching = [row for row in list_response.json() if row["id"] == request_id]
+    # search-by-id may not match request_number/requester_name/etc.; fetch
+    # unfiltered instead if the id search finds nothing, and assert on that row.
+    if not matching:
+        matching = [row for row in client.get(
+            f"{API}/internal/incoming-purchase-requests",
+            headers={**INTERNAL_HEADERS, **admin_headers},
+        ).json() if row["id"] == request_id]
+    assert matching and matching[0]["source"] == "whatsapp"
 
 
 # ---------- Idempotency (spec items 10, 11) ----------
@@ -527,6 +560,9 @@ def test_site_portal_submission_still_works_after_the_refactor(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["request_number"].startswith("REQ-")
+    with SessionLocal() as session:
+        row = session.get(IncomingPurchaseRequest, response.json()["request_id"])
+        assert row.source == "site_portal"
 
 
 # ---------- Parser unit checks (fast, no HTTP) ----------
@@ -549,3 +585,153 @@ def test_parser_handles_both_spec_examples():
     assert [(i.product_name, i.quantity, i.unit) for i in parsed2.items] == [
         ("كابل 4 مم", 300.0, "متر"), ("بريزة شنايدر دبل", 20.0, "عدد"),
     ]
+
+
+def test_confirm_and_cancel_are_exact_arabic_bytes_not_a_reversed_or_mangled_variant():
+    """A prior report displayed Arabic reversed due to terminal RTL
+    rendering — that's a display artifact, not a data problem, but this
+    pins the actual in-memory/on-the-wire representation so a future
+    regression (e.g. an editor round-tripping through the wrong encoding)
+    would be caught here rather than only noticed visually."""
+    confirm_word = "تأكيد"  # ت ، أ ، ك ، ي ، د - logical reading order
+    cancel_word = "إلغاء"  # إ ، ل ، غ ، ا ، ء - logical reading order
+    assert confirm_word == "تأكيد"
+    assert cancel_word == "إلغاء"
+    assert confirm_word.encode("utf-8") == bytes([
+        0xd8, 0xaa, 0xd8, 0xa3, 0xd9, 0x83, 0xd9, 0x8a, 0xd8, 0xaf,
+    ])
+    assert cancel_word.encode("utf-8") == bytes([
+        0xd8, 0xa5, 0xd9, 0x84, 0xd8, 0xba, 0xd8, 0xa7, 0xd8, 0xa1,
+    ])
+    assert parser.is_confirm(confirm_word) is True
+    assert parser.is_cancel(cancel_word) is True
+    # a reversed byte sequence must NOT be treated as the same command
+    assert parser.is_confirm(confirm_word[::-1]) is False
+    assert parser.is_cancel(cancel_word[::-1]) is False
+
+
+# ---------- Admin Settings: enable/disable, connection status, source (closure sprint) ----------
+
+def test_settings_reflects_enabled_state_and_toggle_takes_effect_without_restart(client, fake_provider):
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    phone = f"+2030{_phone_suffix()}"
+    with SessionLocal() as session:
+        project_id = _make_project(session, suffix)
+        _make_engineer(session, suffix, phone, project_ids=[project_id])
+
+    baseline = client.get(f"{API}/admin/whatsapp/settings", headers=admin_headers)
+    assert baseline.status_code == 200, baseline.text
+    assert baseline.json()["enabled"] is True
+
+    disable = client.put(f"{API}/admin/whatsapp/settings", json={"enabled": False}, headers=admin_headers)
+    assert disable.status_code == 200
+    assert disable.json()["enabled"] is False
+
+    response = _post_webhook(
+        client, _wa_id(phone), f"wamid.{uuid.uuid4().hex}",
+        f"مشروع واتساب {suffix}\n20 شيكارة معجون\n\nمطلوب 2 سبتمبر",
+    )
+    assert response.status_code == 200
+    assert fake_provider[-1][1] == wa_router.PAUSED_TEXT
+    with SessionLocal() as session:
+        assert session.scalar(select(WhatsAppDraft).where(WhatsAppDraft.phone_e164 == phone)) is None
+        req_count = session.scalar(
+            select(func.count()).select_from(IncomingPurchaseRequest)
+            .where(IncomingPurchaseRequest.project_id == project_id)
+        )
+    assert req_count == 0
+
+    enable = client.put(f"{API}/admin/whatsapp/settings", json={"enabled": True}, headers=admin_headers)
+    assert enable.json()["enabled"] is True
+    response2 = _post_webhook(
+        client, _wa_id(phone), f"wamid.{uuid.uuid4().hex}",
+        f"مشروع واتساب {suffix}\n20 شيكارة معجون\n\nمطلوب 2 سبتمبر",
+    )
+    assert response2.status_code == 200
+    with SessionLocal() as session:
+        draft = session.scalar(select(WhatsAppDraft).where(WhatsAppDraft.phone_e164 == phone))
+        assert draft is not None
+
+
+def test_get_verification_still_succeeds_while_service_disabled(client):
+    """Meta's webhook subscription must not be jeopardized by the Admin
+    toggling the daily on/off switch off."""
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    client.put(f"{API}/admin/whatsapp/settings", json={"enabled": False}, headers=admin_headers)
+    response = client.get(WEBHOOK_URL, params={
+        "hub.mode": "subscribe", "hub.verify_token": "test-verify-token", "hub.challenge": "still-here",
+    })
+    assert response.status_code == 200
+    assert response.text == "still-here"
+
+
+def test_settings_response_never_contains_secret_values(client):
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    response = client.get(f"{API}/admin/whatsapp/settings", headers=admin_headers)
+    body = response.text
+    assert os.environ["WHATSAPP_ACCESS_TOKEN"] not in body
+    assert os.environ["WHATSAPP_APP_SECRET"] not in body
+    assert os.environ["WHATSAPP_VERIFY_TOKEN"] not in body
+
+
+def test_test_connection_success_caches_business_number(client, monkeypatch):
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    monkeypatch.setattr(
+        wa_admin_router.MetaWhatsAppProvider, "get_phone_number_info",
+        lambda self: {"display_phone_number": "+201099998888", "verified_name": "RE DECOR & MORE"},
+    )
+    response = client.post(f"{API}/admin/whatsapp/settings/test-connection", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["connection_status"] == "connected"
+    assert data["business_number"] == "+201099998888"
+
+    follow_up = client.get(f"{API}/admin/whatsapp/settings", headers=admin_headers)
+    assert follow_up.json()["business_number"] == "+201099998888"
+
+
+def test_test_connection_failure_returns_generic_message_never_the_exception_detail(client, monkeypatch):
+    def _boom(self):
+        raise RuntimeError("connection reset while using token abc123secret")
+
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    monkeypatch.setattr(wa_admin_router.MetaWhatsAppProvider, "get_phone_number_info", _boom)
+    response = client.post(f"{API}/admin/whatsapp/settings/test-connection", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["connection_status"] == "error"
+    assert data["connection_error"] == wa_admin_router.CONNECTION_ERROR_TEXT
+    assert "abc123secret" not in response.text
+
+
+def test_registered_engineer_counts(client):
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    with SessionLocal() as session:
+        before = session.execute(
+            select(func.count()).select_from(User).where(User.account_type == "site_portal")
+        ).scalar_one()
+        with_phone_before = session.execute(
+            select(func.count()).select_from(User)
+            .where(User.account_type == "site_portal", User.phone_e164 != "")
+        ).scalar_one()
+        _make_engineer(session, f"{suffix}-a", f"+2031{_phone_suffix()}", project_ids=[])
+        no_phone_user = User(
+            id=str(uuid.uuid4()), username=f"wa-nophone-{suffix}", display_name="no phone",
+            password_hash=hash_password("Sprint21Passw0rd!"), account_type="site_portal",
+            role="site_engineer", active=True, created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        session.add(no_phone_user)
+        session.commit()
+
+    response = client.get(f"{API}/admin/whatsapp/settings", headers=admin_headers)
+    assert response.status_code == 200
+    engineers = response.json()["engineers"]
+    assert engineers["total"] == before + 2
+    assert engineers["with_phone"] == with_phone_before + 1

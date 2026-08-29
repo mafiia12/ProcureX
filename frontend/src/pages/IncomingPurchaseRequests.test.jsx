@@ -99,6 +99,18 @@ beforeEach(() => {
   mockUseAuth.mockReturnValue({ user: { username: "admin1", role: "admin", account_type: "erp" } });
 });
 
+test("a WhatsApp-sourced request shows a subtle WhatsApp badge in the list row; others show none", async () => {
+  const { container, root } = await renderWithDetail({ ...detail, source: "whatsapp" });
+  const row = container.querySelector('[data-testid="incoming-request-list-item"]');
+  expect(row.textContent).toContain("واتساب");
+  await act(async () => root.unmount());
+
+  const { container: plainContainer, root: plainRoot } = await renderWithDetail({ ...detail, source: "site_portal" });
+  const plainRow = plainContainer.querySelector('[data-testid="incoming-request-list-item"]');
+  expect(plainRow.textContent).not.toContain("واتساب");
+  await act(async () => plainRoot.unmount());
+});
+
 test("convert action appears only on the manual line, not the Master-linked line", async () => {
   const { container, root } = await renderWithDetail(mixedDetail);
 

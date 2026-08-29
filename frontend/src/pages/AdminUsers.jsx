@@ -180,7 +180,12 @@ export default function AdminUsers() {
               </TableRow>
             ) : users.map((row) => (
               <TableRow key={row.id} className="hover:bg-muted/50" data-testid="admin-users-row">
-                <TableCell className="py-2 text-sm">{row.display_name}</TableCell>
+                <TableCell className="py-2 text-sm">
+                  {row.display_name}
+                  {row.account_type === "site_portal" && !row.phone && (
+                    <div className="text-[10.5px] font-normal text-amber-600 dark:text-amber-400">{tr("بدون رقم واتساب", "No WhatsApp number")}</div>
+                  )}
+                </TableCell>
                 <TableCell className="py-2 text-sm">{row.username}</TableCell>
                 <TableCell className="py-2 text-sm">
                   {row.account_type === "erp" ? tr("نظام داخلي", "Internal System") : tr("بوابة طلبات الموقع", "Site Request Portal")}
