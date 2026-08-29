@@ -26,6 +26,7 @@ RFQ_SUPPLIER_QUOTATIONS_SCHEMA_VERSION = 15
 PO_PAYMENT_LEDGER_SCHEMA_VERSION = 16
 SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION = 18
 DAILY_REPORT_SCHEMA_VERSION = 19
+WHATSAPP_INTAKE_SCHEMA_VERSION = 20
 
 
 INCOMING_REQUEST_TABLES = {
@@ -1246,6 +1247,49 @@ def migrate_daily_reports(engine) -> Path | None:
     with engine.begin() as connection:
         connection.exec_driver_sql(
             f"PRAGMA user_version = {DAILY_REPORT_SCHEMA_VERSION}"
+        )
+    return backup_path
+
+
+def migrate_whatsapp_intake(engine) -> Path | None:
+    """Add users.phone_e164 plus the whatsapp_drafts / whatsapp_processed_messages
+    tables after a verified backup. Additive only: no existing users/incoming
+    request rows are touched."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "users" not in tables:
+        return None
+    user_columns = {column["name"] for column in inspector.get_columns("users")}
+    required_tables = {"whatsapp_drafts", "whatsapp_processed_messages"}
+    with engine.connect() as connection:
+        current_version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+    if (
+        "phone_e164" in user_columns
+        and required_tables.issubset(tables)
+        and current_version >= WHATSAPP_INTAKE_SCHEMA_VERSION
+    ):
+        return None
+
+    database_path = _database_path(engine)
+    if database_path is None:
+        raise RuntimeError("A file-backed SQLite database is required for safe migration")
+    backup_path = create_verified_backup(database_path, label="whatsapp-intake")
+
+    with engine.begin() as connection:
+        if "phone_e164" not in user_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN phone_e164 VARCHAR NOT NULL DEFAULT ''"
+            )
+    try:
+        from .whatsapp import models as _whatsapp_models  # noqa: F401
+        from .database import Base
+    except ImportError:  # pragma: no cover
+        from whatsapp import models as _whatsapp_models  # noqa: F401
+        from database import Base
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            f"PRAGMA user_version = {WHATSAPP_INTAKE_SCHEMA_VERSION}"
         )
     return backup_path
 

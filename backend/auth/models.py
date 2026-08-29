@@ -55,6 +55,11 @@ class User(Base):
     account_type: Mapped[str] = mapped_column(String, index=True)
     role: Mapped[str] = mapped_column(String, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # E.164 (e.g. "+201012345678"). Used to map an inbound WhatsApp sender to
+    # a site_portal user (see whatsapp/). Empty for accounts with no WhatsApp
+    # number on file. Uniqueness among non-empty values is enforced in
+    # auth/admin_router.py, not a DB constraint (see whatsapp/phone.py).
+    phone_e164: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[str] = mapped_column(String)
     updated_at: Mapped[str] = mapped_column(String)
 

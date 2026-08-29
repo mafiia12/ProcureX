@@ -26,11 +26,13 @@ from sqlalchemy import select
 
 try:
     from ..database import Project, SessionLocal
+    from ..whatsapp.phone import normalize_e164
     from .models import ERP_ROLES, SITE_PORTAL_ROLE, User, UserProjectAccess
     from .security import MIN_PASSWORD_LENGTH, hash_password
     from .service import require_erp_role
 except ImportError:  # pragma: no cover - direct backend execution
     from database import Project, SessionLocal
+    from whatsapp.phone import normalize_e164
     from auth.models import ERP_ROLES, SITE_PORTAL_ROLE, User, UserProjectAccess
     from auth.security import MIN_PASSWORD_LENGTH, hash_password
     from auth.service import require_erp_role
@@ -57,6 +59,7 @@ class UserAdminView(BaseModel):
     account_type: str
     role: str
     active: bool
+    phone: str = ""
     created_at: str
     updated_at: str
     assigned_projects: list[ProjectRef] = Field(default_factory=list)
@@ -70,6 +73,9 @@ class UserCreateRequest(BaseModel):
     role: Optional[str] = None
     active: bool = True
     project_ids: list[str] = Field(default_factory=list)
+    # WhatsApp intake phone number (site_portal accounts only). Optional —
+    # an account with no phone simply can't use the WhatsApp channel.
+    phone: str = ""
 
 
 class UserUpdateRequest(BaseModel):
@@ -77,6 +83,7 @@ class UserUpdateRequest(BaseModel):
     username: Optional[str] = None
     role: Optional[str] = None
     active: Optional[bool] = None
+    phone: Optional[str] = None
 
 
 class PasswordResetRequest(BaseModel):
@@ -85,6 +92,24 @@ class PasswordResetRequest(BaseModel):
 
 class ProjectAssignRequest(BaseModel):
     project_id: str
+
+
+def _normalize_and_check_phone(session, raw_phone: str, *, exclude_user_id: str = "") -> str:
+    """Empty is always allowed (no WhatsApp number on file). A non-empty
+    value must normalize to E.164 and not already belong to another user —
+    enforced here rather than a DB constraint, see whatsapp/phone.py."""
+    raw_phone = (raw_phone or "").strip()
+    if not raw_phone:
+        return ""
+    normalized = normalize_e164(raw_phone)
+    if not normalized:
+        raise HTTPException(422, "رقم واتساب غير صالح")
+    clash = session.scalar(
+        select(User).where(User.phone_e164 == normalized, User.id != exclude_user_id)
+    )
+    if clash is not None:
+        raise HTTPException(409, "رقم الواتساب مستخدم بالفعل لحساب آخر")
+    return normalized
 
 
 def _view(session, user: User) -> UserAdminView:
@@ -102,6 +127,7 @@ def _view(session, user: User) -> UserAdminView:
     return UserAdminView(
         id=user.id, username=user.username, display_name=user.display_name,
         account_type=user.account_type, role=user.role, active=user.active,
+        phone=user.phone_e164,
         created_at=user.created_at, updated_at=user.updated_at,
         assigned_projects=projects,
     )
@@ -135,6 +161,7 @@ def _views_batch(session, users: list[User]) -> list[UserAdminView]:
         views.append(UserAdminView(
             id=user.id, username=user.username, display_name=user.display_name,
             account_type=user.account_type, role=user.role, active=user.active,
+            phone=user.phone_e164,
             created_at=user.created_at, updated_at=user.updated_at,
             assigned_projects=assigned,
         ))
@@ -178,6 +205,7 @@ def create_user(
     with SessionLocal() as session:
         if session.scalar(select(User).where(User.username == username)) is not None:
             raise HTTPException(409, "اسم المستخدم مستخدم بالفعل")
+        phone_e164 = _normalize_and_check_phone(session, body.phone)
 
         projects_by_id: dict[str, Project] = {}
         if project_ids:
@@ -191,7 +219,8 @@ def create_user(
         user = User(
             id=str(uuid4()), username=username, display_name=body.display_name.strip(),
             password_hash=hash_password(body.password), account_type=body.account_type,
-            role=role, active=body.active, created_at=now, updated_at=now,
+            role=role, active=body.active, phone_e164=phone_e164,
+            created_at=now, updated_at=now,
         )
         session.add(user)
         session.flush()
@@ -237,6 +266,9 @@ def update_user(
 
         if body.active is not None:
             user.active = body.active
+
+        if body.phone is not None:
+            user.phone_e164 = _normalize_and_check_phone(session, body.phone, exclude_user_id=user.id)
 
         user.updated_at = _now_iso()
         session.commit()

@@ -57,6 +57,7 @@ try:
     )
     from .site_portal import router as portal_router
     from .daily_report import router as daily_report_router
+    from .whatsapp.router import router as whatsapp_router
     from .excel_io import (parse_workbook, import_data, build_export_workbook,
                            next_code, next_seq_id, next_record_no,
                            recompute_payment_status)
@@ -94,6 +95,7 @@ except ImportError:
     )
     from site_portal import router as portal_router
     from daily_report import router as daily_report_router
+    from whatsapp.router import router as whatsapp_router
     from excel_io import (parse_workbook, import_data, build_export_workbook,
                           next_code, next_seq_id, next_record_no,
                           recompute_payment_status)
@@ -3029,6 +3031,7 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
         application.include_router(public_router)
         application.include_router(public_document_router)
         application.include_router(public_approval_router)
+        application.include_router(whatsapp_router)
     else:
         application.include_router(admin_users_router)
         application.include_router(portal_router)
@@ -3042,6 +3045,7 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
         application.include_router(internal_workflow_router)
         application.include_router(rfq_router)
         application.include_router(daily_report_router, prefix="/api")
+        application.include_router(whatsapp_router)
 
     application.add_event_handler("startup", start_document_worker)
     application.add_event_handler("shutdown", stop_document_worker)

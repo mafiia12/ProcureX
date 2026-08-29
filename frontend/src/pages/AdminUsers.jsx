@@ -27,7 +27,7 @@ const ERP_ROLE_OPTIONS = [
 
 const emptyCreateForm = {
   display_name: "", username: "", password: "", account_type: "erp",
-  role: "admin", project_ids: [],
+  role: "admin", project_ids: [], phone: "",
 };
 
 export default function AdminUsers() {
@@ -86,6 +86,7 @@ export default function AdminUsers() {
         payload.role = createForm.role;
       } else {
         payload.project_ids = createForm.project_ids;
+        payload.phone = createForm.phone.trim();
       }
       await api.post("/admin/users", payload);
       toast.success(tr("تم إنشاء الحساب بنجاح", "Account created successfully"));
@@ -100,13 +101,14 @@ export default function AdminUsers() {
 
   const openEdit = (row) => {
     setEditing(row);
-    setEditForm({ display_name: row.display_name, username: row.username, role: row.role, active: row.active });
+    setEditForm({ display_name: row.display_name, username: row.username, role: row.role, active: row.active, phone: row.phone || "" });
   };
 
   const saveEdit = async () => {
     try {
       const payload = { display_name: editForm.display_name, username: editForm.username, active: editForm.active };
       if (editing.account_type === "erp") payload.role = editForm.role;
+      else payload.phone = (editForm.phone || "").trim();
       await api.put(`/admin/users/${editing.id}`, payload);
       toast.success(tr("تم تحديث الحساب", "Account updated"));
       setEditing(null);
@@ -321,6 +323,16 @@ export default function AdminUsers() {
                 </Select>
               </div>
             ) : (
+              <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label>{tr("رقم واتساب (اختياري)", "WhatsApp Number (optional)")}</Label>
+                <Input
+                  data-testid="admin-users-form-phone"
+                  placeholder="+201012345678"
+                  value={createForm.phone}
+                  onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })}
+                />
+              </div>
               <div className="space-y-1.5">
                 <Label>{tr("المشروعات المسموح بها", "Allowed Projects")}</Label>
                 <div
@@ -346,6 +358,7 @@ export default function AdminUsers() {
                     </label>
                   ))}
                 </div>
+              </div>
               </div>
             )}
           </div>
@@ -380,7 +393,7 @@ export default function AdminUsers() {
                 onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
               />
             </div>
-            {editing?.account_type === "erp" && (
+            {editing?.account_type === "erp" ? (
               <div className="space-y-1.5">
                 <Label>{tr("الدور", "Role")}</Label>
                 <Select value={editForm.role} onValueChange={(value) => setEditForm({ ...editForm, role: value })}>
@@ -391,6 +404,16 @@ export default function AdminUsers() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <Label>{tr("رقم واتساب (اختياري)", "WhatsApp Number (optional)")}</Label>
+                <Input
+                  data-testid="admin-users-edit-form-phone"
+                  placeholder="+201012345678"
+                  value={editForm.phone || ""}
+                  onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                />
               </div>
             )}
           </div>

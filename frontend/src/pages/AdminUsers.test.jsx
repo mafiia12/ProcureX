@@ -196,6 +196,32 @@ test("create site portal user submits selected project ids and no role", async (
   await act(async () => root.unmount());
 });
 
+test("create site portal user includes the WhatsApp phone number when provided", async () => {
+  mockPost.mockResolvedValue({ data: PORTAL_USER });
+  const { container, root } = await renderPage([]);
+
+  await click(container.querySelector('[data-testid="admin-users-add-button"]'));
+  setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مهندس جديد");
+  setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.engineer");
+  setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "StrongPass123!");
+
+  const accountTypeSelect = document.querySelector('[data-testid="admin-users-form-account-type"]');
+  await act(async () => {
+    accountTypeSelect.value = "site_portal";
+    accountTypeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  setInputValue(document.querySelector('[data-testid="admin-users-form-phone"]'), "+201012345678");
+  await click(document.querySelector('[data-testid="admin-users-save-button"]'));
+
+  expect(mockPost).toHaveBeenCalledWith("/admin/users", expect.objectContaining({
+    account_type: "site_portal",
+    phone: "+201012345678",
+  }));
+
+  await act(async () => root.unmount());
+});
+
 test("the initial password never appears anywhere in the rendered page after submit", async () => {
   mockPost.mockResolvedValue({ data: { ...ERP_USER, id: "new-erp" } });
   const { container, root } = await renderPage([]);

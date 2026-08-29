@@ -593,6 +593,102 @@ async def _prepare_portal_attachments(files: List[UploadFile]) -> list[dict]:
     return prepared
 
 
+def create_incoming_request(
+    session, *, user: User, project: Project, items: list[dict],
+    required_delivery_date: str, priority: str, delivery_destination: str,
+    notes: str, prepared_attachments: list[dict], intake_note: str,
+) -> tuple[str, str]:
+    """Create one formal Incoming Purchase Request. This is the single place
+    that constructs the IncomingPurchaseRequest/-Item/-Attachment/
+    -StatusHistory rows for an authenticated (non-anonymous) intake channel —
+    the Site Portal HTTP endpoint below and the WhatsApp intake
+    (whatsapp/request_service.py) both call this; neither re-implements it.
+
+    `items` entries are already fully resolved: {item_id ("" for manual),
+    product_name, preferred_brand, main_category, subcategory,
+    specifications, quantity, unit}. `prepared_attachments` entries must
+    already be validated/detected (see _prepare_portal_attachments) — this
+    function only writes their bytes to storage and rows to the DB.
+    Returns (request_id, request_number).
+    """
+    request_id = str(uuid.uuid4())
+    request_number = f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
+    created_at = _now()
+    destination_label = DESTINATION_LABEL.get(delivery_destination, delivery_destination)
+    delivery_location = (
+        (project.address or project.city or destination_label)
+        if delivery_destination == "site" else destination_label
+    )
+
+    storage = get_attachment_storage()
+    written_keys: list[str] = []
+    try:
+        for attachment in prepared_attachments:
+            stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
+            attachment["stored_filename"] = f"{request_id}/{stored_name}"
+            storage.put(
+                attachment["stored_filename"], attachment["content"],
+                attachment["media_type"], attachment["sha256"],
+            )
+            written_keys.append(attachment["stored_filename"])
+
+        row = IncomingPurchaseRequest(
+            id=request_id, request_number=request_number,
+            requester_name=user.display_name or user.username,
+            company_name="", phone_number="", whatsapp_number="", email="",
+            project_name=project.name, project_id=project.id,
+            customer_id="", customer_name="",
+            project_location=project.address or "", delivery_location=delivery_location,
+            required_delivery_date=required_delivery_date, priority=priority,
+            notes=notes.strip(), status="new", assigned_employee="",
+            submission_token=str(uuid.uuid4()),
+            content_fingerprint=hashlib.sha256(f"portal:{request_id}".encode()).hexdigest(),
+            requester_user_id=user.id, delivery_destination=delivery_destination,
+            created_at=created_at, updated_at=created_at,
+        )
+        session.add(row)
+
+        for position, entry in enumerate(items, 1):
+            session.add(IncomingPurchaseRequestItem(
+                id=str(uuid.uuid4()), request_id=request_id, position=position,
+                item_id=entry["item_id"], product_name=entry["product_name"],
+                preferred_brand=entry.get("preferred_brand", ""),
+                main_category=entry.get("main_category", ""),
+                subcategory=entry.get("subcategory", ""),
+                specifications=entry.get("specifications", ""),
+                quantity=entry["quantity"], unit=entry["unit"],
+            ))
+
+        for attachment in prepared_attachments:
+            session.add(IncomingRequestGeneralAttachment(
+                id=str(uuid.uuid4()), request_id=request_id,
+                original_filename=attachment["original_filename"],
+                stored_filename=attachment["stored_filename"],
+                media_type=attachment["media_type"],
+                size_bytes=attachment["size_bytes"], sha256=attachment["sha256"],
+                created_at=created_at,
+            ))
+
+        session.add(IncomingRequestStatusHistory(
+            id=str(uuid.uuid4()), request_id=request_id, from_status="", to_status="new",
+            changed_by=user.username, note=intake_note,
+            created_at=created_at,
+        ))
+        session.add(InternalNotification(
+            id=str(uuid.uuid4()), notification_type="new_purchase_request",
+            entity_type="incoming_purchase_request", entity_id=request_id,
+            title=f"طلب شراء وارد جديد {request_number}",
+            message=f"من {user.display_name or user.username} — مشروع {project.name}",
+            is_read=0, created_at=created_at,
+        ))
+        session.commit()
+    except Exception:
+        for key in written_keys:
+            storage.delete(key)
+        raise
+    return request_id, request_number
+
+
 @router.post("/purchase-requests")
 async def submit_portal_request(
     payload: str = Form(...),
@@ -649,95 +745,35 @@ async def submit_portal_request(
 
         prepared = await _prepare_portal_attachments(attachments)
 
-        request_id = str(uuid.uuid4())
-        request_number = f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
-        created_at = _now()
-        destination_label = DESTINATION_LABEL[body.delivery_destination]
-        delivery_location = (
-            (project.address or project.city or destination_label)
-            if body.delivery_destination == "site" else destination_label
+        resolved_items = []
+        for entry in body.items:
+            if entry.item_id:
+                item_row = items_by_id[entry.item_id]
+                resolved_items.append({
+                    "item_id": item_row.id,
+                    "product_name": item_row.product_name or item_row.name,
+                    "preferred_brand": item_row.brand or "",
+                    "main_category": item_row.main_category or "",
+                    "subcategory": item_row.subcategory or "",
+                    "specifications": entry.note.strip(),
+                    "quantity": entry.quantity, "unit": item_row.unit or "",
+                })
+            else:
+                # Manual line: never linked to Item Master. Procurement
+                # decides later whether to convert it via "إضافة للدليل".
+                resolved_items.append({
+                    "item_id": "", "product_name": entry.product_name.strip(),
+                    "preferred_brand": "", "main_category": "", "subcategory": "",
+                    "specifications": entry.note.strip(),
+                    "quantity": entry.quantity, "unit": entry.unit.strip(),
+                })
+
+        request_id, request_number = create_incoming_request(
+            session, user=user, project=project, items=resolved_items,
+            required_delivery_date=body.required_delivery_date, priority=body.priority,
+            delivery_destination=body.delivery_destination, notes=body.notes,
+            prepared_attachments=prepared,
+            intake_note="تم استلام الطلب من بوابة طلبات الموقع",
         )
-
-        storage = get_attachment_storage()
-        written_keys: list[str] = []
-        try:
-            for attachment in prepared:
-                stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
-                attachment["stored_filename"] = f"{request_id}/{stored_name}"
-                storage.put(
-                    attachment["stored_filename"], attachment["content"],
-                    attachment["media_type"], attachment["sha256"],
-                )
-                written_keys.append(attachment["stored_filename"])
-
-            row = IncomingPurchaseRequest(
-                id=request_id, request_number=request_number,
-                requester_name=user.display_name or user.username,
-                company_name="", phone_number="", whatsapp_number="", email="",
-                project_name=project.name, project_id=project.id,
-                customer_id="", customer_name="",
-                project_location=project.address or "", delivery_location=delivery_location,
-                required_delivery_date=body.required_delivery_date, priority=body.priority,
-                notes=body.notes.strip(), status="new", assigned_employee="",
-                submission_token=str(uuid.uuid4()),
-                content_fingerprint=hashlib.sha256(f"portal:{request_id}".encode()).hexdigest(),
-                requester_user_id=user.id, delivery_destination=body.delivery_destination,
-                created_at=created_at, updated_at=created_at,
-            )
-            session.add(row)
-
-            for position, entry in enumerate(body.items, 1):
-                item_pk = str(uuid.uuid4())
-                if entry.item_id:
-                    item_row = items_by_id[entry.item_id]
-                    session.add(IncomingPurchaseRequestItem(
-                        id=item_pk, request_id=request_id, position=position,
-                        item_id=item_row.id,
-                        product_name=item_row.product_name or item_row.name,
-                        preferred_brand=item_row.brand or "",
-                        main_category=item_row.main_category or "",
-                        subcategory=item_row.subcategory or "",
-                        specifications=entry.note.strip(),
-                        quantity=entry.quantity, unit=item_row.unit or "",
-                    ))
-                else:
-                    # Manual line: never linked to Item Master. Procurement
-                    # decides later whether to convert it (not built yet) -
-                    # this alone must never create an items row.
-                    session.add(IncomingPurchaseRequestItem(
-                        id=item_pk, request_id=request_id, position=position,
-                        item_id="", product_name=entry.product_name.strip(),
-                        preferred_brand="", main_category="", subcategory="",
-                        specifications=entry.note.strip(),
-                        quantity=entry.quantity, unit=entry.unit.strip(),
-                    ))
-
-            for attachment in prepared:
-                session.add(IncomingRequestGeneralAttachment(
-                    id=str(uuid.uuid4()), request_id=request_id,
-                    original_filename=attachment["original_filename"],
-                    stored_filename=attachment["stored_filename"],
-                    media_type=attachment["media_type"],
-                    size_bytes=attachment["size_bytes"], sha256=attachment["sha256"],
-                    created_at=created_at,
-                ))
-
-            session.add(IncomingRequestStatusHistory(
-                id=str(uuid.uuid4()), request_id=request_id, from_status="", to_status="new",
-                changed_by=user.username, note="تم استلام الطلب من بوابة طلبات الموقع",
-                created_at=created_at,
-            ))
-            session.add(InternalNotification(
-                id=str(uuid.uuid4()), notification_type="new_purchase_request",
-                entity_type="incoming_purchase_request", entity_id=request_id,
-                title=f"طلب شراء وارد جديد {request_number}",
-                message=f"من {user.display_name or user.username} — مشروع {project.name}",
-                is_read=0, created_at=created_at,
-            ))
-            session.commit()
-        except Exception:
-            for key in written_keys:
-                storage.delete(key)
-            raise
 
     return {"ok": True, "request_number": request_number, "request_id": request_id}
