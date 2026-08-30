@@ -7,10 +7,7 @@ import hmac
 import json
 import os
 import re
-import threading
-import time
 import uuid
-from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -43,12 +40,14 @@ try:
     from .auth.service import require_erp_role
     from .business_codes import next_business_code
     from .database import Base, Customer, Item, SessionLocal
+    from .rate_limit import RateLimiter
 except ImportError:
     from attachment_storage import get_attachment_storage
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import next_business_code
     from database import Base, Customer, Item, SessionLocal
+    from rate_limit import RateLimiter
 # procurement_workflow imports IncomingPurchaseRequest etc. from this module,
 # so _audit/normalize_match must be imported lazily (inside the function that
 # needs them) to avoid a circular import at module load time.
@@ -404,8 +403,7 @@ internal_router = APIRouter(
     tags=["internal-incoming-purchase-requests"],
 )
 
-_rate_events: dict[str, deque[float]] = defaultdict(deque)
-_rate_lock = threading.Lock()
+_rate_limiter = RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECONDS)
 
 
 @public_router.get("/health", include_in_schema=False)
@@ -431,19 +429,7 @@ def _client_ip(request: Request) -> str:
 
 
 def _check_rate_limit(key: str) -> None:
-    now = time.monotonic()
-    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
-    with _rate_lock:
-        events = _rate_events[key]
-        while events and events[0] < cutoff:
-            events.popleft()
-        if len(events) >= RATE_LIMIT_MAX:
-            raise HTTPException(
-                429,
-                "تم إرسال عدد كبير من الطلبات. يرجى المحاولة لاحقاً",
-                headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
-            )
-        events.append(now)
+    _rate_limiter.hit(key, "تم إرسال عدد كبير من الطلبات. يرجى المحاولة لاحقاً")
 
 
 def _validate_public_payload(body: PublicRequestIn) -> None:
