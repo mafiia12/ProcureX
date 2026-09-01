@@ -528,6 +528,11 @@ export default function IncomingPurchaseRequests() {
                         <MessageCircle className="h-3 w-3" /> {tr("واتساب", "WhatsApp")}
                       </StatusBadge>
                     )}
+                    {!!request.source_request_id && (
+                      <StatusBadge tone="warning">
+                        {tr("مصحح", "Corrected")}
+                      </StatusBadge>
+                    )}
                   </span>
                   <StatusBadge tone={request.priority === "urgent" || request.priority === "high" ? "danger" : request.priority === "normal" ? "warning" : "neutral"}>{priorityLabel(request.priority, language)}</StatusBadge>
                 </div>
@@ -560,6 +565,11 @@ export default function IncomingPurchaseRequests() {
                     <div className="mt-1 text-xs text-muted-foreground">
                       {selected.project_name || tr("بدون مشروع", "No project")} · {tr("تم الاستلام", "Received")} {new Date(selected.created_at).toLocaleString(locale)}
                       {selected.source === "whatsapp" && ` · ${tr("المصدر: واتساب", "Source: WhatsApp")}`}
+                      {!!selected.source_request_id && (
+                        <span data-testid="corrected-from-source">
+                          {" "}· {tr(`مصحح من ${selected.source_request_number}`, `Corrected from ${selected.source_request_number}`)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">

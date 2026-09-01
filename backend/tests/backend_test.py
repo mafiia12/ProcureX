@@ -4515,25 +4515,198 @@ def test_partial_item_review_progresses_only_approved_subset_and_creates_linked_
     assert returned.status_code == 200, returned.text
     assert {row["status"] for row in returned.json()} == {"rejected", "need_clarification"}
     returned_item = next(row for row in returned.json() if row["status"] == "need_clarification")
-    corrected = s.post(
-        f"{PORTAL_API}/returned-items/{returned_item['id']}/correct",
-        headers=portal_headers,
-        data={"payload": json.dumps({
-            "product_name": returned_item["product_name"], "unit": returned_item["unit"],
-            "quantity": 2, "note": "مواصفة مكتملة", "required_delivery_date": "2099-01-01",
-        })},
-    )
+
+    draft = _save_correction_draft(s, portal_headers, returned_item["id"], quantity=2)
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["ready"] is True
+
+    # Saving a draft must never create a REQ by itself.
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count()).select_from(IncomingPurchaseRequest)
+            .where(IncomingPurchaseRequest.source_request_id == request_id)
+        ) == 0
+
+    corrected = _resubmit_corrections(s, portal_headers, request_id, [returned_item["id"]])
     assert corrected.status_code == 200, corrected.text
     child = corrected.json()
     assert child["source_request_id"] == request_id
-    assert child["source_item_id"] == returned_item["id"]
     with SessionLocal() as session:
         original_item = session.get(IncomingPurchaseRequestItem, returned_item["id"])
         child_request = session.get(IncomingPurchaseRequest, child["request_id"])
+        child_items = session.scalars(
+            select(IncomingPurchaseRequestItem).where(
+                IncomingPurchaseRequestItem.request_id == child["request_id"]
+            )
+        ).all()
         assert original_item is not None
         assert original_item.review_status == "need_clarification"
         assert child_request.source_request_id == request_id
-        assert child_request.source_item_id == original_item.id
+        assert len(child_items) == 1
+        assert child_items[0].source_item_id == original_item.id
+
+    # The approved item's own downstream chain (already an active RFQ) is
+    # completely unaffected by the grouped correction of the other items.
+    rfq_after = s.get(f"{RFQ_API}/{rfq.json()['rfq']['id']}", headers={**INTERNAL_HEADERS, **responsible_headers})
+    assert rfq_after.status_code == 200, rfq_after.text
+    assert len(rfq_after.json()["items"]) == 1
+    assert rfq_after.json()["items"][0]["product_name"] == f"معتمد-{suffix}"
+
+
+def _save_correction_draft(client, headers, item_id, *, product_name="صنف مصحح", unit="قطعة", quantity=1, note="مواصفة مكتملة", required_delivery_date="2099-01-01"):
+    body = {
+        "product_name": product_name, "unit": unit,
+        "quantity": quantity, "note": note, "required_delivery_date": required_delivery_date,
+    }
+    return client.post(f"{PORTAL_API}/returned-items/{item_id}/correct", headers=headers, json=body)
+
+
+def _resubmit_corrections(client, headers, original_request_id, item_ids):
+    return client.post(
+        f"{PORTAL_API}/purchase-requests/{original_request_id}/resubmit-corrections",
+        headers=headers, json={"item_ids": item_ids},
+    )
+
+
+def _review_item(client, headers, request_id, item_id, status, reason=""):
+    response = client.patch(
+        f"{API}/internal/incoming-purchase-requests/{request_id}/items/{item_id}/review",
+        headers={**INTERNAL_HEADERS, **headers},
+        json={"status": status, "reason": reason},
+    )
+    assert response.status_code == 200, response.text
+    return response
+
+
+def _setup_returned_items_scenario(s, admin_headers, suffix, item_count=4):
+    """One original REQ with `item_count` manual items, all reviewed as
+    need_clarification (so every one becomes an eligible returned item)."""
+    with SessionLocal() as session:
+        project_id = _make_project_for_portal(session, suffix)
+        portal_username, _ = _make_portal_user(session, suffix, project_ids=[project_id])
+        _make_user(session, username=f"grp-eng-{suffix}", role="procurement_engineer")
+    portal_headers = _login_headers(s, portal_username)
+    engineer_headers = _login_headers(s, f"grp-eng-{suffix}")
+    created = _submit_portal_request(s, portal_headers, _portal_payload(items=[
+        _manual_item(f"صنف-{suffix}-{i}") for i in range(item_count)
+    ])).json()
+    request_id = created["request_id"]
+    detail = s.get(
+        f"{API}/internal/incoming-purchase-requests/{request_id}",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+    ).json()
+    item_ids = [item["id"] for item in detail["items"]]
+    for item_id in item_ids:
+        _review_item(s, engineer_headers, request_id, item_id, "need_clarification", "أكمل المواصفة")
+    return request_id, item_ids, portal_headers
+
+
+def test_four_returned_items_from_one_request_group_into_one_corrected_req(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_id, item_ids, portal_headers = _setup_returned_items_scenario(s, admin_headers, suffix, item_count=4)
+    for item_id in item_ids:
+        assert _save_correction_draft(s, portal_headers, item_id).status_code == 200
+
+    result = _resubmit_corrections(s, portal_headers, request_id, item_ids)
+    assert result.status_code == 200, result.text
+    body = result.json()
+    assert body["item_count"] == 4
+
+    with SessionLocal() as session:
+        child_items = session.scalars(
+            select(IncomingPurchaseRequestItem).where(
+                IncomingPurchaseRequestItem.request_id == body["request_id"]
+            )
+        ).all()
+        assert len(child_items) == 4
+        assert {item.source_item_id for item in child_items} == set(item_ids)
+        child_request = session.get(IncomingPurchaseRequest, body["request_id"])
+        assert child_request.source_request_id == request_id
+
+
+def test_three_corrected_items_group_while_one_stays_pending(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_id, item_ids, portal_headers = _setup_returned_items_scenario(s, admin_headers, suffix, item_count=4)
+    ready_ids, pending_id = item_ids[:3], item_ids[3]
+    for item_id in ready_ids:
+        assert _save_correction_draft(s, portal_headers, item_id).status_code == 200
+
+    result = _resubmit_corrections(s, portal_headers, request_id, ready_ids)
+    assert result.status_code == 200, result.text
+    assert result.json()["item_count"] == 3
+
+    returned = s.get(f"{PORTAL_API}/returned-items", headers=portal_headers).json()
+    pending_row = next(row for row in returned if row["id"] == pending_id)
+    assert pending_row["ready"] is False
+    assert pending_row["corrected_request"] is None
+    resubmitted_rows = [row for row in returned if row["id"] in ready_ids]
+    assert all(row["corrected_request"] is not None for row in resubmitted_rows)
+
+    # The pending item can still be corrected and resubmitted later, on its
+    # own, as a second corrected REQ linked to the same original request.
+    assert _save_correction_draft(s, portal_headers, pending_id).status_code == 200
+    second = _resubmit_corrections(s, portal_headers, request_id, [pending_id])
+    assert second.status_code == 200, second.text
+    assert second.json()["request_id"] != result.json()["request_id"]
+    assert second.json()["source_request_id"] == request_id
+
+
+def test_items_from_two_different_original_requests_cannot_be_grouped(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_a, items_a, portal_headers = _setup_returned_items_scenario(s, admin_headers, f"{suffix}-a", item_count=1)
+    request_b, items_b, _ = _setup_returned_items_scenario(s, admin_headers, f"{suffix}-b", item_count=1)
+    assert _save_correction_draft(s, portal_headers, items_a[0]).status_code == 200
+
+    # request_b's item does not belong to request_a's owner/project scope,
+    # and even if it did, mixing items across two original REQs must fail.
+    result = _resubmit_corrections(s, portal_headers, request_a, [items_a[0], items_b[0]])
+    assert result.status_code == 422, result.text
+
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count()).select_from(IncomingPurchaseRequest)
+            .where(IncomingPurchaseRequest.source_request_id == request_a)
+        ) == 0
+
+
+def test_double_submit_resubmission_does_not_duplicate_the_child_req(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_id, item_ids, portal_headers = _setup_returned_items_scenario(s, admin_headers, suffix, item_count=2)
+    for item_id in item_ids:
+        assert _save_correction_draft(s, portal_headers, item_id).status_code == 200
+
+    first = _resubmit_corrections(s, portal_headers, request_id, item_ids)
+    assert first.status_code == 200, first.text
+    second = _resubmit_corrections(s, portal_headers, request_id, item_ids)
+    assert second.status_code == 200, second.text
+    assert second.json()["already_exists"] is True
+    assert second.json()["request_id"] == first.json()["request_id"]
+
+    with SessionLocal() as session:
+        children = session.scalars(
+            select(IncomingPurchaseRequest).where(
+                IncomingPurchaseRequest.source_request_id == request_id
+            )
+        ).all()
+        assert len(children) == 1
+        child_items = session.scalars(
+            select(IncomingPurchaseRequestItem).where(
+                IncomingPurchaseRequestItem.request_id == children[0].id
+            )
+        ).all()
+        assert len(child_items) == 2
+
+
+def test_already_resubmitted_item_cannot_be_corrected_or_resubmitted_again(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_id, item_ids, portal_headers = _setup_returned_items_scenario(s, admin_headers, suffix, item_count=1)
+    item_id = item_ids[0]
+    assert _save_correction_draft(s, portal_headers, item_id).status_code == 200
+    resubmitted = _resubmit_corrections(s, portal_headers, request_id, [item_id])
+    assert resubmitted.status_code == 200, resubmitted.text
+
+    again = _save_correction_draft(s, portal_headers, item_id)
+    assert again.status_code == 409, again.text
 
 
 PDF_BYTES = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< >>\nendobj\n%%EOF"

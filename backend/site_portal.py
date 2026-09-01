@@ -130,12 +130,18 @@ class PortalRequestIn(BaseModel):
     items: List[PortalRequestItemIn] = Field(min_length=1, max_length=MAX_ITEMS)
 
 
-class CorrectedReturnedItemIn(BaseModel):
+class CorrectionDraftIn(BaseModel):
+    """One returned item's pending correction — saved as a draft, never a REQ
+    by itself. See save_returned_item_correction / resubmit_corrected_items."""
     product_name: str = Field(default="", max_length=200)
     unit: str = Field(default="", max_length=50)
     quantity: float = Field(gt=0, le=1_000_000_000)
     note: str = Field(default="", max_length=2000)
     required_delivery_date: str = Field(default="", max_length=10)
+
+
+class ResubmitCorrectionsIn(BaseModel):
+    item_ids: List[str] = Field(min_length=1, max_length=MAX_ITEMS)
 
 
 def _owned_request(session, request_id: str, user: User) -> IncomingPurchaseRequest:
@@ -198,12 +204,25 @@ def list_portal_requests(user: User = Depends(require_site_portal)) -> list[dict
         } for row in requests]
 
 
+def _returned_item_eligible(item: IncomingPurchaseRequestItem) -> bool:
+    return item.review_status in {"rejected", "need_clarification"}
+
+
+def _draft_ready(item: IncomingPurchaseRequestItem) -> bool:
+    draft = item.correction_draft or {}
+    return bool(draft.get("product_name") and draft.get("unit") and (draft.get("quantity") or 0) > 0)
+
+
 @router.get("/returned-items")
 def list_returned_items(user: User = Depends(require_site_portal)) -> list[dict]:
-    """Return only this Site Engineer's item-level exceptions.
+    """Return only this Site Engineer's item-level exceptions, grouped by
+    their original REQ on the frontend via request_id.
 
     The rows remain part of their original REQ. A linked child REQ is exposed
-    when the item has already been corrected, preventing accidental duplicates.
+    once the item has actually been resubmitted (as part of a grouped
+    correction), preventing it from being resubmitted a second time. Before
+    that, `draft`/`ready` reflect a pending correction saved but not yet
+    resubmitted — see save_returned_item_correction / resubmit_corrected_items.
     """
     with SessionLocal() as session:
         records = session.execute(
@@ -219,12 +238,17 @@ def list_returned_items(user: User = Depends(require_site_portal)) -> list[dict]
             .order_by(IncomingPurchaseRequestItem.reviewed_at.desc())
         ).all()
         source_item_ids = [item.id for item, _ in records]
-        children = session.scalars(
-            select(IncomingPurchaseRequest).where(
-                IncomingPurchaseRequest.source_item_id.in_(source_item_ids)
+        children = session.execute(
+            select(IncomingPurchaseRequestItem, IncomingPurchaseRequest)
+            .join(
+                IncomingPurchaseRequest,
+                IncomingPurchaseRequest.id == IncomingPurchaseRequestItem.request_id,
             )
+            .where(IncomingPurchaseRequestItem.source_item_id.in_(source_item_ids))
         ).all() if source_item_ids else []
-        child_by_item = {child.source_item_id: child for child in children}
+        child_by_source_item_id = {
+            child_item.source_item_id: child_request for child_item, child_request in children
+        }
         return [{
             "id": item.id,
             "request_id": request_row.id,
@@ -239,61 +263,56 @@ def list_returned_items(user: User = Depends(require_site_portal)) -> list[dict]
             "reason": item.review_reason,
             "reviewer": item.reviewed_by,
             "reviewed_at": item.reviewed_at,
+            "draft": item.correction_draft or None,
+            "ready": _draft_ready(item) if item.id not in child_by_source_item_id else False,
             "corrected_request": ({
-                "id": child_by_item[item.id].id,
-                "request_number": child_by_item[item.id].request_number,
-                "status": child_by_item[item.id].status,
-            } if item.id in child_by_item else None),
+                "id": child_by_source_item_id[item.id].id,
+                "request_number": child_by_source_item_id[item.id].request_number,
+                "status": child_by_source_item_id[item.id].status,
+            } if item.id in child_by_source_item_id else None),
         } for item, request_row in records]
 
 
 @router.post("/returned-items/{item_id}/correct")
-async def correct_returned_item(
+def save_returned_item_correction(
     item_id: str,
-    payload: str = Form(...),
-    attachments: List[UploadFile] = File(default=[]),
+    body: CorrectionDraftIn,
     user: User = Depends(require_site_portal),
 ) -> dict:
-    """Create one linked child REQ for a corrected returned item.
+    """Save (or update) one returned item's pending correction.
 
-    Never edits or deletes the original line, and never injects a corrected
-    line into an RFQ/comparison that may already be running.
+    This never creates a REQ and never edits the original line — it only
+    records what the corrected line WOULD look like. Several items from the
+    same original REQ can each be drafted independently; they are grouped
+    into one corrected child REQ only when resubmit_corrected_items runs.
     """
-    try:
-        body = CorrectedReturnedItemIn.model_validate_json(payload)
-    except ValidationError as exc:
-        raise HTTPException(422, "يرجى مراجعة بيانات الصنف المصحح") from exc
-    prepared = await _prepare_portal_attachments(attachments)
-    storage = get_attachment_storage()
-    written_keys: list[str] = []
-
     with SessionLocal() as session:
         item = session.get(IncomingPurchaseRequestItem, item_id)
         if not item:
             raise HTTPException(404, "الصنف المرتجع غير موجود")
         original = _owned_request(session, item.request_id, user)
-        if item.review_status not in {"rejected", "need_clarification"}:
+        if not _returned_item_eligible(item):
             raise HTTPException(409, "هذا الصنف لا ينتظر تصحيحًا حاليًا")
-        existing = session.scalar(select(IncomingPurchaseRequest).where(
-            IncomingPurchaseRequest.source_item_id == item.id,
-        ))
-        if existing:
-            return {
-                "ok": True, "already_exists": True,
-                "request_id": existing.id, "request_number": existing.request_number,
-                "source_request_id": original.id, "source_item_id": item.id,
-            }
+        already_resubmitted = session.scalar(
+            select(IncomingPurchaseRequestItem.id).where(
+                IncomingPurchaseRequestItem.source_item_id == item.id,
+            )
+        )
+        if already_resubmitted:
+            raise HTTPException(409, "هذا الصنف أُعيد تقديمه بالفعل")
 
         assigned_project_ids = {project.id for project in _assigned_projects(session, user.id)}
         if original.project_id not in assigned_project_ids:
             raise HTTPException(403, "لم يعد هذا المشروع مخصصًا لحسابك")
-        delivery_text = body.required_delivery_date.strip() or original.required_delivery_date
-        try:
-            delivery_date = datetime.strptime(delivery_text, "%Y-%m-%d").date()
-        except ValueError as exc:
-            raise HTTPException(422, "تاريخ التسليم المطلوب غير صحيح") from exc
-        if delivery_date < _local_today():
-            raise HTTPException(422, "تاريخ التسليم المطلوب لا يمكن أن يكون في الماضي")
+
+        delivery_text = body.required_delivery_date.strip()
+        if delivery_text:
+            try:
+                delivery_date = datetime.strptime(delivery_text, "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise HTTPException(422, "تاريخ التسليم المطلوب غير صحيح") from exc
+            if delivery_date < _local_today():
+                raise HTTPException(422, "تاريخ التسليم المطلوب لا يمكن أن يكون في الماضي")
 
         master_item = session.get(Item, item.item_id) if item.item_id else None
         product_name = (
@@ -306,21 +325,112 @@ async def correct_returned_item(
         if not unit:
             raise HTTPException(422, "وحدة الصنف المصحح مطلوبة")
 
-        request_id = str(uuid.uuid4())
+        timestamp = _now()
+        item.correction_draft = {
+            "product_name": product_name, "unit": unit,
+            "quantity": body.quantity, "note": body.note.strip(),
+            "required_delivery_date": delivery_text,
+            "saved_by": user.username, "saved_at": timestamp,
+        }
+        original.updated_at = timestamp
+        session.add(IncomingRequestStatusHistory(
+            id=str(uuid.uuid4()), request_id=original.id,
+            from_status=original.status, to_status=original.status,
+            changed_by=user.username,
+            note=f"تم تحديث تصحيح البند {item.position} ({product_name})",
+            created_at=timestamp,
+        ))
+        session.commit()
+        return {"ok": True, "item_id": item.id, "ready": True, "draft": item.correction_draft}
+
+
+@router.post("/purchase-requests/{request_id}/resubmit-corrections")
+def resubmit_corrected_items(
+    request_id: str,
+    body: ResubmitCorrectionsIn,
+    user: User = Depends(require_site_portal),
+) -> dict:
+    """Group every currently-ready corrected item from one original REQ into
+    ONE new linked child REQ. Atomic: any validation failure aborts the whole
+    batch, never a partially-created REQ.
+
+    Idempotent by construction: once an item has a child line (source_item_id
+    pointing to it), it is no longer "ready" and cannot be selected again. A
+    duplicate/retried call with the exact same item_ids therefore finds those
+    items already resubmitted and, if they all resolve to the SAME child REQ
+    (the normal double-click/network-retry case), returns that same REQ
+    instead of erroring or creating a second one.
+    """
+    item_ids = list(dict.fromkeys(body.item_ids))  # de-duplicate, keep order
+
+    with SessionLocal() as session:
+        original = _owned_request(session, request_id, user)
+        assigned_project_ids = {project.id for project in _assigned_projects(session, user.id)}
+        if original.project_id not in assigned_project_ids:
+            raise HTTPException(403, "لم يعد هذا المشروع مخصصًا لحسابك")
+
+        items = session.scalars(
+            select(IncomingPurchaseRequestItem).where(
+                IncomingPurchaseRequestItem.id.in_(item_ids),
+                IncomingPurchaseRequestItem.request_id == original.id,
+            )
+        ).all()
+        items_by_id = {row.id: row for row in items}
+        missing = [item_id for item_id in item_ids if item_id not in items_by_id]
+        if missing:
+            # Either unknown, or it belongs to a different original REQ —
+            # either way it cannot be grouped into this batch.
+            raise HTTPException(422, "بعض الأصناف غير موجودة في هذا الطلب الأصلي")
+
+        ordered_items = [items_by_id[item_id] for item_id in item_ids]
+
+        existing_children = session.execute(
+            select(IncomingPurchaseRequestItem.source_item_id, IncomingPurchaseRequestItem.request_id)
+            .where(IncomingPurchaseRequestItem.source_item_id.in_(item_ids))
+        ).all()
+        if existing_children:
+            resubmitted_ids = {row[0] for row in existing_children}
+            child_request_ids = {row[1] for row in existing_children}
+            if resubmitted_ids == set(item_ids) and len(child_request_ids) == 1:
+                # Exact retry of an already-completed resubmission (double
+                # click, client retry after a dropped response, ...).
+                existing_child = session.get(IncomingPurchaseRequest, next(iter(child_request_ids)))
+                return {
+                    "ok": True, "already_exists": True,
+                    "request_id": existing_child.id, "request_number": existing_child.request_number,
+                    "source_request_id": original.id, "item_count": len(item_ids),
+                }
+            raise HTTPException(
+                409, "بعض الأصناف المحددة أُعيد تقديمها بالفعل. يرجى تحديث الصفحة",
+            )
+
+        for item in ordered_items:
+            if not _returned_item_eligible(item):
+                raise HTTPException(409, f"البند {item.position} لا ينتظر تصحيحًا حاليًا")
+            if not _draft_ready(item):
+                raise HTTPException(422, f"البند {item.position} لا يحتوي على تصحيح مكتمل بعد")
+
+        delivery_candidates = [
+            item.correction_draft.get("required_delivery_date", "") for item in ordered_items
+        ]
+        delivery_text = max((value for value in delivery_candidates if value), default="") \
+            or original.required_delivery_date
+        try:
+            delivery_date = datetime.strptime(delivery_text, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise HTTPException(422, "تاريخ التسليم المطلوب غير صحيح") from exc
+        if delivery_date < _local_today():
+            raise HTTPException(422, "تاريخ التسليم المطلوب لا يمكن أن يكون في الماضي")
+
+        request_id_new = str(uuid.uuid4())
         request_number = f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
         timestamp = _now()
+        combined_notes = " / ".join(
+            filter(None, (item.correction_draft.get("note", "") for item in ordered_items))
+        )
         try:
-            for attachment in prepared:
-                stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
-                attachment["stored_filename"] = f"{request_id}/{stored_name}"
-                storage.put(
-                    attachment["stored_filename"], attachment["content"],
-                    attachment["media_type"], attachment["sha256"],
-                )
-                written_keys.append(attachment["stored_filename"])
-
             child = IncomingPurchaseRequest(
-                id=request_id, request_number=request_number,
+                id=request_id_new, request_number=request_number,
                 requester_name=user.display_name or user.username,
                 company_name=original.company_name, phone_number=original.phone_number,
                 whatsapp_number=original.whatsapp_number, email=original.email,
@@ -329,65 +439,61 @@ async def correct_returned_item(
                 project_location=original.project_location,
                 delivery_location=original.delivery_location,
                 required_delivery_date=delivery_text, priority=original.priority,
-                notes=body.note.strip(), status="new", assigned_employee="",
+                notes=combined_notes, status="new", assigned_employee="",
                 submission_token=str(uuid.uuid4()),
-                content_fingerprint=hashlib.sha256(f"corrected:{item.id}:{request_id}".encode()).hexdigest(),
+                content_fingerprint=hashlib.sha256(
+                    f"corrected-group:{original.id}:{request_id_new}".encode()
+                ).hexdigest(),
                 requester_user_id=user.id,
                 delivery_destination=original.delivery_destination,
-                source_request_id=original.id, source_item_id=item.id,
+                source_request_id=original.id, source_item_id="",
                 created_at=timestamp, updated_at=timestamp,
             )
             session.add(child)
-            session.add(IncomingPurchaseRequestItem(
-                id=str(uuid.uuid4()), request_id=request_id, position=1,
-                item_id=master_item.id if master_item else "",
-                product_name=product_name,
-                preferred_brand=item.preferred_brand,
-                main_category=item.main_category, subcategory=item.subcategory,
-                specifications=body.note.strip(), quantity=body.quantity, unit=unit,
-            ))
-            for attachment in prepared:
-                session.add(IncomingRequestGeneralAttachment(
-                    id=str(uuid.uuid4()), request_id=request_id,
-                    original_filename=attachment["original_filename"],
-                    stored_filename=attachment["stored_filename"],
-                    media_type=attachment["media_type"],
-                    size_bytes=attachment["size_bytes"], sha256=attachment["sha256"],
-                    created_at=timestamp,
+            for position, item in enumerate(ordered_items, 1):
+                draft = item.correction_draft
+                # Re-check the Item Master link still exists — it may have
+                # been removed since the draft was saved.
+                item_still_linked = bool(item.item_id) and session.get(Item, item.item_id) is not None
+                session.add(IncomingPurchaseRequestItem(
+                    id=str(uuid.uuid4()), request_id=request_id_new, position=position,
+                    item_id=item.item_id if item_still_linked else "",
+                    product_name=draft["product_name"],
+                    preferred_brand=item.preferred_brand,
+                    main_category=item.main_category, subcategory=item.subcategory,
+                    specifications=draft.get("note", ""),
+                    quantity=draft["quantity"], unit=draft["unit"],
+                    source_item_id=item.id,
                 ))
             session.add(IncomingRequestStatusHistory(
-                id=str(uuid.uuid4()), request_id=request_id, from_status="", to_status="new",
+                id=str(uuid.uuid4()), request_id=request_id_new, from_status="", to_status="new",
                 changed_by=user.username,
-                note=f"طلب مصحح مرتبط بـ {original.request_number} — البند {item.position}",
+                note=f"تم الإنشاء من الأصناف المرتجعة للطلب {original.request_number}",
                 created_at=timestamp,
             ))
             session.add(IncomingRequestStatusHistory(
                 id=str(uuid.uuid4()), request_id=original.id,
                 from_status=original.status, to_status=original.status,
                 changed_by=user.username,
-                note=f"أُعيد تقديم البند {item.position} في الطلب المصحح {request_number}",
+                note=f"تمت إعادة تقديم {len(ordered_items)} من الأصناف كطلب مصحح {request_number}",
                 created_at=timestamp,
             ))
             session.add(InternalNotification(
                 id=str(uuid.uuid4()), notification_type="corrected_purchase_request",
-                entity_type="incoming_purchase_request", entity_id=request_id,
+                entity_type="incoming_purchase_request", entity_id=request_id_new,
                 title=f"طلب مصحح جديد {request_number}",
-                message=f"مرتبط بالطلب {original.request_number} — {product_name}",
+                message=f"مرتبط بالطلب {original.request_number} — {len(ordered_items)} أصناف",
                 is_read=0, created_at=timestamp,
             ))
+            original.updated_at = timestamp
             session.commit()
         except Exception:
             session.rollback()
-            for key in written_keys:
-                try:
-                    storage.delete(key)
-                except Exception:
-                    pass
             raise
     return {
         "ok": True, "already_exists": False,
-        "request_id": request_id, "request_number": request_number,
-        "source_request_id": original.id, "source_item_id": item.id,
+        "request_id": request_id_new, "request_number": request_number,
+        "source_request_id": original.id, "item_count": len(ordered_items),
     }
 
 

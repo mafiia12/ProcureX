@@ -175,24 +175,70 @@ test("required delivery date defaults to the local creation date and prevents ea
   await act(async () => root.unmount());
 });
 
-test("shows returned items and creates a linked corrected request", async () => {
-  const returned = {
-    id: "returned-1", request_number: "REQ-ORIGINAL", project_name: "مشروع الاختبار",
+function returnedItem(overrides = {}) {
+  return {
+    id: "returned-1", request_id: "req-original", request_number: "REQ-ORIGINAL",
+    project_name: "مشروع الاختبار",
     product_name: "رخام", quantity: 2, unit: "م2", specifications: "سمك غير واضح",
     status: "need_clarification", reason: "حدد السمك", reviewer: "proc.engineer",
     reviewed_at: "2026-08-21T10:00:00Z", corrected_request: null, item_id: "",
+    draft: null, ready: false,
+    ...overrides,
   };
+}
+
+test("saving a correction only saves a draft — it never immediately creates a REQ", async () => {
+  const returned = returnedItem();
   mockContextAndItems({ returnedItems: [returned] });
-  mockPost.mockResolvedValue({ data: { request_number: "REQ-CORRECTED", already_exists: false } });
+  mockPost.mockResolvedValue({ data: { ok: true, item_id: "returned-1", ready: true, draft: {} } });
   const { container, root } = await renderPage();
   expect(container.querySelector('[data-testid="returned-items-section"]')).not.toBeNull();
   expect(container.textContent).toContain("حدد السمك");
   await click(container.querySelector('[data-testid="correct-returned-item-returned-1"]'));
   expect(container.querySelector('[data-testid="returned-item-correction-dialog"]')).not.toBeNull();
   await click(container.querySelector('[data-testid="submit-corrected-item"]'));
+
   const call = mockPost.mock.calls.find(([url]) => url === "/portal/returned-items/returned-1/correct");
   expect(call).toBeDefined();
-  expect(JSON.parse(call[1].get("payload"))).toEqual(expect.objectContaining({ quantity: 2 }));
+  expect(call[1]).toEqual(expect.objectContaining({ quantity: 2 }));
+  // Only the draft-save call happened — no grouped resubmission request.
+  expect(mockPost.mock.calls.some(([url]) => url.includes("resubmit-corrections"))).toBe(false);
+  await act(async () => root.unmount());
+});
+
+test("the grouped resubmit button only counts ready items and shows their count", async () => {
+  mockContextAndItems({ returnedItems: [
+    returnedItem({ id: "returned-1", ready: true, draft: { product_name: "رخام" } }),
+    returnedItem({ id: "returned-2", ready: true, draft: { product_name: "سيراميك" } }),
+    returnedItem({ id: "returned-3", ready: true, draft: { product_name: "دهان" } }),
+    returnedItem({ id: "returned-4", ready: false, draft: null }),
+  ] });
+  const { container, root } = await renderPage();
+
+  const button = container.querySelector('[data-testid="resubmit-corrected-group-button"]');
+  expect(button).not.toBeNull();
+  expect(button.textContent).toContain("3");
+  // The not-yet-corrected 4th item must not block or inflate the count.
+  expect(button.textContent).not.toContain("4");
+
+  await act(async () => root.unmount());
+});
+
+test("one grouped resubmit posts every ready item id together and creates one child REQ", async () => {
+  mockContextAndItems({ returnedItems: [
+    returnedItem({ id: "returned-1", ready: true, draft: { product_name: "رخام" } }),
+    returnedItem({ id: "returned-2", ready: true, draft: { product_name: "سيراميك" } }),
+  ] });
+  mockPost.mockResolvedValue({ data: { ok: true, already_exists: false, request_number: "REQ-20260901-GROUPED", item_count: 2 } });
+  const { container, root } = await renderPage();
+
+  await click(container.querySelector('[data-testid="resubmit-corrected-group-button"]'));
+
+  const call = mockPost.mock.calls.find(([url]) => url === "/portal/purchase-requests/req-original/resubmit-corrections");
+  expect(call).toBeDefined();
+  expect(call[1]).toEqual({ item_ids: ["returned-1", "returned-2"] });
+  expect(mockPost).toHaveBeenCalledTimes(1);
+
   await act(async () => root.unmount());
 });
 
