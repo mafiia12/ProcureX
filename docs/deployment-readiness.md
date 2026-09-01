@@ -57,6 +57,15 @@ The tested commit SHA must be the same SHA passed to the migration runner.
 
 - [ ] The CI `release-gate` passes for the exact candidate commit.
 - [ ] Create a staging-only PostgreSQL database and private R2 bucket.
+- [ ] `render.staging.yaml` has no `databases:` block - both
+      `procurex-staging-public-api` and `procurex-staging-erp-api` set
+      `DATABASE_URL` as `sync: false` (dashboard-managed) independently.
+      Confirm both are configured with the **exact same** `DATABASE_URL`
+      before staging acceptance: they share `whatsapp_settings`,
+      `users.phone_e164`, `incoming_purchase_requests`, `whatsapp_drafts`,
+      and `whatsapp_processed_messages`, and nothing in the config
+      mechanically prevents them from silently pointing at two different
+      databases.
 - [ ] Use distinct staging credentials, privacy salt, hostnames, and CORS origins.
 - [ ] Review `render.staging.yaml`; creating its resources requires approval.
 - [ ] Apply Alembic to staging and run `assert_schema_current.py`.

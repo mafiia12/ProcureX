@@ -20,7 +20,9 @@ from pathlib import Path
 from sqlalchemy import JSON, Float, Numeric, create_engine, func, inspect, select
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BACKEND_DIR))
+sys.path.insert(0, str(SCRIPTS_DIR))
 
 from database import Base  # noqa: E402
 
@@ -187,6 +189,18 @@ if _stale_exclusions:
 
 TOTALS = _discover_money_totals()
 
+# This script has no logic to reset a PostgreSQL sequence after copying
+# explicit primary-key values (no `setval(pg_get_serial_sequence(...))`
+# anywhere below) - because today there is no such sequence to reset: every
+# primary key in this schema is an application-generated string (see
+# KNOWN_TABLES). autoincrement_primary_keys() (in schema_guards.py, kept
+# dependency-free so it can be unit-tested without importing every model)
+# catches the day a future model introduces an autoincrementing integer
+# primary key instead: copying its explicit id values the same way as today
+# would leave PostgreSQL's sequence unaware of them, and the next ordinary
+# INSERT could collide with an already-migrated row.
+from schema_guards import autoincrement_primary_keys  # noqa: E402
+
 
 def normalize_postgres_url(url: str) -> str:
     if url.startswith("postgres://"):
@@ -336,6 +350,18 @@ def main() -> int:
             "KNOWN_TABLES lists tables missing from Base.metadata - a model "
             "class was removed, renamed, or this script stopped importing "
             f"its module: {sorted(known_missing)}"
+        )
+
+    unhandled_autoincrement = autoincrement_primary_keys(Base.metadata)
+    if unhandled_autoincrement:
+        raise SystemExit(
+            "This script has no PostgreSQL sequence-sync logic, but these "
+            "primary keys would be Postgres SERIAL/IDENTITY columns that "
+            f"need one after copying explicit values: {sorted(unhandled_autoincrement)}. "
+            "Add setval(pg_get_serial_sequence(...), MAX(id)) handling for "
+            "them before using this script, or make the primary key an "
+            "explicit non-autoincrementing value (e.g. autoincrement=False, "
+            "or a string) if that was unintentional."
         )
 
     parser = argparse.ArgumentParser()

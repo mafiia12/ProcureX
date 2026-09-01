@@ -63,12 +63,14 @@ services:
         sync: false
       - key: R2_REGION
         value: auto
-      # WhatsApp intake lives on this service, not procurex-erp-api: Meta
-      # calls one fixed webhook URL, whatsapp_router is mounted on both
+      # This service remains Meta's one registered webhook target: Meta
+      # calls a single fixed URL, whatsapp_router is mounted on both
       # surfaces, and this is the surface already hardened for anonymous
-      # internet traffic. whatsapp_settings lives in the shared database, so
-      # the admin on/off toggle on the ERP app keeps working regardless of
-      # which service actually receives the webhook.
+      # internet traffic. procurex-erp-api carries its own copy of these
+      # same values too (see its comment) so Settings/Test Connection there
+      # can call Meta directly - whatsapp_settings itself still lives in the
+      # one shared database, so the admin on/off toggle stays correct
+      # regardless of which service actually receives the webhook.
       - key: PUBLIC_BASE_URL
         sync: false
       - key: WHATSAPP_ENABLED
@@ -139,14 +141,37 @@ services:
         sync: false
       - key: FORCE_HTTPS
         value: "true"
-      # TRUST_PROXY_HEADERS=true here requires INTERNAL_REQUEST_TOKEN below -
-      # _validate_hosted_configuration refuses to start otherwise, because
-      # without a real token the internal-access gate's "trust localhost"
-      # fallback would be spoofable from the internet behind Render's proxy.
+      # Temporarily false: Render's actual proxy-to-container hop address
+      # has not been verified, so request.client.host/X-Forwarded-For
+      # cannot yet be trusted as the real visitor IP here. The IP-keyed
+      # login limiter (auth/router.py) self-disables whenever this is not
+      # exactly "true"; the username-keyed limiter stays fully active
+      # regardless, so login brute-force protection is not weakened. Flip
+      # to "true" only after Render's forwarding behavior is confirmed -
+      # INTERNAL_REQUEST_TOKEN below is already set either way.
       - key: TRUST_PROXY_HEADERS
-        value: "true"
+        value: "false"
       - key: INTERNAL_REQUEST_TOKEN
         generateValue: true
+      # Duplicated from procurex-public-api - not a duplicate settings
+      # store. whatsapp_admin_router (Settings, Test Connection) is mounted
+      # only on this full surface and calls Meta's API directly to verify
+      # connectivity, so it needs its own copy of these same Meta
+      # credentials. procurex-public-api remains Meta's one registered
+      # webhook target; the on/off toggle and connection status still live
+      # in the single shared whatsapp_settings row in Postgres, not here.
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: WHATSAPP_ENABLED
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
 
   - type: web
     name: procurex-public-form
