@@ -31,7 +31,6 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     delete,
-    func,
     select,
     text,
 )

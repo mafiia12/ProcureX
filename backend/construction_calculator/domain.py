@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
-from typing import Iterable
 
 
 FORMULAS_VERSION = "construction-v1"

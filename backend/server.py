@@ -60,7 +60,7 @@ try:
     from .whatsapp.router import router as whatsapp_router
     from .whatsapp.admin_router import router as whatsapp_admin_router
     from .excel_io import (parse_workbook, import_data, build_export_workbook,
-                           next_code, next_seq_id, next_record_no,
+                           next_seq_id, next_record_no,
                            recompute_payment_status)
 except ImportError:
     from auth.admin_router import router as admin_users_router
@@ -99,7 +99,7 @@ except ImportError:
     from whatsapp.router import router as whatsapp_router
     from whatsapp.admin_router import router as whatsapp_admin_router
     from excel_io import (parse_workbook, import_data, build_export_workbook,
-                          next_code, next_seq_id, next_record_no,
+                          next_seq_id, next_record_no,
                           recompute_payment_status)
 
 ROOT_DIR = Path(__file__).parent

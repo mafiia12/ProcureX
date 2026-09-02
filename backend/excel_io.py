@@ -232,19 +232,6 @@ def parse_workbook(content: bytes) -> dict:
     return out
 
 
-async def next_code(coll, prefix: str, width: int):
-    docs = await coll.find({}, {"code": 1}).to_list(10000)
-    mx = 0
-    for d in docs:
-        c = str(d.get("code", ""))
-        if c.startswith(prefix):
-            try:
-                mx = max(mx, int(c[len(prefix):]))
-            except ValueError:
-                pass
-    return f"{prefix}{mx + 1:0{width}d}"
-
-
 async def next_seq_id(coll, field: str, prefix: str, width: int):
     docs = await coll.find({}, {field: 1}).to_list(100000)
     mx = 0
