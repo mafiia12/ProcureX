@@ -1,11 +1,8 @@
 """Release-schema gate used by the bundled ProcureX desktop runtime.
 
-The desktop package cannot run historical migrations against an existing
-customer database.  This module therefore accepts only the two schema shapes
-certified for the 0.3.0 release: the exact 0006 semantic schema, and the exact
-0.2.1 legacy shape that needs the narrowly scoped schema-contract
-reconciliation.  Every existing unversioned database is backed up before a
-transactional reconciliation or Alembic adoption.
+The desktop package does not replay historical migrations against an existing
+customer database. Every supported unversioned shape is semantically verified
+and backed up before narrowly scoped reconciliation or Alembic adoption.
 """
 
 from __future__ import annotations
@@ -21,11 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from schema_contract import HEAD_REVISION, reconcile_sqlite_connection
-from scripts.schema_fingerprint import semantic_schema
+from scripts.schema_fingerprint import release_semantic_schema, semantic_schema
 
 
 EXPECTED_SEMANTIC_SHA256 = (
-    "fd32f4e686589e09e43347082387af8376c1778f7dcd7dffd9e1fcf00b028abe"
+    "a6592d200824de1ba1d348683bd1b583d356ab5ba7a3cc3d27c83c7d63019288"
 )
 CORRECTED_ANCESTRY_LEGACY_SEMANTIC_SHA256 = {
     # Certified 0016 schema and the unversioned local ProcureX database shape
@@ -146,6 +143,7 @@ def _inspect_connection(connection: sqlite3.Connection) -> dict[str, Any]:
             totals["purchase_invoice_total"] - totals["payments_total"]
         )
     semantic = semantic_schema(connection)
+    release_semantic = release_semantic_schema(connection)
     return {
         "integrity": integrity,
         "foreign_key_violations": len(violations),
@@ -154,7 +152,8 @@ def _inspect_connection(connection: sqlite3.Connection) -> dict[str, Any]:
         "counts": counts,
         "financial_totals": totals,
         "row_digests": row_digests,
-        "semantic_sha256": _sha256_json(semantic),
+        "semantic_sha256": _sha256_json(release_semantic),
+        "strict_semantic_sha256": _sha256_json(semantic),
     }
 
 
@@ -194,7 +193,8 @@ def _assert_preserved(before: dict[str, Any], after: dict[str, Any]) -> None:
         if before["row_digests"].get(table) != after["row_digests"].get(table)
     }
     ancestry_only_transition = (
-        before["semantic_sha256"] in CORRECTED_ANCESTRY_LEGACY_SEMANTIC_SHA256
+        before.get("strict_semantic_sha256", before["semantic_sha256"])
+        in CORRECTED_ANCESTRY_LEGACY_SEMANTIC_SHA256
         and after["semantic_sha256"] == EXPECTED_SEMANTIC_SHA256
         and changed_tables == {"incoming_purchase_requests"}
         and before["counts"].get("incoming_purchase_requests", 0)
@@ -225,14 +225,19 @@ def _backup_database(source: Path, backup_dir: Path) -> Path:
 
 
 def _create_fresh_database(database: Path) -> dict[str, Any]:
-    """Create the certified 0006 schema without enabling calculator routes."""
+    """Create the complete certified application schema for a new database."""
     from sqlalchemy import create_engine
 
     from database import Base
+    import auth.models  # noqa: F401 - registers authentication tables
     import construction_calculator.models  # noqa: F401 - schema compatibility only
+    import daily_report  # noqa: F401 - registers daily-report tables
     import document_capture.models  # noqa: F401 - registers document tables
     import incoming_requests  # noqa: F401 - registers request tables
     import price_comparisons  # noqa: F401 - registers comparison tables
+    import procurement_workflow  # noqa: F401 - registers approval/workflow tables
+    import rfq  # noqa: F401 - registers RFQ tables
+    import whatsapp.models  # noqa: F401 - registers WhatsApp tables
 
     database.parent.mkdir(parents=True, exist_ok=True)
     temporary = database.parent / f".{database.name}.initialize-{uuid.uuid4().hex}.tmp"
@@ -355,7 +360,7 @@ def ensure_release_database(database: Path, backup_dir: Path) -> dict[str, Any]:
     if before["alembic_table_present"]:
         if (
             before["alembic_revisions"] == ["0016_po_payment_ledger"]
-            and before["semantic_sha256"]
+            and before["strict_semantic_sha256"]
             == "1696c8f6002fdca7445b5734f90a4e35101dd271ea1d578e266e0606651d6082"
         ):
             backup = _backup_database(database, backup_dir)
@@ -379,7 +384,11 @@ def ensure_release_database(database: Path, backup_dir: Path) -> dict[str, Any]:
         return {"status": "current", "database": str(database), "after": before}
 
     semantic = before["semantic_sha256"]
-    if semantic not in ({EXPECTED_SEMANTIC_SHA256} | SUPPORTED_LEGACY_SEMANTIC_SHA256):
+    strict_semantic = before["strict_semantic_sha256"]
+    if (
+        semantic != EXPECTED_SEMANTIC_SHA256
+        and strict_semantic not in SUPPORTED_LEGACY_SEMANTIC_SHA256
+    ):
         raise RuntimeError(
             "Unversioned ProcureX database has an unsupported schema; refusing startup"
         )
