@@ -2714,6 +2714,12 @@ async def _dashboard_procurement_intelligence(
     })
 
     # ---- 14. Consolidated follow-up/attention center, priority ordered ----
+    # Every entry below carries entity_type/entity_id (plus a type-specific
+    # id such as purchase_order_id/rfq_id/request_id/approval_id) so the
+    # frontend follow-up deep-link helper (getFollowUpTarget, Dashboard.jsx)
+    # can route straight to the exact record/stage instead of a bare list
+    # page. "path" is kept unchanged for backward compatibility with any
+    # caller still using it directly.
     attention_items = []
     for row in delivery_attention:
         if row["status"] == "delivery_problem":
@@ -2721,6 +2727,8 @@ async def _dashboard_procurement_intelligence(
                 "type": "delivery_problem", "reference": row["po_number"], "project_name": row["project_name"],
                 "reason": "مشكلة في التوريد", "due_or_age": row["last_receipt_date"],
                 "path": f"/purchase-orders/{row['purchase_order_id']}",
+                "entity_type": "purchase_order", "entity_id": row["purchase_order_id"],
+                "purchase_order_id": row["purchase_order_id"], "stage": "receiving",
             })
     for row in payment_attention:
         if row["is_overdue"]:
@@ -2728,6 +2736,8 @@ async def _dashboard_procurement_intelligence(
             attention_items.append({
                 "type": "overdue_payment", "reference": row["po_number"], "project_name": row["project_name"],
                 "reason": reason, "due_or_age": row["due_date"], "path": f"/purchase-orders/{row['purchase_order_id']}",
+                "entity_type": "purchase_order", "entity_id": row["purchase_order_id"],
+                "purchase_order_id": row["purchase_order_id"], "stage": "payments",
             })
     for row in sourcing_attention:
         attention_items.append({
@@ -2735,6 +2745,7 @@ async def _dashboard_procurement_intelligence(
             "reference": row["rfq_number"], "project_name": row["project_name"],
             "reason": row["reason"], "due_or_age": row["deadline"],
             "path": f"/rfq/{row['rfq_id']}",
+            "entity_type": "rfq", "entity_id": row["rfq_id"], "rfq_id": row["rfq_id"],
         })
     for request_row in sorted(requests_ready_for_sourcing, key=lambda row: row.updated_at):
         attention_items.append({
@@ -2743,6 +2754,8 @@ async def _dashboard_procurement_intelligence(
             "reason": "أصناف معتمدة جاهزة لإنشاء طلب تسعير ومقارنة",
             "due_or_age": request_row.updated_at, "path": "/incoming-requests",
             "responsible_role": "procurement_responsible",
+            "entity_type": "incoming_request", "entity_id": request_row.id, "request_id": request_row.id,
+            "stage": "sourcing",
         })
     pending_approvals = [
         approval for approval in approvals
@@ -2756,6 +2769,8 @@ async def _dashboard_procurement_intelligence(
             "reason": "اعتماد معلق يحتاج قرارًا",
             "due_or_age": approval.created_at, "path": "/approvals",
             "responsible_role": approval.responsible_role,
+            "entity_type": "approval", "entity_id": approval.id, "approval_id": approval.id,
+            "stage": approval.approval_stage,
         })
     for order in active_orders:
         if order.get("status") == "sent":
@@ -2763,6 +2778,7 @@ async def _dashboard_procurement_intelligence(
                 "type": "awaiting_supplier_confirmation", "reference": order.get("po_number", ""),
                 "project_name": order.get("project_name", ""), "reason": "بانتظار تأكيد المورد",
                 "due_or_age": order.get("po_date"), "path": f"/purchase-orders/{order['id']}",
+                "entity_type": "purchase_order", "entity_id": order["id"], "purchase_order_id": order["id"],
             })
     for row in delivery_attention:
         if row["status"] == "partial_received":
@@ -2770,6 +2786,8 @@ async def _dashboard_procurement_intelligence(
                 "type": "partial_received", "reference": row["po_number"], "project_name": row["project_name"],
                 "reason": f"{row['received_lines']} من {row['total_lines']} بنود مستلمة",
                 "due_or_age": row["last_receipt_date"], "path": f"/purchase-orders/{row['purchase_order_id']}",
+                "entity_type": "purchase_order", "entity_id": row["purchase_order_id"],
+                "purchase_order_id": row["purchase_order_id"], "stage": "receiving",
             })
     for request_row in requests:
         if request_row.status == "need_clarification":
@@ -2780,6 +2798,8 @@ async def _dashboard_procurement_intelligence(
                 "reason": "بانتظار استكمال التوضيح المطلوب",
                 "due_or_age": request_row.updated_at,
                 "path": "/incoming-requests",
+                "entity_type": "incoming_request", "entity_id": request_row.id, "request_id": request_row.id,
+                "stage": "clarification",
             })
         elif request_row.status in {"new", "under_review"}:
             attention_items.append({
@@ -2789,9 +2809,12 @@ async def _dashboard_procurement_intelligence(
                 "reason": "طلب شراء يحتاج مراجعة فنية" if request_row.status == "new" else "مراجعة فنية قيد الإجراء",
                 "due_or_age": request_row.updated_at,
                 "path": "/incoming-requests",
+                "entity_type": "incoming_request", "entity_id": request_row.id, "request_id": request_row.id,
+                "stage": "technical-review",
             })
     for item in attention_items:
         item.setdefault("responsible_role", ATTENTION_TYPE_ROLE_OWNERS.get(item["type"], ""))
+        item.setdefault("action_type", item["type"])
 
     # Admin sees the full action center; every other role sees only the
     # items owned by their own workflow responsibility (existing RBAC roles

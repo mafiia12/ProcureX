@@ -1,5 +1,6 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { toast } from "sonner";
 import PurchaseOrderDetails from "@/pages/PurchaseOrderDetails";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -8,10 +9,12 @@ const mockNavigate = jest.fn();
 const mockGet = jest.fn();
 const mockPost = jest.fn();
 const mockPatch = jest.fn();
+const mockSearchParams = jest.fn(() => [new URLSearchParams(), jest.fn()]);
 
 jest.mock("react-router-dom", () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({ purchaseOrderId: "po-1" }),
+  useSearchParams: (...args) => mockSearchParams(...args),
   Link: ({ children, to, ...props }) => <a href={typeof to === "string" ? to : "#"} {...props}>{children}</a>,
 }), { virtual: true });
 jest.mock("@/lib/api", () => ({
@@ -73,6 +76,8 @@ beforeEach(() => {
   });
   mockPatch.mockResolvedValue({ data: { ...order, status: "approved" } });
   mockNavigate.mockClear();
+  mockSearchParams.mockReturnValue([new URLSearchParams(), jest.fn()]);
+  toast.error.mockClear();
   mockUseAuth.mockReturnValue({ user: { username: "admin1", role: "admin", account_type: "erp" } });
 });
 
@@ -581,6 +586,43 @@ test("paid status renders", async () => {
 
   await act(async () => root.unmount());
   container.remove();
+});
+
+// ---------------- Dashboard follow-up deep links ----------------
+
+test("?section=payments opens the PO directly on the payments tab", async () => {
+  mockSearchParams.mockReturnValue([new URLSearchParams("section=payments"), jest.fn()]);
+  const { container, root } = await renderDetails();
+
+  const paymentsPanel = container.querySelector('[data-testid="po-payment-summary"]');
+  expect(paymentsPanel.closest('[data-state="active"]')).not.toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("?section=receiving opens the PO directly on the receiving tab", async () => {
+  mockSearchParams.mockReturnValue([new URLSearchParams("section=receiving"), jest.fn()]);
+  mockGet.mockImplementation((path) => Promise.resolve({
+    data: path.endsWith("/payments") ? ledgerFixture : deliveryOrderFixture(),
+  }));
+  const { container, root } = await renderDetails();
+
+  const receivingSection = container.querySelector('[data-testid="site-receiving-section"]');
+  expect(receivingSection.closest('[data-state="active"]')).not.toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("an unknown/deleted PO id from a follow-up link falls back to the register with a toast, no crash", async () => {
+  mockGet.mockImplementation(() => Promise.reject({ response: { status: 404 } }));
+  const { root } = await renderDetails();
+
+  expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders", { replace: true });
+  expect(toast.error).toHaveBeenCalled();
+
+  await act(async () => root.unmount());
 });
 
 test("overdue status renders", async () => {

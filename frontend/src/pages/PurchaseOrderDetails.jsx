@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle, ArrowLeft, ArrowRight, Ban, CheckCircle2, FileText, History,
   PackageCheck, Printer, ShieldCheck, Truck, Wallet, XCircle,
@@ -43,14 +43,21 @@ const paymentMethodEnglish = {
 };
 const makeKey = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
+const DEEP_LINK_TABS = new Set(["payments", "receiving"]);
+
 export default function PurchaseOrderDetails() {
   const { purchaseOrderId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const { tr, direction, locale } = usePreferences();
   const role = user?.role || "";
   const canOperatePO = role === "admin" || role === "procurement_responsible";
   const canManagePayments = role === "admin" || role === "commercial_manager";
+  const requestedSection = searchParams.get("section");
+  const [activeTab, setActiveTab] = useState(
+    DEEP_LINK_TABS.has(requestedSection) ? requestedSection : "overview",
+  );
   const [order, setOrder] = useState(null);
   const [actor, setActor] = useState("");
   const [note, setNote] = useState("");
@@ -73,6 +80,11 @@ export default function PurchaseOrderDetails() {
       const { data } = await api.get(`/purchase-orders/${purchaseOrderId}`);
       setOrder(data);
     } catch (error) {
+      if (error?.response?.status === 404) {
+        toast.error(tr("تعذر فتح السجل المطلوب أو تغيرت حالته", "Couldn't open that record, or its status has changed"));
+        navigate("/purchase-orders", { replace: true });
+        return;
+      }
       toast.error(errMsg(error));
     }
   };
@@ -85,6 +97,9 @@ export default function PurchaseOrderDetails() {
     }
   };
   useEffect(() => { load(); loadLedger(); }, [purchaseOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (DEEP_LINK_TABS.has(requestedSection)) setActiveTab(requestedSection);
+  }, [purchaseOrderId, requestedSection]);
 
   const finalize = async () => {
     setBusy(true);
@@ -260,7 +275,7 @@ export default function PurchaseOrderDetails() {
       </> : <div className="text-sm text-amber-800 dark:text-amber-300">{tr("الإجراء متاح لمسؤول المشتريات فقط؛ باقي الأدوار يمكنها العرض.", "Only the procurement lead can perform this action; other roles have read access.")}</div>}
     </ActionBar>}
 
-    <Tabs defaultValue="overview" dir={direction}>
+    <Tabs value={activeTab} onValueChange={setActiveTab} dir={direction}>
       <TabsList className="flex h-auto w-full justify-start overflow-x-auto">
         {[
           ["overview", tr("نظرة عامة", "Overview")],

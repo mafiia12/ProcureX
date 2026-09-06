@@ -4,6 +4,7 @@ import {
   AlertCircle, CalendarDays, CircleDollarSign, ClipboardCheck, FileCheck2,
   Inbox, PackageCheck, ShoppingCart, Truck, Wallet,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import {
   EmptyState, KpiStrip, Panel, StatusBadge,
@@ -14,6 +15,7 @@ import {
 } from "@/components/ui/table";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import api, { fmtEGP } from "@/lib/api";
+import { getFollowUpTarget } from "@/lib/followUpNavigation";
 
 export const ATTENTION_META = {
   delivery_problem: { label: ["مشكلة توريد", "Delivery problem"], tone: "danger", action: ["مراجعة التوريد", "Review delivery"] },
@@ -80,6 +82,17 @@ export default function Dashboard() {
   useEffect(() => {
     api.get("/dashboard").then((response) => setDashboard(response.data));
   }, []);
+
+  const openFollowUp = (item) => {
+    const target = getFollowUpTarget(item);
+    if (!target) {
+      toast.error(tr("تعذر فتح السجل المطلوب أو تغيرت حالته", "Couldn't open that record, or its status has changed"));
+      return;
+    }
+    const to = `${target.pathname}${target.search || ""}`;
+    if (target.state) navigate(to, { state: target.state });
+    else navigate(to);
+  };
 
   const supplierByReference = useMemo(() => {
     if (!dashboard) return {};
@@ -170,7 +183,21 @@ export default function Dashboard() {
                 const isHighPriority = HIGH_PRIORITY_ATTENTION.has(item.type);
                 const roleLabel = ROLE_LABELS[item.responsible_role];
                 return (
-                  <TableRow key={`${item.type}-${item.reference}-${index}`} className="h-9" data-testid={`attention-item-${item.type}`}>
+                  <TableRow
+                    key={`${item.type}-${item.reference}-${index}`}
+                    className="h-9 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                    data-testid={`attention-item-${item.type}`}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`${tr(...meta.label)} — ${item.reference}`}
+                    onClick={() => openFollowUp(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openFollowUp(item);
+                      }
+                    }}
+                  >
                     <TableCell className="whitespace-nowrap py-1"><StatusBadge tone={isHighPriority ? "danger" : "warning"}>{isHighPriority ? tr("عاجل", "High") : tr("متابعة", "Follow up")}</StatusBadge></TableCell>
                     <TableCell className="whitespace-nowrap py-1 font-mono text-xs font-bold text-foreground" dir="ltr">{item.reference}</TableCell>
                     <TableCell className="max-w-[250px] py-1 text-xs">
@@ -183,7 +210,7 @@ export default function Dashboard() {
                     <TableCell className="whitespace-nowrap py-1 text-xs text-muted-foreground" dir="auto">{item.due_or_age || "-"}</TableCell>
                     <TableCell className="max-w-[120px] truncate py-1 text-xs text-muted-foreground" title={item.responsible_role}>{roleLabel ? tr(...roleLabel) : (item.responsible_role || "-")}</TableCell>
                     <TableCell className="w-28 py-1 text-end">
-                      <Button type="button" size="sm" variant="outline" className="h-7" onClick={() => navigate(item.path)}>{tr(...meta.action)}</Button>
+                      <Button type="button" size="sm" variant="outline" className="h-7" onClick={(event) => { event.stopPropagation(); openFollowUp(item); }}>{tr(...meta.action)}</Button>
                     </TableCell>
                   </TableRow>
                 );

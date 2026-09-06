@@ -91,6 +91,80 @@ test("centers actual actionable records with one direct action", async () => {
   container.remove();
 });
 
+test("clicking anywhere on the row opens the exact record, not just the button", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      { type: "delivery_problem", reference: "PO-000010", project_name: "مشروع ب", reason: "مشكلة في التوريد", path: "/purchase-orders/po-problem-1", purchase_order_id: "po-problem-1" },
+    ],
+  });
+  const row = container.querySelector('[data-testid="attention-item-delivery_problem"]');
+  await act(async () => { row.click(); });
+  expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders/po-problem-1?section=receiving");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("Enter/Space keyboard activation opens the exact record", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      { type: "pending_approval", reference: "APR-1", project_name: "مشروع ب", reason: "اعتماد معلق", path: "/approvals", approval_id: "approval-1" },
+    ],
+  });
+  const row = container.querySelector('[data-testid="attention-item-pending_approval"]');
+  await act(async () => {
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  });
+  expect(mockNavigate).toHaveBeenCalledWith("/approvals", { state: { approval_id: "approval-1" } });
+  await act(async () => {
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+  });
+  expect(mockNavigate).toHaveBeenCalledTimes(2);
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("RFQ/sourcing/PO/payment/receiving follow-ups deep-link into the exact record and stage", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      { type: "overdue_payment", reference: "PO-2", project_name: "م", reason: "متأخر", path: "/purchase-orders/po-2", purchase_order_id: "po-2" },
+      { type: "partial_received", reference: "PO-3", project_name: "م", reason: "جزئي", path: "/purchase-orders/po-3", purchase_order_id: "po-3" },
+      { type: "rfq_past_deadline", reference: "RFQ-1", project_name: "م", reason: "متأخر", path: "/rfq/rfq-1", rfq_id: "rfq-1" },
+      { type: "sourcing_required", reference: "REQ-9", project_name: "م", reason: "جاهز", path: "/incoming-requests", request_id: "req-9" },
+    ],
+  });
+  const clickRow = async (type) => {
+    await act(async () => { container.querySelector(`[data-testid="attention-item-${type}"]`).click(); });
+  };
+  await clickRow("overdue_payment");
+  expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders/po-2?section=payments");
+  await clickRow("partial_received");
+  expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders/po-3?section=receiving");
+  await clickRow("rfq_past_deadline");
+  expect(mockNavigate).toHaveBeenCalledWith("/rfq/rfq-1");
+  await clickRow("sourcing_required");
+  expect(mockNavigate).toHaveBeenCalledWith("/incoming-requests", { state: { request_id: "req-9" } });
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("a follow-up item with no usable target shows a fallback toast instead of navigating or crashing", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      { type: "some_future_type", reference: "X-1", project_name: "م", reason: "غير معروف" },
+    ],
+  });
+  const row = container.querySelector('[data-testid="attention-item-some_future_type"]');
+  expect(row).not.toBeNull();
+  await act(async () => { row.click(); });
+  expect(mockNavigate).not.toHaveBeenCalled();
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("keeps the daily report compact and removes non-actionable document artifacts", async () => {
   const { container, root } = await renderDashboard({
     ...dashboard,

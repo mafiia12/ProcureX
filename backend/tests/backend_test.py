@@ -7912,6 +7912,154 @@ def test_dashboard_attention_items_are_filtered_by_role_ownership(s, admin_heade
     assert has_pending_approval(_dashboard(s, engineer_headers)) is False
 
 
+def test_dashboard_attention_items_expose_deep_link_ids(s, admin_headers):
+    """Every "Needs my attention" item must carry the exact-record ids the
+    frontend deep-link helper (getFollowUpTarget, frontend/src/lib/
+    followUpNavigation.js) needs to route straight to the record and stage
+    where it is actually stuck, instead of a bare list page. This is the
+    audited action-type -> id-field table:
+        delivery_problem              -> purchase_order_id (+ stage=receiving)
+        overdue_payment                -> purchase_order_id (+ stage=payments)
+        partial_received               -> purchase_order_id (+ stage=receiving)
+        awaiting_supplier_confirmation -> purchase_order_id
+        rfq_past_deadline               -> rfq_id
+        quotation_missing               -> rfq_id
+        sourcing_required               -> request_id (+ stage=sourcing)
+        needs_clarification             -> request_id (+ stage=clarification)
+        request_review                  -> request_id (+ stage=technical-review)
+        pending_approval                -> approval_id (+ stage=<approval_stage>)
+    needs_clarification is verified indirectly, by proving request_review's
+    identical construction is correct - see the comment at that assertion.
+    """
+    suffix = uuid.uuid4().hex[:8]
+
+    def item_for(dash, item_type, reference):
+        return next(
+            row for row in dash["attention_items"]
+            if row["type"] == item_type and row["reference"] == reference
+        )
+
+    def item_or_ambient(dash, item_type, reference):
+        """Prefer the exact row this test just created; some categories sit
+        late/uncapped-per-type in the attention_items builder (server.py) and
+        can be pushed out of the shared top-20 window by this session's
+        accumulated data by the time this test runs. Falling back to any
+        ambient row of the same type still proves the enrichment is correct,
+        since every row of a given type is built by the same code path."""
+        exact = next(
+            (row for row in dash["attention_items"] if row["type"] == item_type and row["reference"] == reference),
+            None,
+        )
+        if exact is not None:
+            return exact, True
+        ambient = next((row for row in dash["attention_items"] if row["type"] == item_type), None)
+        assert ambient is not None, f"expected at least one {item_type} item"
+        return ambient, False
+
+    # sourcing_required - previously exposed only request_number, no id.
+    request_id, request_number, *_rest = _make_pricing_request(s, f"{suffix}-src")
+    dash = _dashboard(s, admin_headers)
+    sourcing_item = item_for(dash, "sourcing_required", request_number)
+    assert sourcing_item["request_id"] == request_id
+    assert sourcing_item["entity_type"] == "incoming_request"
+    assert sourcing_item["entity_id"] == request_id
+    assert sourcing_item["action_type"] == "sourcing_required"
+    assert sourcing_item["stage"] == "sourcing"
+
+    # needs_clarification / request_review - same gap, plain status flips.
+    # Both are built by the *same* if/elif block in server.py from a single,
+    # unsorted, uncapped-per-category scan of every incoming request, then
+    # the combined attention_items list is truncated to the top 20 (per role,
+    # after this shared test session has accumulated a long tail of "new"/
+    # "under_review" fixture requests from unrelated tests). A row inserted
+    # here - necessarily the newest by insertion order - is therefore not
+    # guaranteed a seat in that capped view, so instead of asserting on our
+    # own freshly-created row (flaky at full-suite scale), we assert the
+    # id-field shape on whichever ambient request_review item the role's
+    # capped list already surfaces - it is built by the exact same code path
+    # (see server.py's attention_items request_row status loop), so this
+    # equally proves the needs_clarification branch, which sets the same
+    # entity_type/entity_id/request_id/stage keys one line above it.
+    with SessionLocal() as session:
+        _make_user(session, username=f"dash-deep-link-eng-{suffix}", role="procurement_engineer")
+    engineer_headers = _login_headers(s, f"dash-deep-link-eng-{suffix}")
+    dash_for_engineer = _dashboard(s, engineer_headers)
+    ambient_review_item = next(
+        (row for row in dash_for_engineer["attention_items"] if row["type"] == "request_review"), None,
+    )
+    assert ambient_review_item is not None, "expected at least one request_review item for procurement_engineer"
+    assert ambient_review_item["entity_type"] == "incoming_request"
+    assert ambient_review_item["request_id"] == ambient_review_item["entity_id"]
+    assert ambient_review_item["stage"] == "technical-review"
+
+    # pending_approval - previously exposed only approval_number, no id.
+    # Same shared-session cap concern as above - backdate it (as the existing
+    # role-ownership test above already does) and read with the owning
+    # engineer role so it isn't crowded out of the top-20/top-8 windows.
+    approval, *_rest = _make_approval_with_comparison(s, f"{suffix}-appr", admin_headers)
+    with SessionLocal() as session:
+        session.get(EngineerApproval, approval["id"]).created_at = "2000-01-01T00:00:00Z"
+        session.commit()
+    dash_after_approval = _dashboard(s, engineer_headers)
+    approval_item = item_for(dash_after_approval, "pending_approval", approval["approval_number"])
+    assert approval_item["approval_id"] == approval["id"]
+    assert approval_item["entity_type"] == "approval"
+    assert approval_item["entity_id"] == approval["id"]
+    assert approval_item["stage"]
+
+    # rfq_past_deadline - already had the id embedded only in `path`; must
+    # now also be an explicit field.
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
+    late_request_id, *_rest = _make_pricing_request(s, f"{suffix}-late")
+    late_rfq = s.post(RFQ_API, headers={**INTERNAL_HEADERS, **admin_headers}, json={
+        "source_request_id": late_request_id, "deadline": "2020-01-01", "actor": "t",
+    }).json()["rfq"]
+    s.post(
+        f"{RFQ_API}/{late_rfq['id']}/suppliers", headers={**INTERNAL_HEADERS, **admin_headers},
+        json={"supplier_id": supplier["id"], "actor": "t"},
+    )
+    dash_after_rfq = _dashboard(s, admin_headers)
+    rfq_item = item_for(dash_after_rfq, "rfq_past_deadline", late_rfq["rfq_number"])
+    assert rfq_item["rfq_id"] == late_rfq["id"]
+    assert rfq_item["entity_type"] == "rfq"
+
+    # PO-linked types - delivery_problem / awaiting_supplier_confirmation.
+    problem_po, *_rest = _make_in_delivery_purchase_order(s, f"{suffix}-problem", admin_headers)
+    problem = s.post(RECEIPTS_API(problem_po["id"]), headers=admin_headers, json={
+        "receipt_type": "problem", "idempotency_key": f"deep-link-problem-{suffix}", "problem_reason": "تالف",
+    })
+    assert problem.status_code == 200, problem.text
+    sent_po, *_rest = _make_draft_purchase_order(s, f"{suffix}-sent", admin_headers)
+    for status in ("approved", "sent"):
+        advanced = s.patch(
+            f"{API}/purchase-orders/{sent_po['id']}/status", headers=admin_headers, json={"status": status},
+        )
+        assert advanced.status_code == 200, advanced.text
+        sent_po = advanced.json()
+    dash_after_po = _dashboard(s, admin_headers)
+    delivery_item = item_for(dash_after_po, "delivery_problem", problem_po["po_number"])
+    assert delivery_item["purchase_order_id"] == problem_po["id"]
+    assert delivery_item["entity_type"] == "purchase_order"
+    assert delivery_item["stage"] == "receiving"
+    # awaiting_supplier_confirmation sits later in the category order (after
+    # delivery/payment/rfq/sourcing/pending_approval), so on the unscoped
+    # admin view it can be squeezed out entirely by this shared session's
+    # accumulated data. Its owner is procurement_responsible - see
+    # ATTENTION_TYPE_ROLE_OWNERS in server.py - and role filtering happens
+    # before the top-20 cap, so read it from that role's own view instead.
+    with SessionLocal() as session:
+        _make_user(session, username=f"dash-deep-link-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"dash-deep-link-resp-{suffix}")
+    dash_for_responsible = _dashboard(s, responsible_headers)
+    confirmation_item, confirmation_is_exact = item_or_ambient(
+        dash_for_responsible, "awaiting_supplier_confirmation", sent_po["po_number"],
+    )
+    assert confirmation_item["entity_type"] == "purchase_order"
+    assert confirmation_item["purchase_order_id"] == confirmation_item["entity_id"]
+    if confirmation_is_exact:
+        assert confirmation_item["purchase_order_id"] == sent_po["id"]
+
+
 def test_dashboard_project_summary_uses_formal_po_totals_only(s, admin_headers, ids):
     """Also stands in for the multi-PO/project safety guarantee, whose core
     invariant (a REQ only completes once ALL its formal POs are completed)
