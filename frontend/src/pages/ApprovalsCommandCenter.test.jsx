@@ -444,6 +444,51 @@ test("the currently selected comparison row is visibly highlighted", async () =>
   container.remove();
 });
 
+test("Approval Center shows the non-cheapest decision context when it exists", async () => {
+  mockApproval = {
+    ...TECHNICAL_STAGE_APPROVAL,
+    timeline: [{
+      id: "evt-1", event_type: "non_cheapest_supplier_selected", created_at: "2026-08-20T10:00:00Z",
+      metadata_json: {
+        decisions: [{
+          item_id: "item-1", product_name: "أسمنت",
+          selected_supplier_id: "sup-2", selected_supplier_name: "مورد ب", selected_total: 600,
+          cheapest_supplier_id: "sup-1", cheapest_supplier_name: "مورد أ", cheapest_total: 550,
+          difference: 50, difference_pct: 9.1,
+          reason_code: "better_delivery", reason_text: "تسليم أسرع",
+        }],
+      },
+    }],
+  };
+  mockWorkspace = richWorkspace;
+  const { container, root } = await renderCenter("procurement_engineer");
+
+  const context = container.querySelector('[data-testid="non-cheapest-decision-context"]');
+  expect(context).not.toBeNull();
+  expect(context.textContent).toContain("مورد غير الأرخص");
+  expect(context.textContent).toContain("مدة توريد أفضل");
+  expect(context.textContent).toContain("تسليم أسرع");
+  expect(context.textContent).toContain("مورد ب");
+  expect(context.textContent).toContain("600");
+  expect(context.textContent).toContain("مورد أ");
+  expect(context.textContent).toContain("550");
+  expect(context.textContent).toContain("50");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("Approval Center shows nothing extra when the cheapest supplier was selected", async () => {
+  mockApproval = TECHNICAL_STAGE_APPROVAL; // timeline: []
+  mockWorkspace = richWorkspace;
+  const { container, root } = await renderCenter("procurement_engineer");
+
+  expect(container.querySelector('[data-testid="non-cheapest-decision-context"]')).toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("procurement_engineer sees technical decision controls at the comparison-technical stage", async () => {
   mockApproval = TECHNICAL_STAGE_APPROVAL;
   const { container, root } = await renderCenter("procurement_engineer");

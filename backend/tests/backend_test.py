@@ -6649,6 +6649,252 @@ def _make_approval_with_comparison(client, suffix, admin_headers, manual_item=Fa
     return response.json()["approval"], request_id, item_id, supplier
 
 
+def _make_two_supplier_comparison(
+    client, suffix, admin_headers, *, cheap_price=100, expensive_price=120,
+    select_expensive=True, cheap_availability="available", expensive_availability="available",
+    cheap_valid_until="2099-12-31", expensive_valid_until="2099-12-31",
+):
+    """A saved (not yet approved) comparison with ONE item quoted by TWO
+    different real suppliers at different prices, letting tests select
+    either the cheap or the expensive one. Returns (comparison_id, item_id,
+    supplier_cheap, supplier_expensive, request_id, project_id,
+    request_number)."""
+    request_id, request_number, project_id, item_id, _resp_headers = _make_pricing_request(client, suffix)
+    item = client.get(f"{API}/items", headers=admin_headers).json()[0]
+    suppliers = client.get(f"{API}/suppliers", headers=admin_headers).json()
+    supplier_cheap, supplier_expensive = suppliers[0], suppliers[1]
+    project = next(p for p in client.get(f"{API}/projects", headers=admin_headers).json() if p["id"] == project_id)
+    comparison = client.post(f"{API}/price-comparisons", json={
+        "project_id": project_id, "project_name": project["name"],
+        "source_request_id": request_id, "source_request_number": request_number,
+        "comparison_date": "2026-08-20", "rows": [
+            {
+                "item_id": item["id"], "product_name": "صنف RFQ من الدليل",
+                "supplier_id": supplier_cheap["id"], "quantity": 3, "unit": "قطعة",
+                "unit_price": cheap_price, "availability": cheap_availability,
+                "price_valid_until": cheap_valid_until,
+                "selected_for_purchase": 0 if select_expensive else 1,
+            },
+            {
+                "item_id": item["id"], "product_name": "صنف RFQ من الدليل",
+                "supplier_id": supplier_expensive["id"], "quantity": 3, "unit": "قطعة",
+                "unit_price": expensive_price, "availability": expensive_availability,
+                "price_valid_until": expensive_valid_until,
+                "selected_for_purchase": 1 if select_expensive else 0,
+            },
+        ],
+    }, headers=admin_headers)
+    assert comparison.status_code == 200, comparison.text
+    return (
+        comparison.json()["id"], item["id"], supplier_cheap, supplier_expensive,
+        request_id, project_id, request_number,
+    )
+
+
+def _send_for_approval(client, admin_headers, comparison_id, decision_reasons=None):
+    return client.post(
+        f"{API}/workflow/approvals/from-comparison",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+        json={
+            "comparison_id": comparison_id, "engineer_name": "مراجع",
+            "created_by": "tester", "approval_type": "comparison_workflow",
+            "decision_reasons": decision_reasons or [],
+        },
+    )
+
+
+def test_cheapest_supplier_selection_needs_no_reason(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=False,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id)
+    assert response.status_code == 201, response.text
+    assert response.json()["approval"]["final_total"] == 300  # 3 x 100, no VAT/shipping
+
+
+def test_non_cheapest_supplier_selection_is_rejected_without_a_reason(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id)
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    flagged = detail["non_cheapest_items"]
+    assert len(flagged) == 1
+    assert flagged[0]["item_id"] == item_id
+    assert flagged[0]["selected_total"] == 360  # 3 x 120
+    assert flagged[0]["cheapest_total"] == 300  # 3 x 100
+    assert flagged[0]["difference"] == 60
+
+
+def test_non_cheapest_supplier_with_valid_predefined_reason_is_accepted(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "better_delivery", "reason_text": ""},
+    ])
+    assert response.status_code == 201, response.text
+
+
+def test_other_reason_without_text_is_rejected(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "other", "reason_text": ""},
+    ])
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["non_cheapest_items"][0]["item_id"] == item_id
+
+
+def test_other_reason_with_text_is_accepted(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "other", "reason_text": "طلب خاص من العميل"},
+    ])
+    assert response.status_code == 201, response.text
+
+
+def test_exact_tie_needs_no_reason(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, cheap_price=100, expensive_price=100, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id)
+    assert response.status_code == 201, response.text
+
+
+def test_incomplete_cheaper_supplier_does_not_trigger_a_warning(s, admin_headers):
+    """A cheaper row that is unavailable/expired is never "cheapest valid" -
+    selecting the only complete/available supplier must not require a reason
+    even though its raw number is higher."""
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, cheap_price=50, expensive_price=120,
+        select_expensive=True, cheap_availability="unavailable",
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id)
+    assert response.status_code == 201, response.text
+
+
+def test_price_change_after_flagging_reevaluates_cheapest_from_live_data(s, admin_headers):
+    """Item-level "cheapest" is the authoritative row-level final_total
+    (quantity x unit_price) - the same logic "Choose cheapest complete
+    offer" and is_lowest_final_total already use. Supplier-offer-level
+    commercial adjustments (discount/tax/shipping/other) are aggregated
+    across the WHOLE supplier offer, never allocated per item, so they
+    never change which single item is cheapest - only a real per-item
+    price/selection change does. This proves the backend re-evaluates from
+    live PriceComparisonRow data every time, not a stale/cached verdict:
+    selecting the expensive supplier is flagged first, then a genuine
+    unit-price drop for that same supplier makes it the reasonless cheapest."""
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, supplier_cheap, supplier_expensive, req, project_id, request_number = (
+        _make_two_supplier_comparison(
+            s, suffix, admin_headers, cheap_price=100, expensive_price=110, select_expensive=True,
+        )
+    )
+    first_attempt = _send_for_approval(s, admin_headers, comparison_id)
+    assert first_attempt.status_code == 422, first_attempt.text
+    flagged = first_attempt.json()["detail"]["non_cheapest_items"][0]
+    assert flagged["selected_supplier_id"] == supplier_expensive["id"]
+    assert flagged["cheapest_supplier_id"] == supplier_cheap["id"]
+    assert flagged["selected_total"] == 330
+    assert flagged["cheapest_total"] == 300
+
+    # supplier_expensive drops its real unit price below supplier_cheap's -
+    # it is now genuinely the cheapest, live in the comparison data.
+    updated = s.put(f"{API}/price-comparisons/{comparison_id}", headers=admin_headers, json={
+        "project_id": project_id, "project_name": "", "source_request_id": req,
+        "source_request_number": request_number, "comparison_date": "2026-08-20",
+        "rows": [
+            {"item_id": item_id, "product_name": "صنف RFQ من الدليل", "supplier_id": supplier_cheap["id"],
+             "quantity": 3, "unit": "قطعة", "unit_price": 100, "availability": "available",
+             "price_valid_until": "2099-12-31", "selected_for_purchase": 0},
+            {"item_id": item_id, "product_name": "صنف RFQ من الدليل", "supplier_id": supplier_expensive["id"],
+             "quantity": 3, "unit": "قطعة", "unit_price": 80, "availability": "available",
+             "price_valid_until": "2099-12-31", "selected_for_purchase": 1},
+        ],
+    })
+    assert updated.status_code == 200, updated.text
+    second_attempt = _send_for_approval(s, admin_headers, comparison_id)
+    assert second_attempt.status_code == 201, second_attempt.text
+
+
+def test_client_supplied_fake_cheapest_total_is_ignored(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    # A client trying to spoof the comparison as if it were already cheapest
+    # by claiming a reason with fabricated totals must not bypass anything -
+    # the server only reads reason_code/reason_text, never trusts client totals.
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "better_delivery", "reason_text": "",
+         "cheapest_total": 999999, "selected_total": 1},
+    ])
+    assert response.status_code == 201, response.text
+    approval = response.json()["approval"]
+    assert approval["final_total"] == 360  # still the REAL selected total, not spoofed
+
+
+def test_non_cheapest_decision_snapshot_persists_correct_totals_and_reason(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, supplier_cheap, supplier_expensive, req, project_id, request_number = (
+        _make_two_supplier_comparison(
+            s, suffix, admin_headers, select_expensive=True,
+        )
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "better_delivery", "reason_text": "تسليم أسرع بيومين"},
+    ])
+    assert response.status_code == 201, response.text
+    approval_id = response.json()["approval"]["id"]
+
+    timeline = s.get(
+        f"{API}/workflow/approvals/{approval_id}", headers={**INTERNAL_HEADERS, **admin_headers},
+    ).json()["timeline"]
+    event = next(row for row in timeline if row["event_type"] == "non_cheapest_supplier_selected")
+    decision = event["metadata_json"]["decisions"][0]
+    assert decision["item_id"] == item_id
+    assert decision["selected_supplier_id"] == supplier_expensive["id"]
+    assert decision["cheapest_supplier_id"] == supplier_cheap["id"]
+    assert decision["selected_total"] == 360
+    assert decision["cheapest_total"] == 300
+    assert decision["difference"] == 60
+    assert decision["reason_code"] == "better_delivery"
+    assert decision["reason_text"] == "تسليم أسرع بيومين"
+
+    # The price history changing afterward must never rewrite what was true
+    # at decision time.
+    mutate = s.put(f"{API}/price-comparisons/{comparison_id}", headers=admin_headers, json={
+        "project_id": project_id, "project_name": "", "source_request_id": req,
+        "source_request_number": request_number, "comparison_date": "2026-08-20",
+        "rows": [
+            {"item_id": item_id, "product_name": "صنف RFQ من الدليل", "supplier_id": supplier_cheap["id"],
+             "quantity": 3, "unit": "قطعة", "unit_price": 9999, "availability": "available",
+             "price_valid_until": "2099-12-31", "selected_for_purchase": 0},
+            {"item_id": item_id, "product_name": "صنف RFQ من الدليل", "supplier_id": supplier_expensive["id"],
+             "quantity": 3, "unit": "قطعة", "unit_price": 120, "availability": "available",
+             "price_valid_until": "2099-12-31", "selected_for_purchase": 1},
+        ],
+    })
+    assert mutate.status_code == 200, mutate.text
+    unchanged_timeline = s.get(
+        f"{API}/workflow/approvals/{approval_id}", headers={**INTERNAL_HEADERS, **admin_headers},
+    ).json()["timeline"]
+    unchanged_event = next(row for row in unchanged_timeline if row["event_type"] == "non_cheapest_supplier_selected")
+    assert unchanged_event["metadata_json"]["decisions"][0]["cheapest_total"] == 300
+
+
 def test_comparison_delete_is_blocked_after_approval_traceability_exists(s, admin_headers):
     approval, _request_id, _item_id, _supplier = _make_approval_with_comparison(
         s, uuid.uuid4().hex[:8], admin_headers,

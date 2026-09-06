@@ -358,3 +358,65 @@ export function formatPriceChangePercent(percent) {
   if (percent === 0) return "0%";
   return `${percent > 0 ? "+" : "-"}${Math.abs(percent).toFixed(1)}%`;
 }
+
+// Decision-quality guardrail: reasons Procurement can give for selecting a
+// supplier that is NOT the authoritative cheapest eligible offer for an
+// item. Codes must match NON_CHEAPEST_REASON_CODES in
+// backend/procurement_workflow.py - kept in sync manually, the same
+// pattern as other small fixed option lists in this codebase (e.g.
+// PRIORITY_OPTIONS in requestValidation.js).
+export const NON_CHEAPEST_REASON_OPTIONS = [
+  { code: "better_delivery", ar: "مدة توريد أفضل", en: "Better delivery time" },
+  { code: "better_payment_terms", ar: "شروط دفع أفضل", en: "Better payment terms" },
+  { code: "better_availability", ar: "توافر أفضل", en: "Better availability" },
+  { code: "approved_quality", ar: "جودة معتمدة", en: "Approved quality" },
+  { code: "supplier_performance", ar: "أداء سابق أفضل للمورد", en: "Previous supplier performance" },
+  { code: "site_client_requirement", ar: "متطلبات الموقع / العميل", en: "Site / client requirement" },
+  { code: "technical_preference", ar: "تفضيل فني", en: "Technical preference" },
+  { code: "other", ar: "أخرى", en: "Other" },
+];
+
+export function nonCheapestReasonLabel(code, language = "ar") {
+  const option = NON_CHEAPEST_REASON_OPTIONS.find((entry) => entry.code === code);
+  if (!option) return code || "";
+  return language === "en" ? option.en : option.ar;
+}
+
+// Every item whose SELECTED row is not the authoritative cheapest eligible
+// offer for that item - reuses calculateComparison's own is_lowest_final_total/
+// difference_from_lowest/difference_pct_from_lowest (no second cheapest
+// calculation). Ties and single-eligible-offer items are never flagged,
+// since calculateComparison already marks every tied row is_lowest_final_total.
+export function nonCheapestSelections(calculatedRows) {
+  const cheapestByItem = new Map();
+  calculatedRows.forEach((row) => {
+    if (row.is_lowest_final_total) {
+      const key = row.item_id || row.item_code || row.manual_product_key;
+      if (key && !cheapestByItem.has(key)) cheapestByItem.set(key, row);
+    }
+  });
+  return calculatedRows
+    .filter((row) => Number(row.selected_for_purchase) === 1 && row.eligible && !row.is_lowest_final_total)
+    .map((row) => {
+      const key = row.item_id || row.item_code || row.manual_product_key;
+      const cheapest = cheapestByItem.get(key);
+      return {
+        key: row.key,
+        item_id: row.item_id || "",
+        item_code: row.item_code || "",
+        product_name: row.product_name,
+        selected_supplier_id: row.supplier_id || "",
+        selected_supplier_name: row.supplier_name,
+        selected_total: row.final_total,
+        cheapest_supplier_id: cheapest?.supplier_id || "",
+        cheapest_supplier_name: cheapest?.supplier_name || "",
+        cheapest_total: cheapest ? cheapest.final_total : null,
+        difference: row.difference_from_lowest,
+        difference_pct: row.difference_pct_from_lowest,
+      };
+    });
+}
+
+// Stable key to match a flagged item against a decision-reason answer, the
+// same fallback order the backend uses (item_id, then item_code).
+export const decisionReasonKey = (item) => item.item_id || item.item_code || item.key;

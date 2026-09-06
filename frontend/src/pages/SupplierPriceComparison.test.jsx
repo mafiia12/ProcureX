@@ -1018,6 +1018,185 @@ test("a received quotation is never shown as its own previous price - the exclus
   globalThis.mockComparisonLocationState = null;
 });
 
+// ---------------- Non-cheapest supplier selection reason ----------------
+
+function twoSupplierDetail(overrides = {}) {
+  return {
+    id: "comparison-2", comparison_number: "CMP-000002", comparison_date: "2026-07-28",
+    project_name: "مشروع", customer_name: "عميل", notes: "",
+    rows: [
+      {
+        id: "row-cheap", item_id: "item-1", supplier_id: "supplier-1", quantity: 2,
+        item_code: "ITM-1", product_name: "منتج اختبار", brand: "A",
+        main_category: "رئيسي", subcategory: "فرعي", specifications: "مواصفة",
+        supplier_code: "SUP-1", supplier_name: "المورد الأخضر",
+        unit: "قطعة", unit_price: 100, discount_pct: 0, tax_pct: 0,
+        shipping_cost: 0, other_cost: 0, delivery_days: 5, payment_terms: "نقدي",
+        availability: "available", price_valid_until: "2099-12-31", notes: "",
+        selected_for_purchase: 0,
+      },
+      {
+        id: "row-expensive", item_id: "item-1", supplier_id: "supplier-2", quantity: 2,
+        item_code: "ITM-1", product_name: "منتج اختبار", brand: "A",
+        main_category: "رئيسي", subcategory: "فرعي", specifications: "مواصفة",
+        supplier_code: "SUP-2", supplier_name: "المورد الثاني",
+        unit: "قطعة", unit_price: 120, discount_pct: 0, tax_pct: 0,
+        shipping_cost: 0, other_cost: 0, delivery_days: 2, payment_terms: "",
+        availability: "available", price_valid_until: "2099-12-31", notes: "",
+        selected_for_purchase: 1,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function mockApprovalCreation() {
+  mockPost.mockImplementation((url, body) => {
+    if (url === "/workflow/approvals/from-comparison") {
+      return Promise.resolve({ data: { approval: { id: "approval-1", approval_number: "APR-000099" } } });
+    }
+    return Promise.resolve({ data: detail });
+  });
+}
+
+test("selecting the cheapest supplier needs no reason UI and sends directly", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const cheapSelected = twoSupplierDetail({
+    rows: [
+      { ...twoSupplierDetail().rows[0], selected_for_purchase: 1 },
+      { ...twoSupplierDetail().rows[1], selected_for_purchase: 0 },
+    ],
+  });
+  const { container, root } = await renderComparison(cheapSelected);
+
+  expect(container.querySelector('[data-testid="non-cheapest-summary-indicator"]')).toBeNull();
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  expect(container.querySelector('[data-testid="non-cheapest-reason-dialog"]')).toBeNull();
+  expect(mockPost).toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.objectContaining({
+    decision_reasons: [],
+  }));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("selecting a non-cheapest supplier shows the reason dialog at the send boundary with correct totals/difference", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const { container, root } = await renderComparison(twoSupplierDetail());
+
+  const indicator = container.querySelector('[data-testid="non-cheapest-summary-indicator"]');
+  expect(indicator).not.toBeNull();
+  expect(indicator.textContent).toContain("1");
+  expect(container.querySelector('[data-testid^="non-cheapest-badge-"]')).not.toBeNull();
+
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  expect(mockPost).not.toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.anything());
+  const dialog = container.querySelector('[data-testid="non-cheapest-reason-dialog"]');
+  expect(dialog).not.toBeNull();
+  expect(dialog.textContent).toContain("240.00");
+  expect(dialog.textContent).toContain("200.00");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("a predefined reason is accepted and reaches the API", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const { container, root } = await renderComparison(twoSupplierDetail());
+
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  const select = container.querySelector('[data-testid^="non-cheapest-reason-select-"]');
+  await act(async () => {
+    select.value = "better_delivery";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => {
+    container.querySelector('[data-testid="confirm-non-cheapest-reasons"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(mockPost).toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.objectContaining({
+    decision_reasons: [expect.objectContaining({
+      item_id: "item-1", reason_code: "better_delivery", reason_text: "",
+    })],
+  }));
+  expect(container.querySelector('[data-testid="non-cheapest-reason-dialog"]')).toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("choosing Other without a note is blocked; adding the note allows sending", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const { container, root } = await renderComparison(twoSupplierDetail());
+
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  const select = container.querySelector('[data-testid^="non-cheapest-reason-select-"]');
+  await act(async () => {
+    select.value = "other";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => { container.querySelector('[data-testid="confirm-non-cheapest-reasons"]').click(); });
+  expect(mockPost).not.toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.anything());
+  expect(container.querySelector('[data-testid="non-cheapest-reason-dialog"]')).not.toBeNull();
+
+  const textInput = container.querySelector('[data-testid^="non-cheapest-reason-text-"]');
+  await act(async () => setNativeValue(textInput, "طلب خاص من العميل"));
+  await act(async () => {
+    container.querySelector('[data-testid="confirm-non-cheapest-reasons"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(mockPost).toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.objectContaining({
+    decision_reasons: [expect.objectContaining({
+      reason_code: "other", reason_text: "طلب خاص من العميل",
+    })],
+  }));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("editing the price so the selected supplier becomes cheapest removes the requirement", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const { container, root } = await renderComparison(twoSupplierDetail());
+
+  expect(container.querySelector('[data-testid="non-cheapest-summary-indicator"]')).not.toBeNull();
+
+  // Procurement edits the selected (expensive) supplier's price down below
+  // the other row's - it is now genuinely the cheapest. The edit is local
+  // state (matrix input), immediately re-evaluated with no save needed.
+  const priceInput = container.querySelector('[data-testid="inline-unit-price-row-expensive"]');
+  await act(async () => setNativeValue(priceInput, "50"));
+  expect(container.querySelector('[data-testid="non-cheapest-summary-indicator"]')).toBeNull();
+
+  // Sending still requires a save first (existing, unrelated guard) - save
+  // with the same cheaper price so the persisted comparison matches.
+  const cheaperDetail = twoSupplierDetail({
+    rows: [
+      twoSupplierDetail().rows[0],
+      { ...twoSupplierDetail().rows[1], unit_price: 50 },
+    ],
+  });
+  mockPut.mockResolvedValue({ data: cheaperDetail });
+  await act(async () => {
+    container.querySelector('[data-testid="comparison-save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  expect(container.querySelector('[data-testid="non-cheapest-reason-dialog"]')).toBeNull();
+  expect(mockPost).toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.objectContaining({
+    decision_reasons: [],
+  }));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("historical indicator does not replace or disable the editable current price control", async () => {
   mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
   const { container, root } = await renderComparison();

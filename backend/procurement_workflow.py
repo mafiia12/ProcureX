@@ -677,6 +677,27 @@ def create_project_from_request(
         return {"ok": True, "project": _row(project)}
 
 
+# Decision-quality guardrail: when Procurement finalizes a comparison with
+# a selected supplier that is NOT the authoritative cheapest eligible offer
+# for an item (see _evaluate_non_cheapest_selections), a reason from this
+# fixed list is required for that item before /approvals/from-comparison
+# will create the approval. Matches the Arabic/English labels the frontend
+# shows in the reason dropdown - kept in sync manually (same pattern as
+# other small fixed option lists in this codebase, e.g. PRIORITY_OPTIONS).
+NON_CHEAPEST_REASON_CODES = {
+    "better_delivery", "better_payment_terms", "better_availability",
+    "approved_quality", "supplier_performance", "site_client_requirement",
+    "technical_preference", "other",
+}
+
+
+class DecisionReasonIn(BaseModel):
+    item_id: str = ""
+    item_code: str = ""
+    reason_code: str = Field(min_length=1, max_length=50)
+    reason_text: str = Field(default="", max_length=500)
+
+
 class ApprovalCreateIn(BaseModel):
     comparison_id: str
     engineer_name: str = ""
@@ -685,6 +706,7 @@ class ApprovalCreateIn(BaseModel):
     expiry_at: str = ""
     created_by: str = ""
     approval_type: Literal["external_engineer", "comparison_workflow"] = "external_engineer"
+    decision_reasons: list[DecisionReasonIn] = Field(default_factory=list, max_length=200)
 
 
 def _approval_code() -> str:
@@ -726,6 +748,76 @@ def _calculated_selected_rows(session, comparison: PriceComparison) -> dict:
         if any(not row.supplier_id for row in rows):
             raise HTTPException(422, "يجب ربط كل عرض مختار بمورد فعلي من سجل الموردين")
     return {"rows": calculated, "supplier_summaries": calculation["supplier_summaries"]}
+
+
+def _evaluate_non_cheapest_selections(session, comparison: PriceComparison) -> list[dict]:
+    """For every currently SELECTED row, decide whether its supplier is the
+    authoritative cheapest ELIGIBLE offer for that item - the exact same
+    is_lowest_final_total logic "Choose cheapest complete offer" already
+    uses (calculate_comparison), run here over the WHOLE comparison (every
+    supplier column, not just the selected rows) so a selection is compared
+    against every real alternative, not just itself.
+
+    Unlike _calculated_selected_rows (which only recalculates the already-
+    selected subset - trivially "cheapest" among itself), this is what
+    answers "is Procurement's choice actually the cheapest valid option".
+
+    Never trusts client-supplied totals: everything here is derived fresh
+    from the current PriceComparisonRow/PriceComparisonSupplierOffer data.
+    Returns one entry per item whose selection is genuinely non-cheapest;
+    an empty list means nothing needs a decision reason.
+    """
+    all_rows = session.scalars(
+        select(PriceComparisonRow).where(
+            PriceComparisonRow.comparison_id == comparison.id,
+        ).order_by(PriceComparisonRow.position)
+    ).all()
+    offers = session.scalars(select(PriceComparisonSupplierOffer).where(
+        PriceComparisonSupplierOffer.comparison_id == comparison.id,
+    )).all()
+    calculation = calculate_comparison(
+        datetime.now(timezone.utc).date().isoformat(),
+        [{c.name: getattr(row, c.name) for c in PriceComparisonRow.__table__.columns} for row in all_rows],
+        supplier_offers=[_comparison_offer_document(offer) for offer in offers],
+    )
+    calculated_by_id = {row["id"]: row for row in calculation["rows"]}
+    # Ties (including a single eligible offer) already carry
+    # is_lowest_final_total=True for every tied row - see calculate_comparison's
+    # 0.005 tolerance - so a tied/only selection is never flagged below.
+    lowest_by_item: dict = {}
+    for row in calculation["rows"]:
+        if row["is_lowest_final_total"]:
+            key = row.get("item_id") or row.get("item_code") or row.get("product_name")
+            lowest_by_item.setdefault(key, row)
+
+    flagged = []
+    for source_row in all_rows:
+        if source_row.selected_for_purchase != 1:
+            continue
+        calculated_row = calculated_by_id.get(source_row.id)
+        if not calculated_row or not calculated_row["eligible"] or calculated_row["is_lowest_final_total"]:
+            continue
+        item_key = calculated_row.get("item_id") or calculated_row.get("item_code") or calculated_row.get("product_name")
+        cheapest = lowest_by_item.get(item_key)
+        if not cheapest:
+            continue  # no eligible alternative exists at all - nothing to compare against
+        selected_total = round(float(calculated_row["final_total"]), 2)
+        cheapest_total = round(float(cheapest["final_total"]), 2)
+        difference = round(selected_total - cheapest_total, 2)
+        flagged.append({
+            "item_id": calculated_row.get("item_id") or "",
+            "item_code": calculated_row.get("item_code") or "",
+            "product_name": calculated_row.get("product_name") or "",
+            "selected_supplier_id": calculated_row.get("supplier_id") or "",
+            "selected_supplier_name": calculated_row.get("supplier_name") or "",
+            "selected_total": selected_total,
+            "cheapest_supplier_id": cheapest.get("supplier_id") or "",
+            "cheapest_supplier_name": cheapest.get("supplier_name") or "",
+            "cheapest_total": cheapest_total,
+            "difference": difference,
+            "difference_pct": round(difference / cheapest_total * 100, 1) if cheapest_total else None,
+        })
+    return flagged
 
 
 def _create_approval(session, comparison: PriceComparison, rows: list[dict], body: ApprovalCreateIn,
@@ -841,10 +933,50 @@ def create_approval_from_comparison(
         if duplicate:
             raise HTTPException(409, {"message": "تم إنشاء اعتماد لهذه المقارنة من قبل", "approval_id": duplicate.id})
         selection = _calculated_selected_rows(session, comparison)
+
+        # Decision-quality guardrail: a selection that is not the
+        # authoritative cheapest eligible offer for its item needs a reason
+        # before the approval can be created - recomputed here from the
+        # live comparison data, never from client-supplied totals.
+        flagged = _evaluate_non_cheapest_selections(session, comparison)
+        decisions_by_key = {}
+        if flagged:
+            reasons_by_key = {
+                (reason.item_id or reason.item_code): reason
+                for reason in body.decision_reasons if reason.item_id or reason.item_code
+            }
+            missing = []
+            for item in flagged:
+                key = item["item_id"] or item["item_code"]
+                reason = reasons_by_key.get(key)
+                if reason is None or reason.reason_code not in NON_CHEAPEST_REASON_CODES:
+                    missing.append(item)
+                    continue
+                if reason.reason_code == "other" and not reason.reason_text.strip():
+                    missing.append(item)
+                    continue
+                decisions_by_key[key] = {**item, "reason_code": reason.reason_code, "reason_text": reason.reason_text.strip()}
+            if missing:
+                raise HTTPException(422, {
+                    "message": "يجب إدخال سبب القرار قبل إرسال اختيار غير أرخص عرض للاعتماد",
+                    "non_cheapest_items": missing,
+                })
+
         approval = _create_approval(
             session, comparison, selection["rows"], body,
             supplier_summaries=selection["supplier_summaries"],
         )
+
+        if decisions_by_key:
+            decisions = list(decisions_by_key.values())
+            _audit(
+                session, entity_type="approval", entity_id=approval.id,
+                event_type="non_cheapest_supplier_selected", project_id=approval.project_id,
+                actor_name=body.created_by,
+                message=f"تم اختيار مورد غير الأرخص لـ {len(decisions)} من الأصناف",
+                metadata={"decisions": decisions},
+            )
+
         return {"ok": True, "approval": _approval_detail(session, approval, include_token=True)}
 
 

@@ -1,6 +1,7 @@
 import {
   calculateComparison, calculateLine, calculateSupplierTotal,
   formalPriceChange, formatPriceChangePercent,
+  nonCheapestSelections, nonCheapestReasonLabel,
 } from "@/lib/priceComparison";
 
 
@@ -352,5 +353,63 @@ describe("formalPriceChange", () => {
     expect(() => formalPriceChange("abc", 100)).not.toThrow();
     expect(() => formalPriceChange(100, "abc")).not.toThrow();
     expect(formalPriceChange("abc", 100).current).toBe(0);
+  });
+});
+
+describe("nonCheapestSelections", () => {
+  test("cheapest selected -> not flagged", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 100, 5), selected_for_purchase: 1 },
+      { ...row("item-1", "supplier-2", 120, 5), selected_for_purchase: 0 },
+    ], items, suppliers, "2026-07-28");
+    expect(nonCheapestSelections(result.rows)).toEqual([]);
+  });
+
+  test("non-cheapest selected -> flagged with correct cheapest/selected totals", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 100, 5), selected_for_purchase: 0 },
+      { ...row("item-1", "supplier-2", 120, 5), selected_for_purchase: 1 },
+    ], items, suppliers, "2026-07-28");
+    const flagged = nonCheapestSelections(result.rows);
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]).toMatchObject({
+      item_id: "item-1", selected_supplier_id: "supplier-2", selected_total: 120,
+      cheapest_supplier_id: "supplier-1", cheapest_total: 100,
+      difference: 20, difference_pct: 20,
+    });
+  });
+
+  test("exact tie -> neither tied row is flagged", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 100, 5), selected_for_purchase: 1 },
+      { ...row("item-1", "supplier-2", 100, 5), selected_for_purchase: 0 },
+    ], items, suppliers, "2026-07-28");
+    expect(nonCheapestSelections(result.rows)).toEqual([]);
+  });
+
+  test("an unavailable cheaper offer never makes the selected complete offer look non-cheapest", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 50, 5, { availability: "unavailable" }), selected_for_purchase: 0 },
+      { ...row("item-1", "supplier-2", 120, 5), selected_for_purchase: 1 },
+    ], items, suppliers, "2026-07-28");
+    expect(nonCheapestSelections(result.rows)).toEqual([]);
+  });
+
+  test("only one eligible supplier -> not flagged even if selected", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 500, 5), selected_for_purchase: 1 },
+    ], items, suppliers, "2026-07-28");
+    expect(nonCheapestSelections(result.rows)).toEqual([]);
+  });
+});
+
+describe("nonCheapestReasonLabel", () => {
+  test("returns the Arabic and English labels for a known code", () => {
+    expect(nonCheapestReasonLabel("better_delivery", "ar")).toBe("مدة توريد أفضل");
+    expect(nonCheapestReasonLabel("better_delivery", "en")).toBe("Better delivery time");
+  });
+
+  test("falls back to the raw code for an unknown value", () => {
+    expect(nonCheapestReasonLabel("mystery_code", "en")).toBe("mystery_code");
   });
 });
