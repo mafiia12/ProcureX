@@ -1,5 +1,6 @@
 import {
   calculateComparison, calculateLine, calculateSupplierTotal,
+  formalPriceChange, formatPriceChangePercent,
 } from "@/lib/priceComparison";
 
 
@@ -295,4 +296,61 @@ test("excludes incomplete request offers from rankings and supplier totals", () 
   expect(result.product_summaries[0].lowest_unit_price).toBe(125);
   expect(result.supplier_summaries).toHaveLength(1);
   expect(result.scenario_summary.mixed_supplier_total).toBe(125);
+});
+
+describe("formalPriceChange", () => {
+  test("current 120 / previous 100 -> up +20%", () => {
+    const change = formalPriceChange(120, 100);
+    expect(change.direction).toBe("up");
+    expect(change.percent).toBe(20);
+    expect(change.delta).toBe(20);
+    expect(formatPriceChangePercent(change.percent)).toBe("+20.0%");
+  });
+
+  test("current 80 / previous 100 -> down -20%", () => {
+    const change = formalPriceChange(80, 100);
+    expect(change.direction).toBe("down");
+    expect(change.percent).toBe(-20);
+    expect(formatPriceChangePercent(change.percent)).toBe("-20.0%");
+  });
+
+  test("current 100 / previous 100 -> unchanged", () => {
+    const change = formalPriceChange(100, 100);
+    expect(change.direction).toBe("same");
+    expect(change.percent).toBe(0);
+    expect(formatPriceChangePercent(change.percent)).toBe("0%");
+  });
+
+  test("previous null/undefined -> no history to compare (null)", () => {
+    expect(formalPriceChange(120, null)).toBeNull();
+    expect(formalPriceChange(120, undefined)).toBeNull();
+  });
+
+  test("previous 0 -> never divides by zero, percent is null but direction still resolves", () => {
+    const change = formalPriceChange(120, 0);
+    expect(change.percent).toBeNull();
+    expect(change.direction).toBe("up");
+    expect(formatPriceChangePercent(change.percent)).toBeNull();
+
+    const unchangedAtZero = formalPriceChange(0, 0);
+    expect(unchangedAtZero.direction).toBe("same");
+    expect(unchangedAtZero.percent).toBeNull();
+  });
+
+  test("rounds cleanly to one decimal instead of raw floating point", () => {
+    const change = formalPriceChange(110, 88);
+    // (110-88)/88*100 = 25.0000000000000036 unrounded.
+    expect(change.percent).toBe(25);
+    expect(formatPriceChangePercent(change.percent)).toBe("+25.0%");
+
+    const messyChange = formalPriceChange(100, 33);
+    // (100-33)/33*100 = 203.03030303...
+    expect(formatPriceChangePercent(messyChange.percent)).toMatch(/^\+\d+\.\d%$/);
+  });
+
+  test("malformed/non-numeric current or previous price never throws", () => {
+    expect(() => formalPriceChange("abc", 100)).not.toThrow();
+    expect(() => formalPriceChange(100, "abc")).not.toThrow();
+    expect(formalPriceChange("abc", 100).current).toBe(0);
+  });
 });

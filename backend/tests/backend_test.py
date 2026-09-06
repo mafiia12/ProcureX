@@ -6220,6 +6220,177 @@ def test_last_formal_price_uses_the_most_recent_received_quotation(s):
     assert price["date"] == "2026-08-10"
 
 
+def test_last_formal_prices_excludes_the_current_quotation_from_history(s):
+    """The comparison screen must never show a quotation as its own
+    "previous" price. Passing the current quotation id as the pairs token's
+    third segment excludes it, surfacing the genuinely older one instead."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-exclude-{suffix}", role="procurement_responsible")
+        own_item_id = _make_portal_item(session, suffix)
+    responsible_headers = _login_headers(s, f"rfq-exclude-{suffix}")
+    item_id, supplier, _rfq1, _previous_quotation = _received_quotation_for_item(
+        s, f"{suffix}-previous", responsible_headers, unit_price=100, quotation_date="2026-01-01",
+        item_id=own_item_id,
+    )
+    current_item_id, current_supplier, _rfq2, current_quotation = _received_quotation_for_item(
+        s, f"{suffix}-current", responsible_headers, unit_price=120, quotation_date="2026-08-10",
+        item_id=own_item_id,
+    )
+    assert current_item_id == item_id
+    assert current_supplier["id"] == supplier["id"]
+
+    # Without exclusion, the current (just-received) quotation would win as
+    # "latest" since it has the newer date.
+    unexcluded = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}"},
+    ).json()["prices"][f"{item_id}|{supplier['id']}"]
+    assert unexcluded["unit_price"] == 120
+
+    excluded = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}:{current_quotation['id']}"},
+    ).json()["prices"]
+    price = excluded[f"{item_id}|{supplier['id']}"]
+    assert price["unit_price"] == 100
+    assert price["quotation_id"] != current_quotation["id"]
+
+
+def test_last_formal_prices_ignores_other_supplier_and_other_item(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-cross-{suffix}", role="procurement_responsible")
+        item_a = _make_portal_item(session, f"{suffix}-a")
+        item_b = _make_portal_item(session, f"{suffix}-b")
+    responsible_headers = _login_headers(s, f"rfq-cross-{suffix}")
+    item_id_a, supplier_a, _rfq_a, _q_a = _received_quotation_for_item(
+        s, f"{suffix}-a", responsible_headers, unit_price=500, quotation_date="2026-05-01",
+        item_id=item_a,
+    )
+    item_id_b, supplier_b, _rfq_b, _q_b = _received_quotation_for_item(
+        s, f"{suffix}-b", responsible_headers, unit_price=700, quotation_date="2026-05-01",
+        item_id=item_b,
+    )
+    assert item_id_a != item_id_b
+    assert supplier_a["id"] == supplier_b["id"]  # helper always uses suppliers[0]
+
+    # item A + a DIFFERENT (real) supplier must not see item A's price.
+    other_supplier = s.get(f"{API}/suppliers", headers=responsible_headers).json()[1]
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id_a}:{other_supplier['id']},{item_id_b}:{supplier_a['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    prices = response.json()["prices"]
+    # Neither cross-item nor cross-supplier combination has ever been quoted.
+    assert f"{item_id_a}|{other_supplier['id']}" not in prices
+    # item B was quoted to supplier_a (== supplier_b) at 700, not item A's 500.
+    assert prices[f"{item_id_b}|{supplier_a['id']}"]["unit_price"] == 700
+
+
+def test_last_formal_prices_ignores_legacy_direct_purchase_price(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        admin_username = _make_admin(session, suffix)
+        item_id = _make_portal_item(session, suffix)
+        item = session.get(Item, item_id)
+        session.add(PriceHistory(
+            id=str(uuid.uuid4()), record_no=20_000_000 + int(suffix, 16) % 1_000_000,
+            date="2026-01-01", item_code=item.code, supplier="مورد شراء مباشر قديم",
+            quantity=1, unit_price=9999, final_price=9999,
+        ))
+        session.commit()
+    admin_headers = _login_headers(s, admin_username)
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
+
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=admin_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    assert f"{item_id}|{supplier['id']}" not in response.json()["prices"]
+
+
+def test_last_formal_prices_returns_nothing_for_a_never_quoted_pair(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        admin_username = _make_admin(session, suffix)
+        item_id = _make_portal_item(session, suffix)
+    admin_headers = _login_headers(s, admin_username)
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
+
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=admin_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["prices"] == {}
+
+
+def test_last_formal_prices_most_recent_of_three_wins(s):
+    """80 -> 90 -> current 120 must resolve to 90, the most recent
+    *previous* one - not 80 (older) and not 120 (the excluded current)."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-chain-{suffix}", role="procurement_responsible")
+        own_item_id = _make_portal_item(session, suffix)
+    responsible_headers = _login_headers(s, f"rfq-chain-{suffix}")
+    item_id, supplier, _rfq1, _q1 = _received_quotation_for_item(
+        s, f"{suffix}-1", responsible_headers, unit_price=80, quotation_date="2026-01-01",
+        item_id=own_item_id,
+    )
+    item_id2, supplier2, _rfq2, _q2 = _received_quotation_for_item(
+        s, f"{suffix}-2", responsible_headers, unit_price=90, quotation_date="2026-05-01",
+        item_id=own_item_id,
+    )
+    item_id3, supplier3, _rfq3, q3 = _received_quotation_for_item(
+        s, f"{suffix}-3", responsible_headers, unit_price=120, quotation_date="2026-08-10",
+        item_id=own_item_id,
+    )
+    assert item_id == item_id2 == item_id3
+    assert supplier["id"] == supplier2["id"] == supplier3["id"]
+
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}:{q3['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    price = response.json()["prices"][f"{item_id}|{supplier['id']}"]
+    assert price["unit_price"] == 90
+
+
+def test_last_formal_prices_bulk_lookup_has_no_duplicate_or_cross_pair_results(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-bulk-{suffix}", role="procurement_responsible")
+        item_a = _make_portal_item(session, f"{suffix}-a")
+        item_b = _make_portal_item(session, f"{suffix}-b")
+    responsible_headers = _login_headers(s, f"rfq-bulk-{suffix}")
+    item_id_a, supplier, _rfq_a, _q_a = _received_quotation_for_item(
+        s, f"{suffix}-a", responsible_headers, unit_price=200, quotation_date="2026-03-01",
+        item_id=item_a,
+    )
+    item_id_b, supplier_b, _rfq_b, _q_b = _received_quotation_for_item(
+        s, f"{suffix}-b", responsible_headers, unit_price=300, quotation_date="2026-03-01",
+        item_id=item_b,
+    )
+    assert supplier["id"] == supplier_b["id"]
+
+    # Same pair requested twice (as a real bulk caller might if two rows
+    # share an item+supplier) must not duplicate or alter the single result.
+    pairs = f"{item_id_a}:{supplier['id']},{item_id_a}:{supplier['id']},{item_id_b}:{supplier['id']}"
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": pairs},
+    )
+    assert response.status_code == 200, response.text
+    prices = response.json()["prices"]
+    assert len(prices) == 2
+    assert prices[f"{item_id_a}|{supplier['id']}"]["unit_price"] == 200
+    assert prices[f"{item_id_b}|{supplier['id']}"]["unit_price"] == 300
+
+
 def test_pdf_attachment_accepted_for_quotation(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:

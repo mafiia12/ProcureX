@@ -272,7 +272,9 @@ def _next_rfq_number() -> str:
     )
 
 
-def _formal_quotation_rows(session, item_ids: Optional[set] = None) -> list[dict]:
+def _formal_quotation_rows(
+    session, item_ids: Optional[set] = None, exclude_quotation_ids: Optional[set] = None,
+) -> list[dict]:
     """Single source of truth for "latest formal price": one row per line
     of a *received* supplier quotation, newest quotation first. Mirrors the
     join/ordering /api/supplier-price-history already uses, so every
@@ -282,6 +284,11 @@ def _formal_quotation_rows(session, item_ids: Optional[set] = None) -> list[dict
     Legacy direct-purchase history (PriceHistory / price_history) never
     feeds this - only RFQ -> SupplierQuotation(status="received") data
     counts as formal.
+
+    `exclude_quotation_ids`, when given, drops those quotations entirely -
+    used by the comparison screen so the quotation currently being compared
+    is never returned as its own "previous" price (see
+    price_comparisons.last_formal_prices).
     """
     statement = (
         select(SupplierQuotationLine, SupplierQuotation, RFQItem)
@@ -298,6 +305,8 @@ def _formal_quotation_rows(session, item_ids: Optional[set] = None) -> list[dict
         if not item_ids:
             return []
         statement = statement.where(RFQItem.item_id.in_(item_ids))
+    if exclude_quotation_ids:
+        statement = statement.where(SupplierQuotation.id.notin_(exclude_quotation_ids))
     rows = []
     for line, quotation, rfq_item in session.execute(statement).all():
         item_id = rfq_item.item_id if rfq_item else None
@@ -322,17 +331,23 @@ def latest_formal_price_by_item(session, item_ids: Optional[set] = None) -> dict
     return result
 
 
-def latest_formal_price_by_item_supplier(session, pairs: Optional[set] = None) -> dict:
+def latest_formal_price_by_item_supplier(
+    session, pairs: Optional[set] = None, exclude_quotation_ids: Optional[set] = None,
+) -> dict:
     """Latest formal price per (item_id, supplier_id) pair.
 
     `pairs`, when given, is a set of (item_id, supplier_id) tuples - used
     only to narrow the underlying query to the relevant items (avoids
     scanning every quotation line when the caller only needs a handful of
     items, e.g. one comparison screen).
+
+    `exclude_quotation_ids` - see _formal_quotation_rows - keeps the
+    quotation currently being compared from being returned as its own
+    "previous" price.
     """
     item_ids = {item_id for item_id, _supplier_id in pairs} if pairs is not None else None
     result: dict = {}
-    for row in _formal_quotation_rows(session, item_ids):
+    for row in _formal_quotation_rows(session, item_ids, exclude_quotation_ids):
         key = (row["item_id"], row["supplier_id"])
         result.setdefault(key, row)
     return result

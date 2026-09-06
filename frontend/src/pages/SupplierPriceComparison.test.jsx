@@ -904,30 +904,129 @@ test("adding a manual item to the catalog links the existing row without losing 
   container.remove();
 });
 
-test("the comparison matrix shows the last formal price for the same supplier and item, and an explicit empty state otherwise", async () => {
+function mockLastFormalPrices(prices) {
   mockGet.mockImplementation((url, config) => {
     if (url === "/price-comparisons/last-formal-prices") {
-      return Promise.resolve({ data: { prices: {
-        "item-1|supplier-1": { unit_price: 1250, date: "2026-08-10", quotation_id: "q-1" },
-      } } });
+      return Promise.resolve({ data: { prices } });
     }
     return getResponse(url, config);
   });
+}
+
+async function renderComparison(comparisonDetail = detail) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(<SupplierPriceComparison initialComparison={detail} />);
+    root.render(<SupplierPriceComparison initialComparison={comparisonDetail} />);
     await new Promise((resolve) => setTimeout(resolve, 30));
   });
+  return { container, root };
+}
+
+test("the comparison matrix shows the last formal price for the same supplier and item, and an explicit empty state otherwise", async () => {
+  mockLastFormalPrices({
+    "item-1|supplier-1": { unit_price: 1250, date: "2026-08-10", quotation_id: "q-1" },
+  });
+  const { container, root } = await renderComparison();
 
   const priceCells = container.querySelectorAll('[data-testid^="last-supplier-price-"]');
   expect(priceCells.length).toBe(2);
+  // row-1: item-1/supplier-1, current unit_price 100 vs. previous 1250 -> down.
   const withPrice = [...priceCells].find((el) => el.textContent.includes("1250.00"));
-  const withoutPrice = [...priceCells].find((el) => el.textContent.includes("لا يوجد سعر سابق"));
+  // row-2: item-1/supplier-2 has no matching last-formal-prices entry.
+  const withoutPrice = [...priceCells].find((el) => el.textContent.includes("لا يوجد سعر رسمي سابق"));
   expect(withPrice).toBeTruthy();
-  expect(withPrice.textContent).toContain("2026-08-10");
+  expect(withPrice.getAttribute("title")).toContain("2026-08-10");
+  expect(withPrice.textContent).toContain("-92.0%");
   expect(withoutPrice).toBeTruthy();
+  // The editable current-price input is untouched and still holds row-1's
+  // real current price (100), not the previous formal price (1250).
+  expect(container.querySelector('[data-testid="inline-unit-price-row-1"]').value).toBe("100");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("current 120 / previous 100 displays +20% with an up indicator", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
+  const upDetail = { ...detail, rows: [{ ...detail.rows[0], unit_price: 120 }] };
+  const { container, root } = await renderComparison(upDetail);
+
+  const cell = container.querySelector('[data-testid="last-supplier-price-row-1"]');
+  expect(cell.textContent).toContain("+20.0%");
+  const indicator = container.querySelector('[data-testid="price-change-indicator-row-1"]');
+  expect(indicator.className).toEqual(expect.stringContaining("amber"));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("current 80 / previous 100 displays -20% with a down indicator", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
+  const downDetail = { ...detail, rows: [{ ...detail.rows[0], unit_price: 80 }] };
+  const { container, root } = await renderComparison(downDetail);
+
+  const cell = container.querySelector('[data-testid="last-supplier-price-row-1"]');
+  expect(cell.textContent).toContain("-20.0%");
+  const indicator = container.querySelector('[data-testid="price-change-indicator-row-1"]');
+  expect(indicator.className).toEqual(expect.stringContaining("emerald"));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("current 100 / previous 100 shows the unchanged state, not a percentage", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
+  const sameDetail = { ...detail, rows: [{ ...detail.rows[0], unit_price: 100 }] };
+  const { container, root } = await renderComparison(sameDetail);
+
+  const cell = container.querySelector('[data-testid="last-supplier-price-row-1"]');
+  expect(cell.textContent).toContain("نفس السعر السابق");
+  expect(cell.textContent).not.toMatch(/%/);
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("previous = 0 shows the direction without a percentage, never a division error", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 0, date: "2026-08-01", quotation_id: "q-1" } });
+  const { container, root } = await renderComparison();
+
+  const cell = container.querySelector('[data-testid="last-supplier-price-row-1"]');
+  expect(cell.textContent).not.toMatch(/%/);
+  expect(cell.textContent).not.toContain("NaN");
+  expect(cell.textContent).not.toContain("Infinity");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("a received quotation is never shown as its own previous price - the exclusion token reaches the API", async () => {
+  globalThis.mockComparisonLocationState = {
+    supplierQuotations: [{ id: "current-q-1", supplier_id: "supplier-1", status: "received" }],
+  };
+  mockLastFormalPrices({});
+  const { container, root } = await renderComparison();
+
+  const call = mockGet.mock.calls.find(([url]) => url === "/price-comparisons/last-formal-prices");
+  expect(call).toBeTruthy();
+  expect(call[1].params.pairs).toContain("item-1:supplier-1:current-q-1");
+
+  await act(async () => root.unmount());
+  container.remove();
+  globalThis.mockComparisonLocationState = null;
+});
+
+test("historical indicator does not replace or disable the editable current price control", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
+  const { container, root } = await renderComparison();
+
+  const input = container.querySelector('[data-testid="inline-unit-price-row-1"]');
+  expect(input).toBeTruthy();
+  expect(input.tagName).toBe("INPUT");
+  expect(input.disabled).toBe(false);
+  expect(input.value).toBe("100");
 
   await act(async () => root.unmount());
   container.remove();

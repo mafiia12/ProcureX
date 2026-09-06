@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FilePlus2,
-  FolderOpen, MoreHorizontal, PackagePlus, Pencil, Plus, Printer, Save, Trash2, UserPlus,
+  ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FilePlus2,
+  FolderOpen, Minus, MoreHorizontal, PackagePlus, Pencil, Plus, Printer, Save, Trash2, UserPlus,
   Send, Paperclip, ExternalLink, SlidersHorizontal, Upload,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -23,8 +23,8 @@ import {
 import api, { errMsg, fmt } from "@/lib/api";
 import useUnsavedChanges from "@/hooks/useUnsavedChanges";
 import {
-  calculateComparison, calculateSupplierTotal, emptyComparisonRow, manualEntryKey,
-  supplierOffersFromRows,
+  calculateComparison, calculateSupplierTotal, emptyComparisonRow, formalPriceChange,
+  formatPriceChangePercent, manualEntryKey, supplierOffersFromRows,
 } from "@/lib/priceComparison";
 import {
   EmptyState, StatusBadge,
@@ -215,11 +215,37 @@ function ComparisonMatrix({
                     </div>
                     {row.item_id && row.supplier_id && (() => {
                       const lastPrice = lastSupplierPrices[`${row.item_id}|${row.supplier_id}`];
+                      if (!lastPrice) {
+                        return (
+                          <div className="truncate text-[9.5px] text-muted-foreground/70" data-testid={`last-supplier-price-${row.key}`}>
+                            {tr("لا يوجد سعر رسمي سابق", "No previous formal price")}
+                          </div>
+                        );
+                      }
+                      const change = formalPriceChange(row.unit_price, lastPrice.unit_price);
+                      const percentLabel = change ? formatPriceChangePercent(change.percent) : null;
+                      const toneClass = change?.direction === "up"
+                        ? "text-amber-700 dark:text-amber-400"
+                        : change?.direction === "down"
+                          ? "text-emerald-700 dark:text-emerald-300"
+                          : "text-muted-foreground";
+                      const DirectionIcon = change?.direction === "up" ? ArrowUp : change?.direction === "down" ? ArrowDown : Minus;
+                      const tooltip = tr(
+                        `آخر سعر رسمي من عرض مورد مستلم${lastPrice.date ? ` — ${lastPrice.date}` : ""}`,
+                        `Last formal price from a received supplier quotation${lastPrice.date ? ` — ${lastPrice.date}` : ""}`,
+                      );
                       return (
-                        <div className="truncate text-[9.5px] text-muted-foreground" data-testid={`last-supplier-price-${row.key}`}>
-                          {lastPrice
-                            ? tr(`آخر سعر: ${formatMoney(lastPrice.unit_price)} — ${lastPrice.date}`, `Last price: ${formatMoney(lastPrice.unit_price)} — ${lastPrice.date}`)
-                            : tr("لا يوجد سعر سابق", "No previous price")}
+                        <div className="flex min-w-0 items-center gap-1 truncate text-[9.5px]" data-testid={`last-supplier-price-${row.key}`} title={tooltip}>
+                          {change?.direction === "same" ? (
+                            <span className={cn("truncate", toneClass)}>{tr("نفس السعر السابق", "Same as last price")}</span>
+                          ) : (
+                            <>
+                              <span className="truncate text-muted-foreground">{tr("آخر سعر", "Last")} {formatMoney(lastPrice.unit_price)}</span>
+                              <span className={cn("flex shrink-0 items-center gap-0.5 font-semibold", toneClass)} data-testid={`price-change-indicator-${row.key}`}>
+                                <DirectionIcon className="h-2.5 w-2.5" />{percentLabel}
+                              </span>
+                            </>
+                          )}
                         </div>
                       );
                     })()}
@@ -498,13 +524,31 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     [rows, items, suppliers, comparisonDate, supplierOffers],
   );
 
+  // A received quotation that seeded a row in THIS comparison must never
+  // come back as its own "previous formal price" - see the backend's
+  // last-formal-prices exclusion. Only a received quotation is ever
+  // returned as a formal price in the first place, so draft/withdrawn ones
+  // need no exclusion.
+  const currentQuotationIdBySupplier = useMemo(() => {
+    const map = {};
+    supplierQuotations.forEach((quotation) => {
+      if (quotation.status === "received" && quotation.supplier_id) {
+        map[quotation.supplier_id] = quotation.id;
+      }
+    });
+    return map;
+  }, [supplierQuotations]);
+
   const lastSupplierPricePairsKey = useMemo(() => {
     const pairs = new Set();
     calculations.rows.forEach((row) => {
-      if (row.item_id && row.supplier_id) pairs.add(`${row.item_id}:${row.supplier_id}`);
+      if (row.item_id && row.supplier_id) {
+        const currentQuotationId = currentQuotationIdBySupplier[row.supplier_id] || "";
+        pairs.add(`${row.item_id}:${row.supplier_id}:${currentQuotationId}`);
+      }
     });
     return [...pairs].sort().join(",");
-  }, [calculations.rows]);
+  }, [calculations.rows, currentQuotationIdBySupplier]);
 
   useEffect(() => {
     if (!lastSupplierPricePairsKey) { setLastSupplierPrices({}); return; }

@@ -331,3 +331,30 @@ export function calculateComparison(rows, items, suppliers, comparisonDate, supp
     },
   };
 }
+
+// Item price intelligence for the comparison matrix: current vs. the most
+// recent PREVIOUS formal (received supplier quotation) unit price for the
+// same item + supplier - see GET /price-comparisons/last-formal-prices.
+// Compares the unit price only, never a supplier's adjusted/final total,
+// and is purely informational - it never feeds into calculateComparison's
+// totals or selection logic above. Returns null when there is nothing to
+// compare against (no previous formal price for that item + supplier).
+export function formalPriceChange(currentUnitPrice, previousUnitPrice) {
+  if (previousUnitPrice === null || previousUnitPrice === undefined) return null;
+  const current = number(currentUnitPrice);
+  const previous = number(previousUnitPrice);
+  const delta = round(current - previous);
+  const direction = delta > 0 ? "up" : delta < 0 ? "down" : "same";
+  // A previous price of exactly 0 makes a percentage change undefined -
+  // never divide by zero. The caller still gets delta/direction to show.
+  const percent = previous === 0 ? null : Math.round((delta / previous) * 1000) / 10;
+  return { current, previous, delta, percent, direction };
+}
+
+// "+13.6%" / "-7.2%" / "0%" - never raw floating-point output. Returns null
+// when there is no percentage to show (see formalPriceChange's previous=0 case).
+export function formatPriceChangePercent(percent) {
+  if (percent === null || percent === undefined || !Number.isFinite(percent)) return null;
+  if (percent === 0) return "0%";
+  return `${percent > 0 ? "+" : "-"}${Math.abs(percent).toFixed(1)}%`;
+}
