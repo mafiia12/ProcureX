@@ -31,6 +31,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     delete,
+    func,
     select,
     text,
 )
@@ -476,6 +477,126 @@ def _rfq_detail(session, rfq: RequestForQuotation) -> dict:
             1 for quotation in quotations if quotation.status == "received"
         ),
     }
+
+
+@router.get("")
+def list_rfqs(current_user: User = Depends(require_erp_role())):
+    """Compact RFQ register: one row per RFQ with bulk-computed item/
+    supplier/quotation counts and comparison linkage. No N+1 - every child
+    table (RFQItem, RFQSupplier, SupplierQuotation) and the source REQ/
+    comparison are each fetched with a single bulk query, then grouped in
+    Python, the same pattern _dashboard_procurement_intelligence already
+    uses for RFQ/approval/PO bulk summaries.
+
+    Status/eligibility here mirrors the dashboard's own sourcing_attention
+    derivation exactly (server.py's _dashboard_procurement_intelligence) -
+    no second "cheapest"/"ready" formula:
+      is_open            -> source REQ status == "pricing"
+      is_past_deadline    -> deadline set, in the past, and still incomplete
+      ready_for_comparison -> at least one received quotation (the same
+                              condition /comparison-rows already enforces)
+    """
+    try:
+        from .price_comparisons import PriceComparison
+    except ImportError:  # pragma: no cover - direct backend execution
+        from price_comparisons import PriceComparison
+
+    with SessionLocal() as session:
+        rfqs = session.scalars(
+            select(RequestForQuotation).order_by(RequestForQuotation.updated_at.desc())
+        ).all()
+        if not rfqs:
+            return []
+        rfq_ids = [rfq.id for rfq in rfqs]
+        request_ids = {rfq.source_request_id for rfq in rfqs if rfq.source_request_id}
+
+        items_by_rfq: dict = {}
+        for rfq_id, count in session.execute(
+            select(RFQItem.rfq_id, func.count())
+            .where(RFQItem.rfq_id.in_(rfq_ids)).group_by(RFQItem.rfq_id)
+        ).all():
+            items_by_rfq[rfq_id] = count
+
+        # Names (not just a count) so the register can offer a "Supplier"
+        # filter without a second query per RFQ.
+        supplier_names_by_rfq: dict = {}
+        for rfq_id, supplier_name in session.execute(
+            select(RFQSupplier.rfq_id, RFQSupplier.supplier_name)
+            .where(RFQSupplier.rfq_id.in_(rfq_ids))
+        ).all():
+            supplier_names_by_rfq.setdefault(rfq_id, []).append(supplier_name)
+
+        received_by_rfq: dict = {}
+        for rfq_id, status, count in session.execute(
+            select(SupplierQuotation.rfq_id, SupplierQuotation.status, func.count())
+            .where(SupplierQuotation.rfq_id.in_(rfq_ids))
+            .group_by(SupplierQuotation.rfq_id, SupplierQuotation.status)
+        ).all():
+            if status == "received":
+                received_by_rfq[rfq_id] = received_by_rfq.get(rfq_id, 0) + count
+
+        requests_by_id = {
+            row.id: row for row in (
+                session.scalars(
+                    select(IncomingPurchaseRequest)
+                    .where(IncomingPurchaseRequest.id.in_(request_ids))
+                ).all() if request_ids else []
+            )
+        }
+        # Most recent comparison per source REQ - mirrors the same
+        # source_request_id -> RFQ/comparison linkage price_comparisons.py's
+        # own _comparison_detail already uses in the opposite direction.
+        comparisons_by_request: dict = {}
+        if request_ids:
+            for comparison in session.scalars(
+                select(PriceComparison)
+                .where(PriceComparison.source_request_id.in_(request_ids))
+                .order_by(PriceComparison.created_at.desc())
+            ).all():
+                comparisons_by_request.setdefault(comparison.source_request_id, comparison)
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        rows = []
+        for rfq in rfqs:
+            supplier_names = supplier_names_by_rfq.get(rfq.id, [])
+            supplier_count = len(supplier_names)
+            received_count = received_by_rfq.get(rfq.id, 0)
+            request_row = requests_by_id.get(rfq.source_request_id)
+            is_open = bool(request_row and request_row.status == "pricing")
+            is_past_deadline = bool(
+                rfq.deadline and rfq.deadline < today and received_count < supplier_count
+            )
+            if not is_open:
+                status = "closed"
+            elif is_past_deadline:
+                status = "past_deadline"
+            elif supplier_count == 0:
+                status = "no_suppliers"
+            elif received_count == 0:
+                status = "zero_response"
+            elif received_count < supplier_count:
+                status = "partial_response"
+            else:
+                status = "all_received"
+            comparison = comparisons_by_request.get(rfq.source_request_id)
+            rows.append({
+                "id": rfq.id, "rfq_number": rfq.rfq_number,
+                "project_id": rfq.project_id or "", "project_name": rfq.project_name,
+                "source_request_id": rfq.source_request_id,
+                "source_request_number": rfq.source_request_number,
+                "item_count": items_by_rfq.get(rfq.id, 0),
+                "supplier_count": supplier_count,
+                "supplier_names": supplier_names,
+                "received_quotation_count": received_count,
+                "rfq_date": rfq.rfq_date, "deadline": rfq.deadline,
+                "request_status": request_row.status if request_row else "",
+                "is_open": is_open, "is_past_deadline": is_past_deadline,
+                "status": status, "ready_for_comparison": received_count > 0,
+                "comparison_id": comparison.id if comparison else "",
+                "comparison_number": comparison.comparison_number if comparison else "",
+                "created_at": rfq.created_at, "updated_at": rfq.updated_at,
+            })
+        return rows
 
 
 @router.post("")

@@ -196,7 +196,7 @@ export function FilterBar({ children, resultLabel, onClear, className }) {
   );
 }
 
-export function DataTable({ columns, rows, rowKey = "id", empty, className, tableClassName, sticky = true, rowTestId }) {
+export function DataTable({ columns, rows, rowKey = "id", empty, className, tableClassName, sticky = true, rowTestId, onRowClick }) {
   const { tr } = useBilingualPreferences();
   return (
     <div className={cn("overflow-auto border bg-card", className)}>
@@ -208,7 +208,19 @@ export function DataTable({ columns, rows, rowKey = "id", empty, className, tabl
         </TableHeader>
         <TableBody>
           {rows.map((row, index) => (
-            <TableRow key={typeof rowKey === "function" ? rowKey(row) : row[rowKey] ?? index} className="h-9 hover:bg-muted/50" data-testid={rowTestId}>
+            <TableRow
+              key={typeof rowKey === "function" ? rowKey(row) : row[rowKey] ?? index}
+              className={cn("h-9 hover:bg-muted/50", onRowClick && "cursor-pointer")}
+              data-testid={rowTestId}
+              {...(onRowClick ? {
+                role: "button",
+                tabIndex: 0,
+                onClick: () => onRowClick(row),
+                onKeyDown: (event) => {
+                  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onRowClick(row); }
+                },
+              } : {})}
+            >
               {columns.map((column) => <TableCell key={column.key} className={cn("py-1 text-sm text-foreground", column.className)}>{column.render ? column.render(row, index) : (row[column.key] ?? "-")}</TableCell>)}
             </TableRow>
           ))}

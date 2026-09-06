@@ -33,6 +33,7 @@ import DocumentReview from "@/pages/DocumentReview";
 import ApprovedItemsDraft from "@/pages/ApprovedItemsDraft";
 import ProjectPurchases from "@/pages/ProjectPurchases";
 import ApprovalsCommandCenter from "@/pages/ApprovalsCommandCenter";
+import RfqRegister from "@/pages/RfqRegister";
 import RfqWorkspace from "@/pages/RfqWorkspace";
 import DailyProcurementReport from "@/pages/DailyProcurementReport";
 import PublicApproval from "@/pages/PublicApproval";
@@ -82,6 +83,7 @@ function AppRoutes() {
               path="/supplier-price-comparison"
               element={<SupplierPriceComparison />}
             />
+            <Route path="/rfqs" element={<RfqRegister />} />
             <Route path="/rfq/:rfqId" element={<RfqWorkspace />} />
             <Route path="/daily-report" element={<DailyProcurementReport />} />
             <Route

@@ -6067,6 +6067,186 @@ def test_quotation_lines_remain_linked_to_source_ids(s):
     assert history_line["comparison_number"] == ""
 
 
+def _mark_quotation_received(client, rfq_id, quotation_id, headers, unit_price=100):
+    updated = client.put(
+        f"{RFQ_API}/{rfq_id}/quotations/{quotation_id}", headers=headers,
+        json={
+            "status": "received",
+            "lines": [],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    return updated.json()
+
+
+def _rfq_row(rows, rfq_id):
+    return next(row for row in rows if row["id"] == rfq_id)
+
+
+def test_rfq_register_lists_supplier_and_quotation_counts_without_n_plus_one(s):
+    """Two independent RFQs with different supplier/quotation counts must
+    each report their OWN counts correctly - proves the bulk group-by
+    queries are keyed per rfq_id, not accidentally shared/aggregated."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-reg-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"rfq-reg-resp-{suffix}")
+    internal_responsible = {**INTERNAL_HEADERS, **responsible_headers}
+
+    # RFQ A: 2 suppliers, 1 received quotation.
+    request_a, *_rest = _make_pricing_request(s, f"{suffix}-a")
+    rfq_a = s.post(RFQ_API, headers=internal_responsible, json={"source_request_id": request_a}).json()["rfq"]
+    suppliers = s.get(f"{API}/suppliers", headers=responsible_headers).json()
+    supplier_1, supplier_2 = suppliers[0], suppliers[1]
+    s.post(f"{RFQ_API}/{rfq_a['id']}/suppliers", headers=internal_responsible, json={"supplier_id": supplier_1["id"]})
+    s.post(f"{RFQ_API}/{rfq_a['id']}/suppliers", headers=internal_responsible, json={"supplier_id": supplier_2["id"]})
+    quotation_a1 = s.post(
+        f"{RFQ_API}/{rfq_a['id']}/quotations", headers=internal_responsible, json={"supplier_id": supplier_1["id"]},
+    ).json()["quotation"]
+    s.post(f"{RFQ_API}/{rfq_a['id']}/quotations", headers=internal_responsible, json={"supplier_id": supplier_2["id"]})
+    _mark_quotation_received(s, rfq_a["id"], quotation_a1["id"], internal_responsible)
+
+    # RFQ B: 1 supplier, 0 received quotations.
+    rfq_id_b, supplier_b, _rfq_b = _rfq_with_supplier(s, f"{suffix}-b", responsible_headers)
+
+    response = s.get(RFQ_API, headers=internal_responsible)
+    assert response.status_code == 200, response.text
+    rows = response.json()
+
+    row_a = _rfq_row(rows, rfq_a["id"])
+    assert row_a["item_count"] == 1
+    assert row_a["supplier_count"] == 2
+    assert sorted(row_a["supplier_names"]) == sorted([supplier_1["name"], supplier_2["name"]])
+    assert row_a["received_quotation_count"] == 1
+    assert row_a["status"] == "partial_response"
+    assert row_a["ready_for_comparison"] is True
+
+    row_b = _rfq_row(rows, rfq_id_b)
+    assert row_b["supplier_count"] == 1
+    assert row_b["received_quotation_count"] == 0
+    assert row_b["status"] == "zero_response"
+    assert row_b["ready_for_comparison"] is False
+
+
+def test_rfq_register_marks_past_deadline_when_incomplete_and_expired(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-overdue-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"rfq-overdue-resp-{suffix}")
+    internal_responsible = {**INTERNAL_HEADERS, **responsible_headers}
+    request_id, *_rest = _make_pricing_request(s, suffix)
+    rfq = s.post(
+        RFQ_API, headers=internal_responsible,
+        json={"source_request_id": request_id, "deadline": "2020-01-01"},
+    ).json()["rfq"]
+    supplier = s.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
+    s.post(f"{RFQ_API}/{rfq['id']}/suppliers", headers=internal_responsible, json={"supplier_id": supplier["id"]})
+
+    rows = s.get(RFQ_API, headers=internal_responsible).json()
+    row = _rfq_row(rows, rfq["id"])
+    assert row["is_past_deadline"] is True
+    assert row["status"] == "past_deadline"
+
+
+def _rfq_ready_for_comparison(client, suffix, responsible_headers):
+    """A real RFQ (not a bypassed direct-CMP fixture) carried all the way to
+    one received quotation - the actual precondition /comparison-rows and
+    the register's ready_for_comparison flag both require. Returns
+    (rfq, request_id, request_number, project_id, item_id, supplier)."""
+    internal_responsible = {**INTERNAL_HEADERS, **responsible_headers}
+    request_id, request_number, project_id, _line_id, _resp = _make_pricing_request(client, suffix)
+    rfq = client.post(
+        RFQ_API, headers=internal_responsible, json={"source_request_id": request_id},
+    ).json()["rfq"]
+    # rfq["items"][0]["item_id"] is the resolved Item Master id (the 4th
+    # _make_pricing_request return value is the REQUEST LINE id, not this).
+    item_id = rfq["items"][0]["item_id"]
+    supplier = client.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
+    client.post(
+        f"{RFQ_API}/{rfq['id']}/suppliers", headers=internal_responsible,
+        json={"supplier_id": supplier["id"]},
+    )
+    quotation = client.post(
+        f"{RFQ_API}/{rfq['id']}/quotations", headers=internal_responsible,
+        json={"supplier_id": supplier["id"]},
+    ).json()["quotation"]
+    rfq_item_id = rfq["items"][0]["id"]
+    updated = client.put(
+        f"{RFQ_API}/{rfq['id']}/quotations/{quotation['id']}", headers=internal_responsible,
+        json={
+            "status": "received",
+            "lines": [{
+                "rfq_item_id": rfq_item_id, "quantity": 3, "unit": "قطعة",
+                "unit_price": 100, "availability": "available",
+            }],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    return rfq, request_id, request_number, project_id, item_id, supplier
+
+
+def test_rfq_register_exposes_comparison_link_when_one_exists(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    rfq, request_id, request_number, project_id, item_id, supplier = _rfq_ready_for_comparison(
+        s, suffix, admin_headers,
+    )
+    project = next(p for p in s.get(f"{API}/projects", headers=admin_headers).json() if p["id"] == project_id)
+    comparison = s.post(f"{API}/price-comparisons", json={
+        "project_id": project_id, "project_name": project["name"],
+        "source_request_id": request_id, "source_request_number": request_number,
+        "comparison_date": "2026-08-20", "rows": [{
+            "item_id": item_id, "product_name": "صنف RFQ من الدليل",
+            "supplier_id": supplier["id"], "quantity": 3, "unit": "قطعة",
+            "unit_price": 100, "availability": "available", "price_valid_until": "2099-12-31",
+        }],
+    }, headers=admin_headers)
+    assert comparison.status_code == 200, comparison.text
+    comparison = comparison.json()
+
+    rows = s.get(RFQ_API, headers={**INTERNAL_HEADERS, **admin_headers}).json()
+    matching = _rfq_row(rows, rfq["id"])
+    assert matching["comparison_id"] == comparison["id"]
+    assert matching["comparison_number"] == comparison["comparison_number"]
+    # The REQ hasn't been sent for approval yet - still "pricing", so an
+    # unrelated saved comparison draft doesn't close the RFQ prematurely.
+    assert matching["is_open"] is True
+    assert matching["status"] == "all_received"
+
+
+def test_rfq_register_marks_closed_once_request_moves_past_pricing(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    rfq, request_id, request_number, project_id, item_id, supplier = _rfq_ready_for_comparison(
+        s, suffix, admin_headers,
+    )
+    project = next(p for p in s.get(f"{API}/projects", headers=admin_headers).json() if p["id"] == project_id)
+    comparison = s.post(f"{API}/price-comparisons", json={
+        "project_id": project_id, "project_name": project["name"],
+        "source_request_id": request_id, "source_request_number": request_number,
+        "comparison_date": "2026-08-20", "rows": [{
+            "item_id": item_id, "product_name": "صنف RFQ من الدليل",
+            "supplier_id": supplier["id"], "quantity": 3, "unit": "قطعة",
+            "unit_price": 100, "availability": "available", "price_valid_until": "2099-12-31",
+            "selected_for_purchase": 1,
+        }],
+    }, headers=admin_headers).json()
+    approval = s.post(
+        f"{API}/workflow/approvals/from-comparison", headers={**INTERNAL_HEADERS, **admin_headers},
+        json={"comparison_id": comparison["id"], "created_by": "tester", "approval_type": "comparison_workflow"},
+    )
+    assert approval.status_code == 201, approval.text
+    # Creating the approval advances the source REQ past "pricing"
+    # (advance_request_milestone) - the register must reflect that live.
+    rows = s.get(RFQ_API, headers={**INTERNAL_HEADERS, **admin_headers}).json()
+    matching = _rfq_row(rows, rfq["id"])
+    assert matching["is_open"] is False
+    assert matching["status"] == "closed"
+
+
+def test_rfq_register_requires_authentication(s):
+    response = s.get(RFQ_API, headers=INTERNAL_HEADERS)
+    assert response.status_code == 401
+
+
 def _received_quotation_for_item(
     client, suffix, responsible_headers, unit_price, quotation_date="", item_id=None,
 ):
