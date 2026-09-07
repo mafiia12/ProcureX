@@ -165,13 +165,13 @@ test("existing Master-linked lines never render the convert button", async () =>
   container.remove();
 });
 
-test("a commercial manager sees neither the technical review actions nor the convert button", async () => {
+test("a commercial manager sees both the technical review actions and the convert button (inherited from engineer/responsible)", async () => {
   mockUseAuth.mockReturnValue({ user: { username: "manager1", role: "commercial_manager", account_type: "erp" } });
   const underReview = { ...mixedDetail, status: "under_review" };
   const { container, root } = await renderWithDetail(underReview);
 
-  expect(container.querySelector('[data-testid="technical-review-actions"]')).toBeNull();
-  expect(container.querySelector('[data-testid="convert-manual-item-button"]')).toBeNull();
+  expect(container.querySelector('[data-testid="technical-review-actions"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="convert-manual-item-button"]')).not.toBeNull();
   expect(container.textContent).toContain("صنف يدوي");
 
   await act(async () => root.unmount());

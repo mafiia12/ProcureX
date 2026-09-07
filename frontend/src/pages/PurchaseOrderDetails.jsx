@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import api, { errMsg, fmtEGP } from "@/lib/api";
+import { roleAtLeast } from "@/lib/roles";
 import {
   PO_CANCELLABLE_STATUSES, PO_NEXT_STATUS, PO_NEXT_STATUS_ACTION_LABEL,
   PO_PAYMENT_METHOD_LABEL, PO_STATUS_LABEL, PO_STATUS_STYLE,
@@ -52,8 +53,8 @@ export default function PurchaseOrderDetails() {
   const { user } = useAuth();
   const { tr, direction, locale } = usePreferences();
   const role = user?.role || "";
-  const canOperatePO = role === "admin" || role === "procurement_responsible";
-  const canManagePayments = role === "admin" || role === "commercial_manager";
+  const canOperatePO = roleAtLeast(role, "procurement_responsible");
+  const canManagePayments = roleAtLeast(role, "commercial_manager");
   const requestedSection = searchParams.get("section");
   const [activeTab, setActiveTab] = useState(
     DEEP_LINK_TABS.has(requestedSection) ? requestedSection : "overview",

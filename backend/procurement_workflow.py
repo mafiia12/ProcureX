@@ -26,7 +26,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 try:
     from .attachment_storage import get_attachment_storage
     from .auth.models import User
-    from .auth.service import require_erp_role
+    from .auth.service import has_role_or_higher, require_erp_role
     from .business_codes import next_business_code, reserve_code
     from .database import (
         Base, Customer, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
@@ -50,7 +50,7 @@ try:
 except ImportError:
     from attachment_storage import get_attachment_storage
     from auth.models import User
-    from auth.service import require_erp_role
+    from auth.service import has_role_or_higher, require_erp_role
     from business_codes import next_business_code, reserve_code
     from database import (
         Base, Customer, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
@@ -1307,8 +1307,10 @@ def internal_approval_decision(
         # The role required at this specific stage is a workflow-state value
         # (approval.responsible_role), not a fixed role - only the identity
         # source changed: the authenticated user's own DB role, never a
-        # client-supplied one. Admin always passes (require_erp_role above).
-        if current_user.role != "admin" and current_user.role != approval.responsible_role:
+        # client-supplied one. A role above the stage's responsible_role in
+        # the ERP hierarchy may also act (e.g. commercial_manager can take a
+        # procurement_responsible-owned stage); admin always passes.
+        if not has_role_or_higher(current_user, approval.responsible_role):
             raise HTTPException(403, "هذا الإجراء متاح للدور المسؤول في المرحلة الحالية فقط")
         if approval.status != "pending_approval":
             if approval.status == body.decision:

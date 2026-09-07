@@ -88,8 +88,9 @@ from incoming_requests import (
     IncomingRequestGeneralAttachment,
     IncomingRequestStatusHistory,
 )  # noqa: E402
-from auth.models import User, UserProjectAccess  # noqa: E402
+from auth.models import ERP_ROLE_LEVELS, User, UserProjectAccess  # noqa: E402
 from auth.security import hash_password  # noqa: E402
+from auth.service import has_role_or_higher, role_at_least  # noqa: E402
 init_db()
 WORKBOOK = BACKEND_DIR / "workbook.xlsm"
 asyncio.run(import_data(db, parse_workbook(WORKBOOK.read_bytes())))
@@ -3142,6 +3143,153 @@ def test_guided_project_approval_payment_revision_and_cash_workflow(s, admin_hea
     assert hub.json()["kpis"]["comparison_count"] >= 3
 
 
+def test_role_at_least_implements_the_erp_hierarchy():
+    """Unit-level check of the centralized hierarchy helper (auth/service.py)
+    independent of any HTTP endpoint: admin > commercial_manager >
+    procurement_responsible > procurement_engineer, admin is an absolute
+    override, and unknown roles fail closed on both sides."""
+    assert ERP_ROLE_LEVELS == {
+        "procurement_engineer": 10,
+        "procurement_responsible": 20,
+        "commercial_manager": 30,
+        "admin": 100,
+    }
+    ladder = ["procurement_engineer", "procurement_responsible", "commercial_manager", "admin"]
+    for i, actual in enumerate(ladder):
+        for j, required in enumerate(ladder):
+            assert role_at_least(actual, required) is (i >= j), (actual, required)
+
+    # admin is an absolute override, even for a required role the hierarchy
+    # doesn't recognize (e.g. a workflow-stage value like "procurement_officer").
+    assert role_at_least("admin", "procurement_officer") is True
+    assert role_at_least("admin", "nonsense") is True
+
+    # Fails closed: an unrecognized role on either side never grants access,
+    # including site_engineer (deliberately outside ERP_ROLE_LEVELS).
+    assert role_at_least("site_engineer", "procurement_engineer") is False
+    assert role_at_least("commercial_manager", "site_engineer") is False
+    assert role_at_least("procurement_responsible", "procurement_officer") is False
+    assert role_at_least("nonsense", "procurement_engineer") is False
+
+
+def test_has_role_or_higher_enforces_account_type_boundary():
+    """has_role_or_higher must refuse a site_portal account no matter what
+    role string it carries, since site_engineer participates in no ERP
+    inheritance (Site Portal stays fully outside the ERP role ladder)."""
+    class _FakeUser:
+        def __init__(self, account_type, role):
+            self.account_type = account_type
+            self.role = role
+
+    erp_admin = _FakeUser("erp", "admin")
+    erp_engineer = _FakeUser("erp", "procurement_engineer")
+    site_portal_user = _FakeUser("site_portal", "site_engineer")
+
+    assert has_role_or_higher(erp_admin, "commercial_manager") is True
+    assert has_role_or_higher(erp_engineer, "commercial_manager") is False
+    assert has_role_or_higher(erp_engineer, "procurement_engineer") is True
+    assert has_role_or_higher(site_portal_user, "procurement_engineer") is False
+    # Even if a site_portal row somehow carried role="admin" (blocked in
+    # practice by the DB CHECK constraint in auth/models.py), the
+    # account_type check still refuses it.
+    assert has_role_or_higher(_FakeUser("site_portal", "admin"), "procurement_engineer") is False
+
+
+def test_erp_rbac_matrix_across_representative_endpoints(s, admin_headers):
+    """Explicit RBAC matrix (spec section 15): for one representative,
+    already-gated endpoint per hierarchy level, every role at or above that
+    level gets 200/201 and every role below gets 403. Site Portal never
+    gets ERP access regardless of level."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"matrix-eng-{suffix}", role="procurement_engineer")
+        _make_user(session, username=f"matrix-resp-{suffix}", role="procurement_responsible")
+        _make_user(session, username=f"matrix-mgr-{suffix}", role="commercial_manager")
+        portal_username, _, _ = _portal_setup(session, f"matrix-portal-{suffix}")
+    headers_by_role = {
+        "procurement_engineer": _login_headers(s, f"matrix-eng-{suffix}"),
+        "procurement_responsible": _login_headers(s, f"matrix-resp-{suffix}"),
+        "commercial_manager": _login_headers(s, f"matrix-mgr-{suffix}"),
+        "admin": admin_headers,
+    }
+    portal_headers = _login_headers(s, portal_username)
+    ladder = ["procurement_engineer", "procurement_responsible", "commercial_manager", "admin"]
+
+    # Engineer-gated: /internal/incoming-purchase-requests/{id}/items/{id}/review
+    item_ids_by_role = {}
+    for role in ladder:
+        req_id, item_id, _ = _make_manual_line(s, f"{suffix}-eng-{role}")
+        item_ids_by_role[role] = (req_id, item_id)
+    for role in ladder:
+        req_id, item_id = item_ids_by_role[role]
+        response = s.patch(
+            f"{API}/internal/incoming-purchase-requests/{req_id}/items/{item_id}/review",
+            headers={**INTERNAL_HEADERS, **headers_by_role[role]}, json={"status": "approved", "reason": ""},
+        )
+        expected = 200 if ERP_ROLE_LEVELS[role] >= ERP_ROLE_LEVELS["procurement_engineer"] else 403
+        assert response.status_code == expected, (role, response.text)
+    portal_req_id_review, portal_item_id_review, _ = _make_manual_line(s, f"{suffix}-eng-portal")
+    assert s.patch(
+        f"{API}/internal/incoming-purchase-requests/{portal_req_id_review}/items/{portal_item_id_review}/review",
+        headers={**INTERNAL_HEADERS, **portal_headers}, json={"status": "approved", "reason": ""},
+    ).status_code == 403
+
+    # Responsible-gated: RFQ creation. A role denied here leaves its request
+    # sitting in status="pricing" with no RFQ - a real "sourcing_required"
+    # row on the dashboard's shared attention-items list - so those specific
+    # denied-role requests are force-closed afterward (the allowed-role ones
+    # already leave "pricing" naturally once their RFQ exists, since the
+    # dashboard's sourcing_required bucket excludes any request with an RFQ;
+    # see server.py's requests_ready_for_sourcing).
+    denied_rfq_request_ids = []
+    for role in ladder:
+        req_id, *_rest = _make_pricing_request(s, f"{suffix}-rfq-{role}")
+        response = s.post(
+            RFQ_API, headers={**INTERNAL_HEADERS, **headers_by_role[role]},
+            json={"source_request_id": req_id},
+        )
+        expected = 200 if ERP_ROLE_LEVELS[role] >= ERP_ROLE_LEVELS["procurement_responsible"] else 403
+        assert response.status_code == expected, (role, response.text)
+        if expected == 403:
+            denied_rfq_request_ids.append(req_id)
+    portal_req_id, *_rest = _make_pricing_request(s, f"{suffix}-rfq-portal")
+    denied_rfq_request_ids.append(portal_req_id)
+    assert s.post(
+        RFQ_API, headers={**INTERNAL_HEADERS, **portal_headers}, json={"source_request_id": portal_req_id},
+    ).status_code == 403
+    with SessionLocal.begin() as session:
+        for req_id in denied_rfq_request_ids:
+            row = session.get(IncomingPurchaseRequest, req_id)
+            if row is not None:
+                row.status = "cancelled"
+
+    # Commercial-gated: confirm funds release (uses a random approval id -
+    # the RBAC gate always runs before the 404 lookup, so a role failure
+    # still surfaces as 403 here).
+    for role in ladder:
+        response = s.post(
+            f"{API}/workflow/approvals/{uuid.uuid4()}/funds-release",
+            headers={**INTERNAL_HEADERS, **headers_by_role[role]}, json={"actor": "x"},
+        )
+        expected_denied = ERP_ROLE_LEVELS[role] < ERP_ROLE_LEVELS["commercial_manager"]
+        if expected_denied:
+            assert response.status_code == 403, (role, response.text)
+        else:
+            assert response.status_code == 404, (role, response.text)  # authorized, just no such approval
+    assert s.post(
+        f"{API}/workflow/approvals/{uuid.uuid4()}/funds-release",
+        headers={**INTERNAL_HEADERS, **portal_headers}, json={"actor": "x"},
+    ).status_code == 403
+
+    # Admin-only: user administration - no role below admin is ever allowed,
+    # including commercial_manager (admin-management stays admin-only).
+    for role in ladder:
+        response = s.get(f"{API}/admin/users", headers=headers_by_role[role])
+        expected = 200 if role == "admin" else 403
+        assert response.status_code == expected, (role, response.text)
+    assert s.get(f"{API}/admin/users", headers=portal_headers).status_code == 403
+
+
 def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
@@ -3197,12 +3345,16 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers
         }],
     }
     assert s.post(f"{API}/price-comparisons", json=comparison_body, headers=responsible_headers).status_code == 409
-    denied_review = s.post(
+    # commercial_manager inherits procurement_engineer's technical-review
+    # permission (role hierarchy), so this passes the RBAC gate same as the
+    # engineer case below - it's still 409 because the request isn't linked
+    # to a project yet, not because the role was denied.
+    manager_review_before_link = s.post(
         f"{API}/workflow/incoming-purchase-requests/{request_id}/technical-decision",
         headers={**INTERNAL_HEADERS, **manager_headers},
         json={"decision": "approved_for_pricing"},
     )
-    assert denied_review.status_code == 403
+    assert manager_review_before_link.status_code == 409
     historical = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
         headers={**INTERNAL_HEADERS, **admin_headers},
@@ -3312,11 +3464,10 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers
 
     po_body = {"comparison_id": comparison.json()["id"], "po_date": "2026-08-16", "orders": []}
     assert s.post(f"{API}/purchase-orders/from-comparison", json=po_body, headers=responsible_headers).status_code == 409
-    denied = s.post(
-        f"{API}/workflow/approvals/{approval['id']}/decision", headers={**INTERNAL_HEADERS, **manager_headers},
-        json={"decision": "approved", "actor": "officer"},
-    )
-    assert denied.status_code == 403
+    # commercial_manager acting on the engineer-owned technical stage is now
+    # covered by test_review_workspace_decision_role_gating_reuses_existing_endpoint
+    # (role hierarchy inheritance) - this happy-path flow keeps the
+    # technical decision with its actual owning role, procurement_engineer.
     technical_approval = s.post(
         f"{API}/workflow/approvals/{approval['id']}/decision", headers={**INTERNAL_HEADERS, **engineer_headers},
         json={"decision": "approved", "actor": "engineer"},
@@ -3395,11 +3546,10 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers
         )
         assert transition.status_code == 200, transition.text
         assert transition.json()["status"] == status
-    assert s.post(
-        f"{API}/purchase-orders/{first_po['id']}/finalize",
-        json={"actor": "manager"},
-        headers=manager_headers,
-    ).status_code == 403
+    # commercial_manager inherits procurement_responsible's finalize
+    # permission under the role hierarchy (covered by the dedicated RBAC
+    # matrix tests) - this happy-path flow keeps PO finalize with its
+    # actual owning role, procurement_responsible.
     finalized = s.post(
         f"{API}/purchase-orders/{first_po['id']}/finalize",
         json={"actor": "officer"},
@@ -4765,17 +4915,15 @@ def test_portal_site_user_can_create_request(s):
         assert items[0].quantity == 3
 
 
-def test_req_clarification_requires_engineer_and_reason(s):
+def test_req_clarification_requires_reason(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         project_id = _make_project_for_portal(session, suffix)
         portal_username, _ = _make_portal_user(session, suffix, project_ids=[project_id])
         item_id = _make_portal_item(session, suffix)
         _make_user(session, username=f"clarify-engineer-{suffix}", role="procurement_engineer")
-        _make_user(session, username=f"clarify-responsible-{suffix}", role="procurement_responsible")
     portal_headers = _login_headers(s, portal_username)
     engineer_headers = _login_headers(s, f"clarify-engineer-{suffix}")
-    responsible_headers = _login_headers(s, f"clarify-responsible-{suffix}")
     created = _submit_portal_request(s, portal_headers, _portal_payload(
         items=[{"item_id": item_id, "quantity": 1, "note": ""}],
     )).json()
@@ -4785,12 +4933,32 @@ def test_req_clarification_requires_engineer_and_reason(s):
         "decision": "revision_required", "note": "",
     })
     assert missing_reason.status_code == 422
-    forbidden = s.post(endpoint, headers={**INTERNAL_HEADERS, **responsible_headers}, json={
-        "decision": "revision_required", "note": "وضح المقاس",
-    })
-    assert forbidden.status_code == 403
     allowed = s.post(endpoint, headers={**INTERNAL_HEADERS, **engineer_headers}, json={
         "decision": "revision_required", "note": "وضح المقاس المطلوب",
+    })
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["status"] == "need_clarification"
+
+
+def test_req_clarification_inherited_by_procurement_responsible(s):
+    """procurement_responsible sits above procurement_engineer in the ERP
+    role hierarchy, so it inherits the engineer-owned technical-decision
+    action (this is not an escalation - it is the intended inheritance)."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        project_id = _make_project_for_portal(session, suffix)
+        portal_username, _ = _make_portal_user(session, suffix, project_ids=[project_id])
+        item_id = _make_portal_item(session, suffix)
+        _make_user(session, username=f"clarify-responsible-{suffix}", role="procurement_responsible")
+    portal_headers = _login_headers(s, portal_username)
+    responsible_headers = _login_headers(s, f"clarify-responsible-{suffix}")
+    created = _submit_portal_request(s, portal_headers, _portal_payload(
+        items=[{"item_id": item_id, "quantity": 1, "note": ""}],
+    )).json()
+    endpoint = f"{API}/workflow/incoming-purchase-requests/{created['request_id']}/technical-decision"
+
+    allowed = s.post(endpoint, headers={**INTERNAL_HEADERS, **responsible_headers}, json={
+        "decision": "revision_required", "note": "وضح المقاس",
     })
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()["status"] == "need_clarification"
@@ -5557,7 +5725,7 @@ def test_convert_manual_item_allowed_for_procurement_responsible(s):
     assert response.json()["created"] is True
 
 
-def test_convert_manual_item_forbidden_for_procurement_engineer_and_commercial_manager(s):
+def test_convert_manual_item_forbidden_for_procurement_engineer_allowed_for_commercial_manager(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"sprint23-eng-convert-{suffix}", role="procurement_engineer")
@@ -5566,8 +5734,16 @@ def test_convert_manual_item_forbidden_for_procurement_engineer_and_commercial_m
     manager_headers = _login_headers(s, f"sprint23-mgr-convert-{suffix}")
 
     request_id, line_id, _ = _make_manual_line(s, suffix)
+    # procurement_engineer sits below procurement_responsible in the ERP
+    # hierarchy and does not inherit it - still forbidden.
     assert s.post(CONVERT_URL(request_id, line_id), headers=engineer_headers, json=_convert_body()).status_code == 403
-    assert s.post(CONVERT_URL(request_id, line_id), headers=manager_headers, json=_convert_body()).status_code == 403
+    # commercial_manager sits above procurement_responsible and inherits its
+    # permissions, so this is now allowed.
+    suffix2 = uuid.uuid4().hex[:8]
+    request_id2, line_id2, _ = _make_manual_line(s, suffix2)
+    allowed = s.post(CONVERT_URL(request_id2, line_id2), headers=manager_headers, json=_convert_body(name=f"صنف مدير تجاري {suffix}"))
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["created"] is True
 
 
 def test_anonymous_request_to_workflow_mutation_is_rejected(s):
@@ -5602,7 +5778,9 @@ def test_deactivated_erp_user_loses_workflow_access_immediately(s):
     assert revoked.status_code == 401
 
 
-def test_commercial_manager_cannot_prepare_price_comparisons(s, admin_headers):
+def test_commercial_manager_inherits_price_comparison_preparation(s, admin_headers):
+    """commercial_manager sits above procurement_responsible in the ERP role
+    hierarchy, so it inherits the price-comparison-preparation permission."""
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"sprint23-mgr-cmp-{suffix}", role="commercial_manager")
@@ -5619,7 +5797,7 @@ def test_commercial_manager_cannot_prepare_price_comparisons(s, admin_headers):
             "availability": "available", "price_valid_until": "2099-12-31",
         }],
     })
-    assert response.status_code == 403
+    assert response.status_code == 200, response.text
 
 
 def test_procurement_responsible_cannot_confirm_funds_release(s):
@@ -5661,15 +5839,18 @@ def test_client_supplied_actor_role_cannot_escalate_privileges(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"sprint23-spoof-eng-{suffix}", role="procurement_engineer")
+        _make_user(session, username=f"sprint23-spoof-resp-{suffix}", role="procurement_responsible")
         _make_user(session, username=f"sprint23-spoof-mgr-{suffix}", role="commercial_manager")
         portal_username, _, _ = _portal_setup(session, f"sprint23-spoof-portal-{suffix}")
     engineer_headers = _login_headers(s, f"sprint23-spoof-eng-{suffix}")
+    responsible_headers = _login_headers(s, f"sprint23-spoof-resp-{suffix}")
     manager_headers = _login_headers(s, f"sprint23-spoof-mgr-{suffix}")
     portal_headers = _login_headers(s, portal_username)
 
     # Authenticated procurement_engineer claiming to be commercial_manager
     # via the (now-ignored) payload field must still be refused a
-    # commercial-only action.
+    # commercial-only action. procurement_engineer is the floor of the ERP
+    # role hierarchy, so it inherits nothing above it.
     spoofed_funds_release = s.post(
         f"{API}/workflow/approvals/{uuid.uuid4()}/funds-release",
         headers={**INTERNAL_HEADERS, **engineer_headers},
@@ -5677,14 +5858,30 @@ def test_client_supplied_actor_role_cannot_escalate_privileges(s):
     )
     assert spoofed_funds_release.status_code == 403
 
-    # Authenticated commercial_manager claiming to be procurement_responsible
-    # must still be refused an engineer-only action (technical review).
+    # Authenticated procurement_responsible claiming to be commercial_manager
+    # must still be refused a commercial-only action - under role
+    # inheritance, procurement_responsible sits below commercial_manager and
+    # does not gain its financial-authorization powers (no upward
+    # inheritance, and the payload's actor_role is ignored either way).
+    spoofed_funds_release_by_responsible = s.post(
+        f"{API}/workflow/approvals/{uuid.uuid4()}/funds-release",
+        headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"actor": "x", "actor_role": "commercial_manager"},
+    )
+    assert spoofed_funds_release_by_responsible.status_code == 403
+
+    # commercial_manager legitimately inherits procurement_engineer's
+    # technical-review permission under the ERP role hierarchy (this is not
+    # an escalation - it's the intended inheritance), so the RBAC gate
+    # passes; the payload's actor_role is still ignored and the approval id
+    # is a random uuid, so the request 404s rather than ever getting to
+    # apply that spoofed role anywhere.
     spoofed_technical_decision = s.post(
         f"{API}/workflow/incoming-purchase-requests/{uuid.uuid4()}/technical-decision",
         headers={**INTERNAL_HEADERS, **manager_headers},
         json={"decision": "approved_for_pricing", "actor_role": "procurement_responsible"},
     )
-    assert spoofed_technical_decision.status_code == 403
+    assert spoofed_technical_decision.status_code == 404
 
     # Authenticated site-portal account claiming to be admin must still be
     # refused every internal ERP workflow action.
@@ -5797,7 +5994,9 @@ def test_procurement_engineer_cannot_create_rfq(s):
     assert response.status_code == 403
 
 
-def test_commercial_manager_cannot_create_rfq(s):
+def test_commercial_manager_inherits_rfq_creation(s):
+    """commercial_manager sits above procurement_responsible in the ERP role
+    hierarchy, so it inherits RFQ-creation permission."""
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"rfq-mgr-{suffix}", role="commercial_manager")
@@ -5807,7 +6006,7 @@ def test_commercial_manager_cannot_create_rfq(s):
         RFQ_API, headers={**INTERNAL_HEADERS, **manager_headers},
         json={"source_request_id": request_id},
     )
-    assert response.status_code == 403
+    assert response.status_code == 200, response.text
 
 
 def test_site_portal_cannot_create_rfq(s):
@@ -7277,21 +7476,33 @@ def test_review_workspace_decision_role_gating_reuses_existing_endpoint(s, admin
     manager_headers = _login_headers(s, f"rw-dec-mgr-{suffix}")
     responsible_headers = _login_headers(s, f"rw-dec-resp-{suffix}")
 
+    # Under the ERP role hierarchy, commercial_manager and
+    # procurement_responsible both sit above procurement_engineer, so they
+    # inherit its technical-stage decision permission - each gets its own
+    # fresh approval so acting on it doesn't disturb the others' fixtures.
+    approval_for_manager, *_rest = _make_approval_with_comparison(s, f"{suffix}-mgr", admin_headers)
+    manager_decision = s.post(
+        f"{API}/workflow/approvals/{approval_for_manager['id']}/decision",
+        headers={**INTERNAL_HEADERS, **manager_headers}, json={"decision": "approved"},
+    )
+    assert manager_decision.status_code == 200, manager_decision.text
+    assert manager_decision.json()["approval"]["approval_stage"] == APPROVAL_STAGE_EXPENDITURE_APPROVAL
+
+    approval_for_responsible, *_rest = _make_approval_with_comparison(s, f"{suffix}-resp", admin_headers)
+    # procurement_responsible may view the full file and, since it also
+    # inherits the engineer stage, decide it too.
+    assert s.get(
+        WORKSPACE_URL(approval_for_responsible["id"]), headers={**INTERNAL_HEADERS, **responsible_headers},
+    ).status_code == 200
+    responsible_decision = s.post(
+        f"{API}/workflow/approvals/{approval_for_responsible['id']}/decision",
+        headers={**INTERNAL_HEADERS, **responsible_headers}, json={"decision": "approved"},
+    )
+    assert responsible_decision.status_code == 200, responsible_decision.text
+    assert responsible_decision.json()["approval"]["approval_stage"] == APPROVAL_STAGE_EXPENDITURE_APPROVAL
+
     approval, *_rest = _make_approval_with_comparison(s, suffix, admin_headers)
     decision_url = f"{API}/workflow/approvals/{approval['id']}/decision"
-
-    # commercial_manager cannot act at the technical (engineer) stage.
-    denied = s.post(decision_url, headers={**INTERNAL_HEADERS, **manager_headers}, json={"decision": "approved"})
-    assert denied.status_code == 403
-
-    # procurement_responsible may view the full file but not decide it.
-    assert s.get(
-        WORKSPACE_URL(approval["id"]), headers={**INTERNAL_HEADERS, **responsible_headers},
-    ).status_code == 200
-    denied_responsible = s.post(
-        decision_url, headers={**INTERNAL_HEADERS, **responsible_headers}, json={"decision": "approved"},
-    )
-    assert denied_responsible.status_code == 403
 
     # procurement_engineer executes the technical-stage decision.
     approved = s.post(
@@ -7300,6 +7511,13 @@ def test_review_workspace_decision_role_gating_reuses_existing_endpoint(s, admin
     )
     assert approved.status_code == 200, approved.text
     assert approved.json()["approval"]["approval_stage"] == APPROVAL_STAGE_EXPENDITURE_APPROVAL
+
+    # procurement_responsible does not inherit commercial_manager's
+    # financial-authorization stage (no upward inheritance).
+    denied_responsible_commercial = s.post(
+        decision_url, headers={**INTERNAL_HEADERS, **responsible_headers}, json={"decision": "approved"},
+    )
+    assert denied_responsible_commercial.status_code == 403
 
     # commercial_manager now executes the commercial stage.
     commercial = s.post(
@@ -7388,7 +7606,7 @@ def test_po_read_authorization_matrix(s, admin_headers):
     assert s.get(PO_API()).status_code == 401
 
 
-def test_po_engineer_and_manager_cannot_finalize(s, admin_headers):
+def test_po_engineer_cannot_finalize_manager_inherits_finalize(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"po-fin-eng-{suffix}", role="procurement_engineer")
@@ -7397,8 +7615,13 @@ def test_po_engineer_and_manager_cannot_finalize(s, admin_headers):
     manager_headers = _login_headers(s, f"po-fin-mgr-{suffix}")
     po, *_rest = _make_draft_purchase_order(s, suffix, admin_headers)
 
+    # procurement_engineer sits below procurement_responsible in the ERP
+    # hierarchy and does not inherit it - still forbidden.
     assert s.post(f"{API}/purchase-orders/{po['id']}/finalize", headers=engineer_headers, json={}).status_code == 403
-    assert s.post(f"{API}/purchase-orders/{po['id']}/finalize", headers=manager_headers, json={}).status_code == 403
+    # commercial_manager sits above procurement_responsible and inherits its
+    # finalize permission.
+    finalized = s.post(f"{API}/purchase-orders/{po['id']}/finalize", headers=manager_headers, json={})
+    assert finalized.status_code == 200, finalized.text
 
 
 def test_po_client_role_spoofing_cannot_grant_finalize(s, admin_headers):
@@ -7486,8 +7709,14 @@ def test_po_delete_authorization_matrix(s, admin_headers):
     po_resp, *_ = _make_draft_purchase_order(s, f"{suffix}-resp", admin_headers)
     po_admin, *_ = _make_draft_purchase_order(s, f"{suffix}-admin", admin_headers)
 
+    # procurement_engineer sits below procurement_responsible and does not
+    # inherit it - still forbidden.
     assert s.delete(f"{API}/purchase-orders/{po_eng['id']}", headers=engineer_headers).status_code == 403
-    assert s.delete(f"{API}/purchase-orders/{po_mgr['id']}", headers=manager_headers).status_code == 403
+    # commercial_manager sits above procurement_responsible and inherits its
+    # delete permission.
+    deleted_by_manager = s.delete(f"{API}/purchase-orders/{po_mgr['id']}", headers=manager_headers)
+    assert deleted_by_manager.status_code == 200, deleted_by_manager.text
+    assert s.get(f"{API}/purchase-orders/{po_mgr['id']}", headers=admin_headers).status_code == 404
     assert s.delete(f"{API}/purchase-orders/{po_portal['id']}", headers=portal_headers).status_code == 403
     assert s.delete(f"{API}/purchase-orders/{po_anon['id']}").status_code == 401
 
@@ -8033,8 +8262,9 @@ def test_po_receipt_authorization_matrix(s, admin_headers):
     def body(key):
         return {"receipt_type": "full", "idempotency_key": key}
 
+    # procurement_engineer sits below procurement_responsible and does not
+    # inherit it - still forbidden.
     assert s.post(url, headers=engineer_headers, json=body(f"eng-{suffix}")).status_code == 403
-    assert s.post(url, headers=manager_headers, json=body(f"mgr-{suffix}")).status_code == 403
     assert s.post(url, headers=portal_headers, json=body(f"portal-{suffix}")).status_code == 403
     assert s.post(url, json=body(f"anon-{suffix}")).status_code == 401
 
@@ -8047,6 +8277,16 @@ def test_po_receipt_authorization_matrix(s, admin_headers):
     completed = s.post(url, headers=responsible_headers, json=body(f"resp-{suffix}"))
     assert completed.status_code == 200, completed.text
     assert completed.json()["purchase_order"]["status"] == "completed"
+
+    # commercial_manager sits above procurement_responsible and inherits its
+    # receiving permission (checked on a separate PO since the one above is
+    # already fully received).
+    po_for_manager, *_rest = _make_in_delivery_purchase_order(s, f"{suffix}-mgr", admin_headers)
+    completed_by_manager = s.post(
+        RECEIPTS_API(po_for_manager["id"]), headers=manager_headers, json=body(f"mgr-{suffix}"),
+    )
+    assert completed_by_manager.status_code == 200, completed_by_manager.text
+    assert completed_by_manager.json()["purchase_order"]["status"] == "completed"
 
 
 def test_po_receipt_quantity_and_item_safety(s, admin_headers):
@@ -8952,8 +9192,12 @@ def test_daily_report_role_access_matrix(s, admin_headers):
 
     date = "2018-06-12"
     notes_body = {"general_notes": "x", "key_risks": "", "follow_up_notes": ""}
+    # procurement_engineer sits below procurement_responsible and does not
+    # inherit it (no upward inheritance) - still forbidden.
     assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=engineer_headers, json=notes_body).status_code == 403
-    assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=commercial_headers, json=notes_body).status_code == 403
+    # commercial_manager sits above procurement_responsible and inherits its
+    # notes-management permission.
+    assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=commercial_headers, json=notes_body).status_code == 200
     assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=responsible_headers, json=notes_body).status_code == 200
     assert s.post(f"{DAILY_REPORT_API}/{date}/close", headers=engineer_headers).status_code == 403
 

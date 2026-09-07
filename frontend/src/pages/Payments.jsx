@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useOptionalAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import api, { errMsg, fmtEGP } from "@/lib/api";
+import { roleAtLeast } from "@/lib/roles";
 
 const normalizedStatus = (value) => value === "paid"
   ? "paid"
@@ -21,7 +22,7 @@ export default function Payments() {
   const navigate = useNavigate();
   const { user } = useOptionalAuth() || {};
   const { tr } = usePreferences();
-  const canRecordPayment = ["admin", "commercial_manager"].includes(user?.role);
+  const canRecordPayment = roleAtLeast(user?.role, "commercial_manager");
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");

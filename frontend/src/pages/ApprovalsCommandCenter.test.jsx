@@ -499,12 +499,11 @@ test("procurement_engineer sees technical decision controls at the comparison-te
   container.remove();
 });
 
-test("commercial_manager does not see the engineer's technical decision controls", async () => {
+test("commercial_manager sees the engineer's technical decision controls (inherited)", async () => {
   mockApproval = TECHNICAL_STAGE_APPROVAL;
   const { container, root } = await renderCenter("commercial_manager");
 
-  expect([...container.querySelectorAll("button")].some((b) => b.textContent.includes("اعتماد المقارنة"))).toBe(false);
-  expect(container.textContent).toContain("يمكنك مشاهدة المسار");
+  expect([...container.querySelectorAll("button")].some((b) => b.textContent.includes("اعتماد المقارنة"))).toBe(true);
 
   await act(async () => root.unmount());
   container.remove();
@@ -520,14 +519,13 @@ test("commercial_manager sees commercial decision controls at the commercial sta
   container.remove();
 });
 
-test("procurement_responsible sees the file but no unauthorized approval controls", async () => {
+test("procurement_responsible sees the file and the inherited engineer-stage approval controls", async () => {
   mockApproval = TECHNICAL_STAGE_APPROVAL;
   mockWorkspace = richWorkspace;
   const { container, root } = await renderCenter("procurement_responsible");
 
   expect(container.querySelector('[data-testid="review-workspace"]')).not.toBeNull();
-  expect([...container.querySelectorAll("button")].some((b) => b.textContent.includes("اعتماد المقارنة"))).toBe(false);
-  expect(container.textContent).toContain("يمكنك مشاهدة المسار");
+  expect([...container.querySelectorAll("button")].some((b) => b.textContent.includes("اعتماد المقارنة"))).toBe(true);
 
   await act(async () => root.unmount());
   container.remove();

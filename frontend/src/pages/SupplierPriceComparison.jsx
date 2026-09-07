@@ -32,6 +32,7 @@ import {
 } from "@/components/procurement-ui";
 import { useOptionalAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
+import { roleAtLeast } from "@/lib/roles";
 
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -400,7 +401,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   );
   const [sourceRfqItems, setSourceRfqItems] = useState([]);
   const [supplierPage, setSupplierPage] = useState(0);
-  const canUploadQuotation = ["admin", "procurement_responsible"].includes(user?.role);
+  const canUploadQuotation = roleAtLeast(user?.role, "procurement_responsible");
   useEffect(() => {
   if (!sourceRequest) return;
 

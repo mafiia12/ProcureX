@@ -25,6 +25,7 @@ import { Callout, EmptyState, PageHeader, Panel, StatusBadge } from "@/component
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import { cn } from "@/lib/utils";
+import { roleAtLeast } from "@/lib/roles";
 
 export const REQUEST_STATUSES = [
   ["new", "جديد", "New"],
@@ -153,9 +154,9 @@ export default function IncomingPurchaseRequests() {
   const { user } = useAuth();
   const { tr, language, direction, locale } = usePreferences();
   const role = user?.role || "";
-  const canReviewTechnical = role === "admin" || role === "procurement_engineer";
-  const canConvertManualItem = role === "admin" || role === "procurement_responsible";
-  const canManageRFQ = role === "admin" || role === "procurement_responsible";
+  const canReviewTechnical = roleAtLeast(role, "procurement_engineer");
+  const canConvertManualItem = roleAtLeast(role, "procurement_responsible");
+  const canManageRFQ = roleAtLeast(role, "procurement_responsible");
 
   const [requests, setRequests] = useState([]);
   const [selected, setSelected] = useState(null);
