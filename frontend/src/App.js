@@ -14,12 +14,10 @@ import Login from "@/pages/Login";
 import AdminUsers from "@/pages/AdminUsers";
 import SitePortalRequest from "@/pages/SitePortalRequest";
 import Dashboard from "@/pages/Dashboard";
-import Purchases from "@/pages/Purchases";
 import PurchaseDetails from "@/pages/PurchaseDetails";
 import PurchaseOrders from "@/pages/PurchaseOrders";
 import PurchaseOrderDetails from "@/pages/PurchaseOrderDetails";
 import PurchaseOrderReport from "@/pages/PurchaseOrderReport";
-import PurchaseRegister from "@/pages/PurchaseRegister";
 import PriceHistory from "@/pages/PriceHistory";
 import Payments from "@/pages/Payments";
 import Suppliers from "@/pages/Suppliers";
@@ -30,7 +28,6 @@ import SettingsPage from "@/pages/SettingsPage";
 import IncomingPurchaseRequests from "@/pages/IncomingPurchaseRequests";
 import SupplierPriceComparison from "@/pages/SupplierPriceComparison";
 import DocumentReview from "@/pages/DocumentReview";
-import ApprovedItemsDraft from "@/pages/ApprovedItemsDraft";
 import ProjectPurchases from "@/pages/ProjectPurchases";
 import ApprovalsCommandCenter from "@/pages/ApprovalsCommandCenter";
 import RfqRegister from "@/pages/RfqRegister";
@@ -46,11 +43,9 @@ function AppRoutes() {
         <Routes>
           <Route element={<RequireErp><Layout /></RequireErp>}>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/purchases" element={<Purchases />} />
             <Route path="/purchases/:purchaseId" element={<PurchaseDetails />} />
             <Route path="/purchase-orders" element={<PurchaseOrders />} />
             <Route path="/purchase-orders/:purchaseOrderId" element={<PurchaseOrderDetails />} />
-            <Route path="/register" element={<PurchaseRegister />} />
             <Route path="/price-history" element={<PriceHistory />} />
             <Route path="/payments" element={<Payments />} />
             <Route path="/suppliers" element={<Suppliers />} />
@@ -71,10 +66,6 @@ function AppRoutes() {
               path="/incoming-requests"
               element={<IncomingPurchaseRequests />}
             />
-            <Route
-              path="/approved-items-draft"
-              element={<ApprovedItemsDraft />}
-/>
             <Route
               path="/incoming-requests/:requestId/documents/:documentId/review"
               element={<DocumentReview />}
@@ -98,6 +89,7 @@ function AppRoutes() {
           />
           <Route path="/approval/:token" element={<PublicApproval />} />
           <Route path="/purchase-orders/:purchaseOrderId/report/:audience" element={<PurchaseOrderReport />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </div>

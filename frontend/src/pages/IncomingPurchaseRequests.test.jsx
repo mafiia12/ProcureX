@@ -111,6 +111,16 @@ test("a WhatsApp-sourced request shows a subtle WhatsApp badge in the list row; 
   await act(async () => plainRoot.unmount());
 });
 
+test("current request actions exclude obsolete customer and purchase draft conversions", async () => {
+  const { container, root } = await renderWithDetail(detail);
+  expect(container.querySelector('[data-testid="create-rfq-button"]')).not.toBeNull();
+  for (const label of ["تحويل إلى عميل", "طلب شراء داخلي", "مسودة شراء"]) {
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent.includes(label))).toBe(false);
+  }
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("convert action appears only on the manual line, not the Master-linked line", async () => {
   const { container, root } = await renderWithDetail(mixedDetail);
 

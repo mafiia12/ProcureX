@@ -53,6 +53,8 @@ export default function CrudPage({
   const tr = preferences.tr || ((ar, en) => (language === "en" ? en : ar));
   const direction = preferences.direction || (language === "en" ? "ltr" : "rtl");
   const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState("");
   const [filterValues, setFilterValues] = useState({});
   const [open, setOpen] = useState(false);
@@ -68,13 +70,18 @@ export default function CrudPage({
   const advancedKeys = useMemo(() => new Set(advancedFields.map((f) => f.key)), [advancedFields]);
 
   const load = async () => {
+    setLoading(true);
+    setLoadError(false);
     try {
       const { data } = listParams
         ? await api.get(`/${endpoint}`, { params: listParams })
         : await api.get(`/${endpoint}`);
       setRows(data);
     } catch (e) {
+      setLoadError(true);
       toast.error(errMsg(e));
+    } finally {
+      setLoading(false);
     }
   };
   useEffect(() => { load(); }, []); // eslint-disable-line
@@ -344,9 +351,15 @@ export default function CrudPage({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.length === 0 ? (
+            {loading || loadError ? (
               <TableRow>
-                <TableCell colSpan={columns.length + 1} className="p-0"><EmptyState compact={compactManagement} title={emptyTitle} description={emptyDescription} action={<Button size="sm" onClick={openNew}><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>} /></TableCell>
+                <TableCell colSpan={columns.length + 1} className="py-6 text-center text-sm text-muted-foreground">
+                  {loading ? <span role="status">{tr("جارٍ التحميل...", "Loading...")}</span> : <Button size="sm" variant="outline" onClick={load}>{tr("تعذر تحميل البيانات — إعادة المحاولة", "Could not load records — retry")}</Button>}
+                </TableCell>
+              </TableRow>
+            ) : filtered.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={columns.length + 1} className="p-0"><EmptyState compact={compactManagement} title={hasActiveFilters ? tr("لا توجد نتائج مطابقة", "No matching records") : emptyTitle} description={hasActiveFilters ? tr("جرّب بحثًا آخر أو امسح عوامل التصفية.", "Try another search or clear the filters.") : emptyDescription} action={hasActiveFilters ? <Button size="sm" variant="outline" onClick={clearFilters}>{tr("مسح التصفية", "Clear filters")}</Button> : <Button size="sm" onClick={openNew}><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>} /></TableCell>
               </TableRow>
             ) : (
               filtered.map((row) => (

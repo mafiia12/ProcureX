@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Bell, CheckCircle2, ClipboardList, Download, FileText, Filter,
-  Mail, MessageCircle, MoreHorizontal, Phone, RefreshCw, Search, UserPlus,
+  Bell, CheckCircle2, ClipboardList, Download, Filter,
+  Mail, MessageCircle, MoreHorizontal, Phone, RefreshCw, Search,
   ScanText, X,
   FolderKanban, PlusCircle,
 } from "lucide-react";
@@ -429,24 +429,6 @@ export default function IncomingPurchaseRequests() {
     } catch (error) { toast.error(requestError(error)); }
   };
 
-  const convertCustomer = async () => {
-    try {
-      const { data } = await internalRequestApi.post(`/${selected.id}/convert-customer`);
-      toast.success(data.created ? `تم إنشاء العميل ${data.customer_code}` : `العميل مرتبط بالفعل ${data.customer_code}`);
-      await loadDetail(selected.id);
-    } catch (error) { toast.error(requestError(error)); }
-  };
-
-  const convertDocument = async (documentType) => {
-    try {
-      const { data } = await internalRequestApi.post(`/${selected.id}/convert`, {
-        document_type: documentType, converted_by: author,
-      });
-      toast.success(`تم إنشاء المستند المبدئي ${data.document_number}`);
-      await Promise.all([loadDetail(selected.id), loadList()]);
-    } catch (error) { toast.error(requestError(error)); }
-  };
-
   const openAttachment = async (item) => {
     const popup = window.open("", "_blank", "noopener,noreferrer");
     try {
@@ -771,23 +753,18 @@ export default function IncomingPurchaseRequests() {
                 )
               )}
 
-              <Panel title={tr("الإجراءات التالية", "Next actions")}>
+              {selected.status === "pricing" && selected.project_id && <Panel title={tr("الإجراءات التالية", "Next actions")}>
                 <div className="flex flex-wrap gap-2">
                   <Button
-                    variant="default"
+                    variant="outline"
                     size="sm"
                     onClick={sendToComparison}
-                    disabled={selected.status !== "pricing" || !selected.project_id}
                   >
                     {tr("بدء مقارنة الأسعار", "Start supplier comparison")}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={convertCustomer} disabled={Boolean(selected.converted_customer_id)}><UserPlus className="ms-1 h-4 w-4" /> {selected.converted_customer_id ? tr("تم ربط العميل", "Client linked") : tr("تحويل إلى عميل", "Convert to client")}</Button>
-                  <Button variant="outline" size="sm" onClick={() => convertDocument("internal_request")} disabled={Boolean(selected.converted_document)}><FileText className="ms-1 h-4 w-4" /> {tr("طلب شراء داخلي", "Internal purchase request")}</Button>
-                  <Button variant="outline" size="sm" onClick={() => convertDocument("purchase_draft")} disabled={Boolean(selected.converted_document)}><ClipboardList className="ms-1 h-4 w-4" /> {tr("مسودة شراء", "Purchase draft")}</Button>
                 </div>
-                {(selected.status !== "pricing" || !selected.project_id) && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{tr("يتاح بدء المقارنة بعد الاعتماد الفني وربط الطلب بالمشروع.", "Supplier comparison becomes available after technical approval and project linking.")}</p>}
-                {selected.converted_document && <div className="mt-2 flex items-center gap-2 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" /> {tr(`تم إنشاء ${selected.converted_document.document_number} كمسودة داخلية، وليس عملية شراء مكتملة.`, `${selected.converted_document.document_number} was created as an internal draft, not a completed purchase.`)}</div>}
-              </Panel>
+              </Panel>}
+              {selected.converted_document && <details className="border bg-muted/30 p-2.5 text-xs text-muted-foreground"><summary className="cursor-pointer">{tr("مرجع مستند داخلي سابق", "Historical internal document")}</summary><p className="mt-2" dir="ltr">{selected.converted_document.document_number}</p></details>}
 
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                 <div className="space-y-1.5 border bg-card p-3">
