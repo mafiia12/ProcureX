@@ -596,6 +596,38 @@ def test_supplier_sequence_uses_highest_suffix_across_mixed_historical_widths(
         isolated_engine.dispose()
 
 
+def test_supplier_register_orders_numeric_codes_without_renumbering(monkeypatch):
+    import server
+
+    codes = ["SUP-000020", "SUP-002", "SUP-001", "SUP-000010"]
+    rows = [{"id": str(index), "code": code} for index, code in enumerate(codes)]
+
+    async def fake_list(entity):
+        assert entity == "suppliers"
+        return [dict(row) for row in rows]
+
+    monkeypatch.setattr(server, "entity_list", fake_list)
+    result = asyncio.run(server.list_suppliers(False, None))
+    assert [row["code"] for row in result] == ["SUP-001", "SUP-002", "SUP-000010", "SUP-000020"]
+    assert {row["id"]: row["code"] for row in result} == {row["id"]: row["code"] for row in rows}
+
+
+def test_request_pipeline_excludes_internal_drafts_but_keeps_formal_links():
+    from procurement_workflow import request_pipeline_summary
+
+    requests = [
+        SimpleNamespace(id="legacy", status="converted_to_purchase", converted_document_id="draft-1"),
+        SimpleNamespace(id="formal", status="converted_to_purchase", converted_document_id="draft-2"),
+        SimpleNamespace(id="current", status="new", converted_document_id=""),
+    ]
+    orders = [SimpleNamespace(source_request_id="formal", status="in_delivery")]
+    counts = {row["key"]: row["count"] for row in request_pipeline_summary(requests, orders)}
+    assert counts["under_delivery"] == 1
+    assert counts["new"] == 1
+    assert sum(counts.values()) == 2
+    assert len(requests) == 3
+
+
 def test_purchase_order_sequence_respects_history_concurrency_and_restart():
     with SessionLocal() as session:
         existing_numbers = [

@@ -415,8 +415,9 @@ def _action_priorities(actions: dict) -> list[dict]:
 
 # Sprint 3.6 Dashboard - REQUEST PIPELINE. Every REQ status in
 # incoming_requests.REQUEST_STATUSES maps to exactly one bucket below (no
-# double counting). "converted_to_purchase" means at least one formal PO
-# already exists for the request, so it is bucketed as under-delivery
+# double counting). Legacy internal drafts can also use the converted status;
+# they must not be presented as formal deliveries without a linked PO.
+# Formal conversions are bucketed as under-delivery
 # rather than a separate "PO/Procurement" stage the REQ status can't
 # actually distinguish without joining PurchaseOrder rows.
 REQUEST_PIPELINE_STAGES = (
@@ -431,17 +432,25 @@ REQUEST_PIPELINE_STAGES = (
 )
 
 
-def request_pipeline_summary(requests) -> list[dict]:
+def request_pipeline_summary(requests, purchase_orders=()) -> list[dict]:
     """One bucket per REQ (see REQUEST_PIPELINE_STAGES) - counts only, no
     financial totals. Every REQ lands in exactly one bucket: a status that
     doesn't match any known stage (stale/legacy data) falls into "other"
-    rather than silently vanishing from the total."""
+    rather than silently vanishing from the total. Historical internal drafts
+    without a formal PO are excluded from this operational pipeline."""
+    formal_request_ids = {row.source_request_id for row in purchase_orders if row.status != "cancelled"}
     status_to_key = {
         status: key for key, _label, statuses in REQUEST_PIPELINE_STAGES for status in statuses
     }
     counts = {key: 0 for key, _label, _statuses in REQUEST_PIPELINE_STAGES}
     unmapped = 0
     for row in requests:
+        if (
+            row.status == "converted_to_purchase"
+            and getattr(row, "converted_document_id", "")
+            and row.id not in formal_request_ids
+        ):
+            continue
         key = status_to_key.get(row.status)
         if key:
             counts[key] += 1

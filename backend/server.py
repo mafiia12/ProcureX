@@ -332,6 +332,14 @@ async def entity_list(coll_name):
 @api.get("/suppliers")
 async def list_suppliers(include_procurement: bool = False, current_user: User = Depends(require_erp_role())):
     suppliers = await entity_list("suppliers")
+    # Historical codes are durable comparison snapshots. Order their numeric
+    # suffixes without rewriting those codes or their relationships.
+    def supplier_order(supplier):
+        code = str(supplier.get("code") or "")
+        match = re.fullmatch(r"SUP-(\d+)", code)
+        return (0, int(match.group(1)), code, supplier["id"]) if match else (1, 0, code, supplier["id"])
+
+    suppliers.sort(key=supplier_order)
     if not include_procurement:
         return suppliers
     with SessionLocal() as session:
@@ -2825,8 +2833,13 @@ async def _dashboard_procurement_intelligence(
 
     attention_items = attention_items[:20]
 
+    request_pipeline = request_pipeline_summary(
+        requests, session.scalars(select(PurchaseOrder)).all(),
+    )
+    operational_request_count = sum(stage["count"] for stage in request_pipeline)
+    historical_draft_count = len(requests) - operational_request_count
     active_po_count = sum(1 for o in active_orders if o.get("status") != "completed")
-    active_requests_count = sum(1 for row in requests if row.status not in {"rejected", "cancelled", "completed"})
+    active_requests_count = sum(1 for row in requests if row.status not in {"rejected", "cancelled", "completed"}) - historical_draft_count
     summary = {
         "active_requests": active_requests_count,
         "requests_requiring_action": sum(
@@ -2842,9 +2855,9 @@ async def _dashboard_procurement_intelligence(
 
     return {
         "summary": summary,
-        "request_pipeline": request_pipeline_summary(requests),
+        "request_pipeline": request_pipeline,
         "procurement_funnel": {
-            "request_count": len(requests), "rfq_count": len(rfqs),
+            "request_count": operational_request_count, "rfq_count": len(rfqs),
             "comparison_count": len(comparisons), "approval_count": len(approvals),
             "formal_po_count": procurement_kpis["formal_po_count"],
             "formal_completed_po_count": procurement_kpis["formal_completed_po_count"],
