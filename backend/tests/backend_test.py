@@ -2441,12 +2441,13 @@ def test_hosted_full_surface_rejects_persistent_path_inside_app_directory(monkey
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
 def test_hosted_full_surface_allows_s3(monkeypatch, environment):
-    """production + full + s3 => allowed (S3 remains supported for the full
-    surface, not just public). boto3 is a production-only dependency and
-    isn't installed in this dev/test environment, so success here is
-    verified by confirming the surface/environment gate lets the call reach
-    S3 construction (rather than rejecting it outright), not by a live S3
-    round-trip."""
+    """Hosted full surfaces construct S3 storage without a network request."""
+    from unittest.mock import Mock
+    from attachment_storage import S3AttachmentStorage
+
+    client = Mock()
+    client_factory = Mock(return_value=client)
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=client_factory))
     monkeypatch.setenv("APP_ENV", environment)
     monkeypatch.setenv("APP_SURFACE", "full")
     monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "s3")
@@ -2454,8 +2455,15 @@ def test_hosted_full_surface_allows_s3(monkeypatch, environment):
     monkeypatch.setenv("R2_ACCESS_KEY_ID", "test-access-key")
     monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "test-secret-key")
     monkeypatch.setenv("R2_BUCKET_NAME", f"procurex-{environment}-attachments")
-    with pytest.raises(RuntimeError, match="boto3 is required"):
-        build_attachment_storage()
+    storage = build_attachment_storage()
+    assert isinstance(storage, S3AttachmentStorage)
+    assert storage.client is client
+    assert storage.bucket == f"procurex-{environment}-attachments"
+    client_factory.assert_called_once_with(
+        "s3", endpoint_url="https://account.r2.cloudflarestorage.com",
+        aws_access_key_id="test-access-key", aws_secret_access_key="test-secret-key",
+        region_name=os.getenv("R2_REGION", "auto"),
+    )
 
 
 def test_development_local_attachment_storage_is_unaffected(monkeypatch, tmp_path):

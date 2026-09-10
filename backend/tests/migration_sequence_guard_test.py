@@ -18,6 +18,7 @@ happens on a normal startup.
 from __future__ import annotations
 
 import subprocess
+import os
 import sys
 from pathlib import Path
 
@@ -62,13 +63,22 @@ def test_detector_ignores_composite_integer_primary_keys():
     assert autoincrement_primary_keys(metadata) == []
 
 
-def test_migration_script_accepts_the_current_real_schema():
+def test_migration_script_accepts_the_current_real_schema(tmp_path):
     """Runs the real script (dry-run, read-only) in its own process and
     confirms it does not abort - on the autoincrement-primary-key guard or
     any other startup check - against today's actual, complete schema."""
     script = SCRIPTS_DIR / "migrate_sqlite_to_postgres.py"
+    source = tmp_path / "migrated-source.db"
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = f"sqlite:///{source.as_posix()}"
+    environment.pop("TARGET_DATABASE_URL", None)
+    upgrade = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
+        cwd=BACKEND_DIR, env=environment, capture_output=True, text=True, timeout=60,
+    )
+    assert upgrade.returncode == 0, upgrade.stderr
     result = subprocess.run(
-        [sys.executable, str(script)],
-        cwd=BACKEND_DIR, capture_output=True, text=True, timeout=60,
+        [sys.executable, str(script), "--sqlite", str(source)],
+        cwd=BACKEND_DIR, env=environment, capture_output=True, text=True, timeout=60,
     )
     assert result.returncode == 0, result.stderr
