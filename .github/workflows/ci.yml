@@ -115,7 +115,8 @@ jobs:
           node-version: "20"
       - run: npm install --package-lock=false --no-audit --no-fund
         working-directory: frontend
-      - run: npm run test:ci
+      # Avoid competing jsdom/Radix suites exhausting per-test timeouts.
+      - run: npm run test:ci -- --runInBand
         working-directory: frontend
 
   full-erp-build:
