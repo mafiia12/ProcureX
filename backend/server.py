@@ -332,7 +332,13 @@ async def entity_list(coll_name):
 
 
 @api.get("/suppliers")
-async def list_suppliers(include_procurement: bool = False, current_user: User = Depends(require_erp_role())):
+async def list_suppliers(
+    response: Response,
+    include_procurement: bool = False,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    current_user: User = Depends(require_erp_role()),
+):
     suppliers = await entity_list("suppliers")
     # Historical codes are durable comparison snapshots. Order their numeric
     # suffixes without rewriting those codes or their relationships.
@@ -342,6 +348,12 @@ async def list_suppliers(include_procurement: bool = False, current_user: User =
         return (0, int(match.group(1)), code, supplier["id"]) if match else (1, 0, code, supplier["id"])
 
     suppliers.sort(key=supplier_order)
+    # Same contract as /items: omitting limit returns every supplier exactly
+    # as before (every existing caller), X-Total-Count always carries the
+    # pre-pagination count for a future pager.
+    response.headers["X-Total-Count"] = str(len(suppliers))
+    if limit is not None:
+        suppliers = suppliers[offset:offset + limit]
     if not include_procurement:
         return suppliers
     with SessionLocal() as session:

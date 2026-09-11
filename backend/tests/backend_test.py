@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import Response
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from sqlalchemy import create_engine, func, select
@@ -478,6 +479,62 @@ def test_items_limit_offset_pages_without_changing_the_filtered_total(s, admin_h
             s.delete(f"{API}/items/{item['id']}", headers=admin_headers)
 
 
+def test_suppliers_limit_offset_pages_the_sorted_register(s, admin_headers):
+    """/suppliers has no filter params, so unlike /items this test can't
+    scope a subset by category - instead it anchors on supplier_order's own
+    guarantee (numeric SUP- suffixes sort last-in, last-out) to target
+    exactly the suppliers this test creates, at whatever offset the
+    pre-existing register already sits at."""
+    created = []
+    try:
+        baseline = s.get(f"{API}/suppliers", headers=admin_headers)
+        baseline_count = len(baseline.json())
+        assert baseline.headers["X-Total-Count"] == str(baseline_count)
+
+        suffix = uuid.uuid4().hex[:8]
+        for index in range(3):
+            response = s.post(
+                f"{API}/suppliers",
+                json={"name": f"TEST_PAGE_SUPPLIER_{suffix}_{index}"},
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created.append(response.json())
+
+        full = s.get(f"{API}/suppliers", headers=admin_headers)
+        assert len(full.json()) == baseline_count + 3
+        assert full.headers["X-Total-Count"] == str(baseline_count + 3)
+        assert [s_["name"] for s_ in full.json()[baseline_count:]] == [
+            f"TEST_PAGE_SUPPLIER_{suffix}_0",
+            f"TEST_PAGE_SUPPLIER_{suffix}_1",
+            f"TEST_PAGE_SUPPLIER_{suffix}_2",
+        ]
+
+        page = s.get(
+            f"{API}/suppliers",
+            params={"limit": 2, "offset": baseline_count + 1},
+            headers=admin_headers,
+        )
+        assert [s_["name"] for s_ in page.json()] == [
+            f"TEST_PAGE_SUPPLIER_{suffix}_1", f"TEST_PAGE_SUPPLIER_{suffix}_2",
+        ]
+        assert page.headers["X-Total-Count"] == str(baseline_count + 3)
+
+        # include_procurement enrichment still applies to a paginated page.
+        enriched_page = s.get(
+            f"{API}/suppliers",
+            params={"include_procurement": True, "limit": 1, "offset": baseline_count},
+            headers=admin_headers,
+        )
+        enriched_supplier = enriched_page.json()[0]
+        assert enriched_supplier["name"] == f"TEST_PAGE_SUPPLIER_{suffix}_0"
+        assert enriched_supplier["direct_purchase_count"] == 0
+        assert enriched_supplier["formal_po_count"] == 0
+    finally:
+        for supplier in created:
+            s.delete(f"{API}/suppliers/{supplier['id']}", headers=admin_headers)
+
+
 # ---------- CRUD suppliers/customers/projects/items with autocode + dup ----------
 @pytest.mark.parametrize(
     "coll,prefix",
@@ -657,7 +714,13 @@ def test_supplier_register_orders_numeric_codes_without_renumbering(monkeypatch)
         return [dict(row) for row in rows]
 
     monkeypatch.setattr(server, "entity_list", fake_list)
-    result = asyncio.run(server.list_suppliers(False, None))
+    # Calls the route function directly (bypassing FastAPI's own request
+    # handling), so response/current_user - which FastAPI would normally
+    # inject - are supplied explicitly by keyword instead of relying on
+    # positional order matching the function's current parameter list.
+    result = asyncio.run(
+        server.list_suppliers(Response(), include_procurement=False, current_user=None)
+    )
     assert [row["code"] for row in result] == ["SUP-001", "SUP-002", "SUP-000010", "SUP-000020"]
     assert {row["id"]: row["code"] for row in result} == {row["id"]: row["code"] for row in rows}
 

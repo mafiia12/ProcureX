@@ -58,7 +58,7 @@ beforeEach(() => {
 test("shows only the compact item columns and hides removed fields from the main table", async () => {
   const { container, root } = await renderItems();
 
-  expect(mockGet).toHaveBeenCalledWith("/items");
+  expect(mockGet).toHaveBeenCalledWith("/items", { params: { limit: 50, offset: 0 } });
   expect(container.querySelector('[data-testid="items-management-header"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="items-management-toolbar"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="items-row"]').classList.contains("h-[34px]")).toBe(true);
