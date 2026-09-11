@@ -6284,6 +6284,95 @@ def test_quotation_lines_remain_linked_to_source_ids(s):
     assert history_line["comparison_number"] == ""
 
 
+def test_comparison_rows_batches_lines_and_items_across_multiple_quotations(s):
+    """Direct regression guard for rfq_comparison_rows()'s batched
+    SupplierQuotationLine/RFQItem lookups (rfq.py): the test above only
+    covers a single quotation with a single line, where a broken
+    quotation_id/rfq_item_id grouping could still coincidentally return the
+    right row. Two suppliers, two lines each referencing two different
+    RFQItems, four distinct prices - proves rows aren't mixed across
+    quotations and each supplier_quotations summary counts only its own
+    lines, not the whole batch."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-multi-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"rfq-multi-resp-{suffix}")
+
+    request_id, *_rest = _make_pricing_request(s, suffix)
+    with SessionLocal.begin() as session:
+        session.add(IncomingPurchaseRequestItem(
+            id=str(uuid.uuid4()), request_id=request_id, position=2, item_id="",
+            product_name=f"صنف RFQ ثانٍ {suffix}", quantity=7, unit="قطعة",
+            review_status="approved", reviewed_by="engineer",
+            reviewed_at=datetime.now(timezone.utc).isoformat(),
+        ))
+
+    rfq = s.post(
+        RFQ_API, headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"source_request_id": request_id},
+    ).json()["rfq"]
+    assert len(rfq["items"]) == 2
+    item1, item2 = rfq["items"][0], rfq["items"][1]
+
+    suppliers = s.get(f"{API}/suppliers", headers=responsible_headers).json()
+    supplier_a, supplier_b = suppliers[0], suppliers[1]
+    for supplier in (supplier_a, supplier_b):
+        added = s.post(
+            f"{RFQ_API}/{rfq['id']}/suppliers", headers={**INTERNAL_HEADERS, **responsible_headers},
+            json={"supplier_id": supplier["id"]},
+        )
+        assert added.status_code == 200, added.text
+
+    def _quote(supplier, price_item1, price_item2):
+        quotation = s.post(
+            f"{RFQ_API}/{rfq['id']}/quotations", headers={**INTERNAL_HEADERS, **responsible_headers},
+            json={"supplier_id": supplier["id"]},
+        ).json()["quotation"]
+        updated = s.put(
+            f"{RFQ_API}/{rfq['id']}/quotations/{quotation['id']}",
+            headers={**INTERNAL_HEADERS, **responsible_headers},
+            json={
+                "quotation_ref": f"QT-{supplier['id'][:4]}", "status": "received",
+                "lines": [
+                    {"rfq_item_id": item1["id"], "quantity": 3, "unit": "قطعة",
+                     "unit_price": price_item1, "availability": "available"},
+                    {"rfq_item_id": item2["id"], "quantity": 7, "unit": "قطعة",
+                     "unit_price": price_item2, "availability": "available"},
+                ],
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        return quotation["id"]
+
+    quotation_a = _quote(supplier_a, price_item1=10, price_item2=20)
+    quotation_b = _quote(supplier_b, price_item1=15, price_item2=25)
+
+    response = s.get(
+        f"{RFQ_API}/{rfq['id']}/comparison-rows",
+        headers={**INTERNAL_HEADERS, **responsible_headers},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    rows = body["rows"]
+    assert len(rows) == 4
+
+    def _prices_for(supplier_name):
+        return sorted(
+            row["unit_price"] for row in rows if row["supplier_name"] == supplier_name
+        )
+
+    # Each supplier's two rows carry exactly its own two prices - proves
+    # lines were grouped by the correct quotation_id, not merged or
+    # cross-attributed between the two quotations sharing this RFQ.
+    assert _prices_for(supplier_a["name"]) == [10, 20]
+    assert _prices_for(supplier_b["name"]) == [15, 25]
+    assert {row["quotation_id"] for row in rows} == {quotation_a, quotation_b}
+
+    summaries = {row["id"]: row for row in body["supplier_quotations"]}
+    assert summaries[quotation_a]["line_count"] == 2
+    assert summaries[quotation_b]["line_count"] == 2
+
+
 def _mark_quotation_received(client, rfq_id, quotation_id, headers, unit_price=100):
     updated = client.put(
         f"{RFQ_API}/{rfq_id}/quotations/{quotation_id}", headers=headers,
@@ -6550,6 +6639,50 @@ def test_item_last_formal_price_ignores_legacy_price_history(s):
     assert item_row["last_price"] == 9999
     assert item_row["last_formal_price"] is None
     assert item_row["last_formal_supplier"] == ""
+
+
+def test_item_price_history_summary_aggregates_multiple_purchases_correctly(s):
+    """Direct regression guard for _price_history_summary_by_code()'s window
+    functions: with a single price_history row (the other tests above) a
+    broken GROUP BY/PARTITION could still coincidentally return the right
+    numbers - purchase_count, total_qty and total_value only prove
+    themselves correct across more than one row per item_code."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        admin_username = _make_admin(session, suffix)
+        item_id = _make_portal_item(session, suffix)
+        item = session.get(Item, item_id)
+        base_record_no = 20_000_000 + int(suffix, 16) % 1_000_000
+        session.add_all([
+            PriceHistory(
+                id=str(uuid.uuid4()), record_no=base_record_no,
+                date="2026-01-01", item_code=item.code, supplier="مورد أ",
+                quantity=2, unit_price=100, final_price=200,
+            ),
+            PriceHistory(
+                id=str(uuid.uuid4()), record_no=base_record_no + 1,
+                date="2026-01-10", item_code=item.code, supplier="مورد ب",
+                quantity=3, unit_price=150, final_price=450,
+            ),
+            PriceHistory(
+                id=str(uuid.uuid4()), record_no=base_record_no + 2,
+                date="2026-01-05", item_code=item.code, supplier="مورد ج",
+                quantity=1, unit_price=120, final_price=120,
+            ),
+        ])
+        session.commit()
+    admin_headers = _login_headers(s, admin_username)
+
+    items = s.get(f"{API}/items", headers=admin_headers).json()
+    item_row = next(row for row in items if row["id"] == item_id)
+    assert item_row["purchase_count"] == 3
+    assert item_row["total_qty"] == 6  # 2 + 3 + 1
+    assert item_row["total_value"] == 770  # 200 + 450 + 120
+    # "Last" is the most recent date (2026-01-10), not insertion order or
+    # highest price - the middle-inserted row is the correct answer here.
+    assert item_row["last_price"] == 150
+    assert item_row["last_date"] == "2026-01-10"
+    assert item_row["last_supplier"] == "مورد ب"
 
 
 def test_item_without_any_quotation_has_empty_formal_price(s):
