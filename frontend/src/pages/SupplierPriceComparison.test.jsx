@@ -1051,7 +1051,7 @@ function twoSupplierDetail(overrides = {}) {
 }
 
 function mockApprovalCreation() {
-  mockPost.mockImplementation((url, body) => {
+  mockPost.mockImplementation((url) => {
     if (url === "/workflow/approvals/from-comparison") {
       return Promise.resolve({ data: { approval: { id: "approval-1", approval_number: "APR-000099" } } });
     }

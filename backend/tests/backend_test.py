@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 from sqlalchemy import create_engine, func, select
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -56,7 +56,7 @@ from db_migrations import (  # noqa: E402
 )
 from excel_io import import_data, parse_workbook  # noqa: E402
 from price_comparisons import (  # noqa: E402
-    PriceComparison, PriceComparisonSupplierOffer, calculate_comparison,
+    PriceComparison, calculate_comparison,
 )
 from procurement_workflow import (  # noqa: E402
     EngineerApproval, calculate_procurement_kpis,
@@ -74,9 +74,7 @@ from document_capture.domain import ExtractedLineItem, OCRResult  # noqa: E402
 from document_capture.jobs import run_once  # noqa: E402
 from document_capture.security import MAX_FILE_BYTES  # noqa: E402
 from document_capture.models import (  # noqa: E402
-    DocumentProcessingJob,
     ItemMasterCreationRequest,
-    PurchaseRequestDocument,
     RequestAuditEvent,
 )
 import document_capture.service as document_service  # noqa: E402
@@ -8949,8 +8947,8 @@ def test_daily_report_includes_requests_received_for_the_selected_date_only(s, a
 def test_daily_report_includes_purchase_orders_issued_for_the_selected_date_only(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal.begin() as session:
-        in_order = _seed_dpr_po(session, DPR_DATE, po_number=f"T-DPR-PO-IN-{suffix}", final_total=1500)
-        out_order = _seed_dpr_po(session, DPR_OTHER_DATE, po_number=f"T-DPR-PO-OUT-{suffix}", final_total=1500)
+        _seed_dpr_po(session, DPR_DATE, po_number=f"T-DPR-PO-IN-{suffix}", final_total=1500)
+        _seed_dpr_po(session, DPR_OTHER_DATE, po_number=f"T-DPR-PO-OUT-{suffix}", final_total=1500)
 
     body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
     po_numbers = [row["po_number"] for row in body["sections"]["purchase_orders_issued"]]

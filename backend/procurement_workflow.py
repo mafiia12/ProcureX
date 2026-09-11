@@ -29,7 +29,7 @@ try:
     from .auth.service import has_role_or_higher, require_erp_role
     from .business_codes import next_business_code, reserve_code
     from .database import (
-        Base, Customer, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
+        Base, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
         PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal,
     )
     from .incoming_requests import (
@@ -44,7 +44,7 @@ try:
         _offer_document as _comparison_offer_document,
     )
     from .rfq import (
-        RequestForQuotation, RFQItem, RFQSupplier, SupplierQuotation,
+        RequestForQuotation, RFQSupplier, SupplierQuotation,
         SupplierQuotationAttachment, SupplierQuotationLine,
     )
 except ImportError:
@@ -53,7 +53,7 @@ except ImportError:
     from auth.service import has_role_or_higher, require_erp_role
     from business_codes import next_business_code, reserve_code
     from database import (
-        Base, Customer, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
+        Base, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
         PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal,
     )
     from incoming_requests import (
@@ -68,7 +68,7 @@ except ImportError:
         _offer_document as _comparison_offer_document,
     )
     from rfq import (
-        RequestForQuotation, RFQItem, RFQSupplier, SupplierQuotation,
+        RequestForQuotation, RFQSupplier, SupplierQuotation,
         SupplierQuotationAttachment, SupplierQuotationLine,
     )
 

@@ -25,7 +25,7 @@ import useUnsavedChanges from "@/hooks/useUnsavedChanges";
 import {
   calculateComparison, calculateSupplierTotal, decisionReasonKey, emptyComparisonRow,
   formalPriceChange, formatPriceChangePercent, manualEntryKey, NON_CHEAPEST_REASON_OPTIONS,
-  nonCheapestReasonLabel, nonCheapestSelections, supplierOffersFromRows,
+  nonCheapestSelections, supplierOffersFromRows,
 } from "@/lib/priceComparison";
 import {
   EmptyState, StatusBadge,

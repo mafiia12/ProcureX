@@ -69,7 +69,7 @@ const CEMENT = { id: "item-1", code: "ITM-000001", name: "أسمنت أبيض", 
 const SILICONE = { id: "item-2", code: "ITM-000002", name: "سيليكون", unit: "أنبوبة", main_category: "كيماويات" };
 
 function mockContextAndItems({ context = SINGLE_PROJECT_CONTEXT, previous = [], search = [], portalRequests = [], returnedItems = [] } = {}) {
-  mockGet.mockImplementation((url, config) => {
+  mockGet.mockImplementation((url) => {
     if (url === "/portal/context") return Promise.resolve({ data: context });
     if (url === "/portal/previous-items") return Promise.resolve({ data: previous });
     if (url === "/portal/items") return Promise.resolve({ data: search });

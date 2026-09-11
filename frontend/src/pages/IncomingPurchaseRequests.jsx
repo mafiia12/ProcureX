@@ -344,7 +344,7 @@ export default function IncomingPurchaseRequests() {
       try {
         const response = await api.get(`/workflow/rfqs/by-request/${selected.id}`);
         if (!cancelled) setRfq(response.data);
-      } catch (error) {
+      } catch {
         if (!cancelled) setRfq(null);
       }
     })();

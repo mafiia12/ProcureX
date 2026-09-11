@@ -71,7 +71,7 @@ export default function ApprovalsCommandCenter() {
       try {
         const { data: workspaceDetail } = await api.get(`/workflow/approvals/${id}/review-workspace`);
         setWorkspace(workspaceDetail);
-      } catch (workspaceError) {
+      } catch {
         setWorkspace(null);
       }
     } catch (error) { toast.error(errMsg(error)); }
