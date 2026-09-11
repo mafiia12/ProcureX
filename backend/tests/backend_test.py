@@ -89,6 +89,12 @@ from auth.models import ERP_ROLE_LEVELS, User, UserProjectAccess  # noqa: E402
 from auth.security import hash_password  # noqa: E402
 from auth.service import has_role_or_higher, role_at_least  # noqa: E402
 init_db()
+# Test-fixture seed data only, not a live feature: excel_io.py's
+# import_data/parse_workbook have no route in server.py anymore (removed -
+# see excel_io.py's own module docstring). This bootstraps the shared test
+# database with workbook.xlsm's suppliers/items/purchases/etc. before any
+# test runs, since much of the suite asserts against exactly this seed data
+# (e.g. test_dashboard_kpis's total_purchases/supplier_count/item_count).
 WORKBOOK = BACKEND_DIR / "workbook.xlsm"
 asyncio.run(import_data(db, parse_workbook(WORKBOOK.read_bytes())))
 API = "/api"
@@ -1625,36 +1631,6 @@ def test_open_folder_rejects_unknown_target(s, admin_headers):
     assert s.post(f"{API}/system/open-folder/secrets", headers=admin_headers).status_code == 404
 
 
-# ---------- Excel export ----------
-def test_export_excel(s, admin_headers):
-    r = s.get(f"{API}/export/excel", timeout=60, headers=admin_headers)
-    assert r.status_code == 200
-    assert "spreadsheetml" in r.headers.get("content-type", "")
-    assert len(r.content) > 1000
-    workbook = load_workbook(io.BytesIO(r.content), read_only=False)
-    assert [cell.value for cell in workbook["Items"][1]][:10] == [
-        "كود الصنف",
-        "اسم الصنف السابق",
-        "اسم المنتج",
-        "العلامة التجارية",
-        "التصنيف الرئيسي",
-        "التصنيف الفرعي",
-        "الوحدة",
-        "المواصفات",
-        "المورد المفضل",
-        "ملاحظات",
-    ]
-    assert "اسم المنتج" in [cell.value for cell in workbook["Price History"][1]]
-    register = workbook["Purchase Register"]
-    assert register.freeze_panes == "A2"
-    assert register.auto_filter.ref == "A1:J1"
-    assert register.max_row - 1 == len(s.get(f"{API}/purchases", headers=admin_headers).json())
-    assert register["B2"].number_format == "yyyy-mm-dd"
-    assert "EGP" in register["G2"].number_format
-    assert register.column_dimensions["D"].width >= len("المورد")
-    assert workbook["Purchase Items"]["N2"].number_format.endswith('"EGP"')
-
-
 # ---------- Purchase creation, dup, validation, cascade + Payment flow ----------
 @pytest.fixture(scope="module")
 def ids(s, admin_headers):
@@ -1926,11 +1902,6 @@ def test_original_data_intact(s, admin_headers):
     history = s.get(f"{API}/price-history", headers=admin_headers).json()
     assert history and all(row["product_name"] for row in history)
     assert all("brand" in row and "specifications" in row for row in history)
-
-
-def test_workbook_import_is_idempotent():
-    counts = asyncio.run(import_data(db, parse_workbook(WORKBOOK.read_bytes())))
-    assert all(value == 0 for value in counts.values())
 
 
 def test_legacy_schema_migration_persists_after_reopen(tmp_path):

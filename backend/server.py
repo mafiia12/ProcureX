@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Literal, Optional
 
-from fastapi import Depends, FastAPI, APIRouter, HTTPException, UploadFile, File, Request, Response
+from fastapi import Depends, FastAPI, APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -60,9 +60,6 @@ try:
     from .daily_report import router as daily_report_router
     from .whatsapp.router import router as whatsapp_router
     from .whatsapp.admin_router import router as whatsapp_admin_router
-    from .excel_io import (parse_workbook, import_data, build_export_workbook,
-                           next_seq_id, next_record_no,
-                           recompute_payment_status)
 except ImportError:
     from auth.admin_router import router as admin_users_router
     from auth.router import router as auth_router
@@ -100,9 +97,6 @@ except ImportError:
     from daily_report import router as daily_report_router
     from whatsapp.router import router as whatsapp_router
     from whatsapp.admin_router import router as whatsapp_admin_router
-    from excel_io import (parse_workbook, import_data, build_export_workbook,
-                          next_seq_id, next_record_no,
-                          recompute_payment_status)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -918,6 +912,43 @@ for _name in (name for name in ENTITIES if name != "items"):
 
 
 # ---------------- Purchases ----------------
+# Relocated from the now-removed excel_io.py import/export surface - these
+# three are plain sequence/status helpers with no Excel dependency, used only
+# by the legacy direct-purchase/payment routes below.
+async def next_seq_id(coll, field: str, prefix: str, width: int):
+    docs = await coll.find({}, {field: 1}).to_list(100000)
+    mx = 0
+    for d in docs:
+        c = str(d.get(field, ""))
+        if c.startswith(prefix):
+            try:
+                mx = max(mx, int(c[len(prefix):]))
+            except ValueError:
+                pass
+    return f"{prefix}{mx + 1:0{width}d}"
+
+
+async def next_record_no(coll):
+    docs = await coll.find({}, {"record_no": 1}).to_list(100000)
+    return max((int(d.get("record_no", 0) or 0) for d in docs), default=0) + 1
+
+
+async def recompute_payment_status(db, purchase_id: str):
+    pur = await db.purchases.find_one({"purchase_id": purchase_id})
+    if not pur:
+        return
+    pays = await db.payments.find({"purchase_id": purchase_id}).to_list(10000)
+    paid = sum(p.get("amount_paid", 0) for p in pays)
+    total = pur.get("invoice_total", 0)
+    if paid <= 0:
+        status = "غير مدفوع"
+    elif paid >= total - 0.001:
+        status = "مدفوع"
+    else:
+        status = "مدفوع جزئي"
+    await db.purchases.update_one({"purchase_id": purchase_id}, {"$set": {"payment_status": status}})
+
+
 class PurchaseItemIn(BaseModel):
     item_id: str
     quantity: float
@@ -3012,29 +3043,6 @@ async def dashboard(current_user: User = Depends(require_erp_role())):
         "payment_status": [{"status": k, "count": v["count"], "total": round(v["total"], 2)}
                            for k, v in status_dist.items()],
     }
-
-
-# ---------------- Excel import / export ----------------
-@api.get("/export/excel")
-async def export_excel(current_user: User = Depends(require_erp_role())):
-    data = await build_export_workbook(db)
-    filename = f"RE_DECOR_Procurement_ERP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-    return Response(content=data,
-                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f"attachment; filename={filename}"})
-
-
-@api.post("/import/excel")
-async def import_excel(file: UploadFile = File(...), current_user: User = Depends(require_erp_role())):
-    if not file.filename.lower().endswith((".xlsx", ".xlsm")):
-        raise HTTPException(422, "من فضلك ارفع ملف Excel بصيغة xlsx أو xlsm")
-    content = await file.read()
-    try:
-        parsed = parse_workbook(content)
-    except Exception:
-        raise HTTPException(422, "تعذر قراءة الملف، تأكد من أنه ملف Excel صحيح")
-    counts = await import_data(db, parsed)
-    return {"imported": counts}
 
 
 @api.get("/")
