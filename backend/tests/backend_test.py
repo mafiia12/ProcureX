@@ -43,12 +43,10 @@ import business_codes  # noqa: E402
 from business_codes import next_business_code  # noqa: E402
 from db_migrations import (  # noqa: E402
     BUSINESS_CODE_SCHEMA_VERSION,
-    CONSTRUCTION_CALCULATOR_SCHEMA_VERSION,
     DOCUMENT_CAPTURE_SCHEMA_VERSION,
     SUPPLIER_PRICE_COMPARISON_SCHEMA_VERSION,
     SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION,
     migrate_business_code_sequences,
-    migrate_construction_calculator,
     migrate_document_capture,
     migrate_incoming_requests,
     migrate_item_classification,
@@ -2826,143 +2824,8 @@ def test_document_capture_migration_is_additive_and_backed_up(tmp_path):
         assert "purchase_request_documents" in tables
 
 
-# ---------- Removed Construction Calculator regression coverage ----------
-CONSTRUCTION_API_PATHS = (
-    f"{API}/construction-calculator/categories",
-    f"{API}/construction-calculator/work-items",
-    f"{API}/construction-calculator/calculate",
-)
-
-
-@pytest.mark.parametrize("legacy_flag", [None, "true"])
-def test_construction_api_is_unavailable_even_with_legacy_flag(monkeypatch, legacy_flag):
-    if legacy_flag is None:
-        monkeypatch.delenv("CONSTRUCTION_API_ENABLED", raising=False)
-    else:
-        monkeypatch.setenv("CONSTRUCTION_API_ENABLED", legacy_flag)
-    disabled_app = create_app(initialize_database=False)
-    registered_paths = {route.path for route in disabled_app.routes}
-    assert not any(path.startswith(f"{API}/construction-calculator") for path in registered_paths)
-    with TestClient(disabled_app) as client:
-        for path in CONSTRUCTION_API_PATHS:
-            assert client.get(path, headers={"X-Internal-Token": "test-internal-token"}).status_code == 404
-        assert client.post(CONSTRUCTION_API_PATHS[-1], json={}).status_code == 404
-
-
-def test_runtime_has_no_construction_router_or_seed_imports():
-    server_source = (BACKEND_DIR / "server.py").read_text(encoding="utf-8")
-    database_source = (BACKEND_DIR / "database.py").read_text(encoding="utf-8")
-    installer_source = (
-        BACKEND_DIR.parent / "installer" / "Build-Installer.ps1"
-    ).read_text(encoding="utf-8")
-    assert "construction_calculator.router" not in server_source
-    assert "construction_calculator_router" not in server_source
-    assert "construction_calculator.seed" not in database_source
-    assert "migrate_construction_calculator" not in database_source
-    assert 'CONSTRUCTION_AUTO_INSTALL", "true"' not in database_source
-    assert "--collect-submodules construction_calculator" not in installer_source
-    assert "construction_calculator/data" not in installer_source
-
-
-def test_normal_startup_preserves_historical_construction_data_without_seeding(monkeypatch):
-    sentinel_id = "historical-compatibility-category"
-    try:
-        with engine.begin() as connection:
-            existing_tables = {
-                row[0]
-                for row in connection.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name LIKE 'construction_%'"
-                )
-            }
-            assert existing_tables == set()
-            connection.exec_driver_sql(
-                "CREATE TABLE construction_categories ("
-                "id TEXT PRIMARY KEY, code TEXT NOT NULL, source_text TEXT NOT NULL, "
-                "technical_notes TEXT NOT NULL)"
-            )
-            connection.exec_driver_sql(
-                "INSERT INTO construction_categories "
-                "(id, code, source_text, technical_notes) VALUES (?, ?, ?, ?)",
-                (
-                    sentinel_id,
-                    "HIST-COMPAT",
-                    "preserved historical row",
-                    "must remain unchanged",
-                ),
-            )
-            before_schema = connection.exec_driver_sql(
-                "SELECT sql FROM sqlite_master WHERE type='table' "
-                "AND name='construction_categories'"
-            ).scalar_one()
-            before_row = connection.exec_driver_sql(
-                "SELECT code, source_text, technical_notes "
-                "FROM construction_categories WHERE id = ?",
-                (sentinel_id,),
-            ).one()
-
-        # A legacy environment variable must not reactivate removed seeding.
-        monkeypatch.setenv("CONSTRUCTION_AUTO_INSTALL", "true")
-        init_db()
-
-        with engine.begin() as connection:
-            after_tables = {
-                row[0]
-                for row in connection.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name LIKE 'construction_%'"
-                )
-            }
-            after_schema = connection.exec_driver_sql(
-                "SELECT sql FROM sqlite_master WHERE type='table' "
-                "AND name='construction_categories'"
-            ).scalar_one()
-            after_row = connection.exec_driver_sql(
-                "SELECT code, source_text, technical_notes "
-                "FROM construction_categories WHERE id = ?",
-                (sentinel_id,),
-            ).one()
-        assert after_tables == {"construction_categories"}
-        assert after_schema == before_schema
-        assert after_row == before_row
-    finally:
-        with engine.begin() as connection:
-            connection.exec_driver_sql("DROP TABLE IF EXISTS construction_categories")
-
-
-def test_construction_migration_is_additive_backed_up_and_idempotent(tmp_path):
-    path = tmp_path / "legacy-construction.db"
-    migration_engine = create_engine(f"sqlite:///{path.as_posix()}")
-    with migration_engine.begin() as connection:
-        connection.exec_driver_sql(
-            "CREATE TABLE legacy_data (id INTEGER PRIMARY KEY, value TEXT)"
-        )
-        connection.exec_driver_sql(
-            "INSERT INTO legacy_data(value) VALUES ('preserved')"
-        )
-        connection.exec_driver_sql("PRAGMA user_version = 7")
-    backup = migrate_construction_calculator(migration_engine)
-    assert backup and backup.is_file()
-    assert migrate_construction_calculator(migration_engine) is None
-    with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert (
-            connection.execute("PRAGMA user_version").fetchone()[0]
-            == CONSTRUCTION_CALCULATOR_SCHEMA_VERSION
-        )
-        assert (
-            connection.execute("SELECT value FROM legacy_data").fetchone()[0]
-            == "preserved"
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='construction_work_items'"
-            ).fetchone()[0]
-            == 1
-        )
-
-
+# ---------- Construction Calculator schema migration (API removed; tables and
+# their Alembic migration are kept for historical data - see models.py) ----------
 def test_construction_alembic_upgrade_and_downgrade_cycle(tmp_path):
     path = tmp_path / "construction-alembic-cycle.db"
     migration_engine = create_engine(f"sqlite:///{path.as_posix()}")
