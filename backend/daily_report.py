@@ -582,6 +582,27 @@ async def _build_report(session, report_date: str, viewer_role: str) -> dict:
     }
 
 
+# In-process cache for CLOSED report dates only - a closed date's sections
+# are logically frozen (this module's whole point is that only the summary
+# is *stored* frozen; the detail sections were always recomputed live even
+# for a closed date, which meant every repeat view of history redid every
+# query in _build_report for no reason). The open/current-date report is
+# never cached: it's still changing, and every existing test that reads
+# "today" without closing anything expects a live recompute every time.
+#
+# Keyed by (report_date, viewer_role): _needs_attention() varies by the
+# viewer's role, so a shared per-date cache would leak one role's view to
+# another. Invalidated on both close and reopen - a closed report can be
+# reopened, edited (implicitly, by new activity landing on that date) and
+# closed again, and a stale cached body from before that round-trip would
+# silently keep serving the old snapshot.
+_closed_report_cache: dict[str, dict[str, dict]] = {}
+
+
+def _invalidate_closed_report_cache(report_date: str) -> None:
+    _closed_report_cache.pop(report_date, None)
+
+
 @router.get("")
 async def get_daily_report(
     date: str = "", current_user: User = Depends(require_erp_role()),
@@ -591,9 +612,17 @@ async def get_daily_report(
         report_row = session.scalar(
             select(DailyReport).where(DailyReport.report_date == report_date)
         )
-        body = await _build_report(session, report_date, current_user.role)
-
-    is_closed = bool(report_row and report_row.closed_at)
+        is_closed = bool(report_row and report_row.closed_at)
+        cached_body = (
+            _closed_report_cache.get(report_date, {}).get(current_user.role)
+            if is_closed else None
+        )
+        if cached_body is not None:
+            body = cached_body
+        else:
+            body = await _build_report(session, report_date, current_user.role)
+            if is_closed:
+                _closed_report_cache.setdefault(report_date, {})[current_user.role] = body
     response = {
         "report_date": report_date,
         "report_number": report_row.report_number if report_row else _report_number(report_date),
@@ -674,6 +703,10 @@ async def close_daily_report(
         row.closed_by = _display_name(current_user)
         row.updated_at = now
         session.commit()
+        # This close already computed `body` for the snapshot above - warm
+        # the cache with it for the closing user's role instead of throwing
+        # that work away and recomputing on the very next GET.
+        _closed_report_cache[report_date] = {current_user.role: body}
         return {
             "report_date": row.report_date, "report_number": row.report_number,
             "closed_at": row.closed_at, "closed_by": row.closed_by,
@@ -694,4 +727,5 @@ async def reopen_daily_report(
         row.updated_by = _display_name(current_user)
         row.updated_at = _now()
         session.commit()
+        _invalidate_closed_report_cache(report_date)
         return {"report_date": row.report_date, "closed_at": ""}

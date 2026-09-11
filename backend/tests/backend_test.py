@@ -9234,3 +9234,47 @@ def test_daily_report_close_then_reopen_and_no_duplicate_report_per_date(s, admi
     with SessionLocal() as session:
         count = session.query(DailyReport).filter(DailyReport.report_date == date).count()
     assert count == 1
+
+
+def test_daily_report_caches_sections_only_once_closed_and_invalidates_on_reopen(s, admin_headers):
+    date = "2018-06-20"
+    with SessionLocal.begin() as session:
+        _seed_dpr_po(session, date, po_number=f"T-DPR-CACHE-1-{uuid.uuid4().hex[:8]}", final_total=100)
+
+    # Open/live: never cached - a second PO landing on the same date before
+    # any close must show up on the very next read.
+    first_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert first_read["summary"]["purchase_orders_issued_value"] == 100
+    with SessionLocal.begin() as session:
+        _seed_dpr_po(session, date, po_number=f"T-DPR-CACHE-2-{uuid.uuid4().hex[:8]}", final_total=50)
+    second_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert second_read["summary"]["purchase_orders_issued_value"] == 150
+
+    close = s.post(f"{DAILY_REPORT_API}/{date}/close", headers=admin_headers)
+    assert close.status_code == 200, close.text
+    closed_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert closed_read["summary"]["purchase_orders_issued_value"] == 150
+    assert len(closed_read["sections"]["purchase_orders_issued"]) == 2
+
+    # Closed: a third PO backdated onto this date must NOT appear on a
+    # repeat read - proves the cached body is actually being served, not
+    # recomputed.
+    with SessionLocal.begin() as session:
+        _seed_dpr_po(session, date, po_number=f"T-DPR-CACHE-3-{uuid.uuid4().hex[:8]}", final_total=999)
+    still_cached = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert still_cached["sections"]["purchase_orders_issued"] == closed_read["sections"]["purchase_orders_issued"]
+    assert len(still_cached["sections"]["purchase_orders_issued"]) == 2
+
+    # Reopen invalidates: the third PO must now be visible immediately.
+    reopened = s.post(f"{DAILY_REPORT_API}/{date}/reopen", headers=admin_headers)
+    assert reopened.status_code == 200, reopened.text
+    reopened_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert len(reopened_read["sections"]["purchase_orders_issued"]) == 3
+    assert reopened_read["summary"]["purchase_orders_issued_value"] == 1149
+
+    # Re-closing snapshots the new state, not the first close's stale cache.
+    reclose = s.post(f"{DAILY_REPORT_API}/{date}/close", headers=admin_headers)
+    assert reclose.status_code == 200, reclose.text
+    reclosed_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert len(reclosed_read["sections"]["purchase_orders_issued"]) == 3
+    assert reclosed_read["summary"]["purchase_orders_issued_value"] == 1149
