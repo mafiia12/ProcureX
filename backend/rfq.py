@@ -379,12 +379,17 @@ def _line_document(line: SupplierQuotationLine) -> dict:
     }
 
 
-def _quotation_summary(session, quotation: SupplierQuotation) -> dict:
-    lines = session.scalars(
-        select(SupplierQuotationLine)
-        .where(SupplierQuotationLine.quotation_id == quotation.id)
-        .order_by(SupplierQuotationLine.position)
-    ).all()
+def _quotation_summary(session, quotation: SupplierQuotation, lines: Optional[list] = None) -> dict:
+    """`lines`, when given, skips this function's own line query - callers
+    that already batch-fetched every quotation's lines (rfq_comparison_rows)
+    pass them in instead of triggering a second, redundant per-quotation
+    fetch of the same rows."""
+    if lines is None:
+        lines = session.scalars(
+            select(SupplierQuotationLine)
+            .where(SupplierQuotationLine.quotation_id == quotation.id)
+            .order_by(SupplierQuotationLine.position)
+        ).all()
     attachments = session.scalars(
         select(SupplierQuotationAttachment)
         .where(SupplierQuotationAttachment.quotation_id == quotation.id)
@@ -995,15 +1000,40 @@ def rfq_comparison_rows(
                 SupplierQuotation.rfq_id == rfq_id, SupplierQuotation.status == "received",
             )
         ).all()
+
+        # Bulk-fetch every quotation's lines and every referenced RFQItem in
+        # two queries total, instead of one SupplierQuotationLine query per
+        # quotation plus one RFQItem .get() per line (rfq.py:list_rfqs uses
+        # this same batch-then-group-in-Python pattern above).
+        quotation_ids = [quotation.id for quotation in quotations]
+        lines_by_quotation: dict[str, list] = {}
+        if quotation_ids:
+            for line in session.scalars(
+                select(SupplierQuotationLine)
+                .where(SupplierQuotationLine.quotation_id.in_(quotation_ids))
+                .order_by(SupplierQuotationLine.quotation_id, SupplierQuotationLine.position)
+            ).all():
+                lines_by_quotation.setdefault(line.quotation_id, []).append(line)
+
+        rfq_item_ids = {
+            line.rfq_item_id
+            for lines in lines_by_quotation.values()
+            for line in lines
+            if line.rfq_item_id
+        }
+        rfq_items_by_id = {
+            rfq_item.id: rfq_item
+            for rfq_item in (
+                session.scalars(
+                    select(RFQItem).where(RFQItem.id.in_(rfq_item_ids))
+                ).all() if rfq_item_ids else []
+            )
+        }
+
         rows = []
         for quotation in quotations:
-            lines = session.scalars(
-                select(SupplierQuotationLine)
-                .where(SupplierQuotationLine.quotation_id == quotation.id)
-                .order_by(SupplierQuotationLine.position)
-            ).all()
-            for line in lines:
-                rfq_item = session.get(RFQItem, line.rfq_item_id) if line.rfq_item_id else None
+            for line in lines_by_quotation.get(quotation.id, []):
+                rfq_item = rfq_items_by_id.get(line.rfq_item_id) if line.rfq_item_id else None
                 rows.append({
                     "quotation_id": quotation.id,
                     "rfq_id": rfq.id,
@@ -1031,6 +1061,10 @@ def rfq_comparison_rows(
             "project_name": rfq.project_name,
             "rows": rows,
             "supplier_quotations": [
-                _quotation_summary(session, quotation) for quotation in quotations
+                # Pass the already-fetched lines through - _quotation_summary
+                # would otherwise re-run the exact query above, once per
+                # quotation.
+                _quotation_summary(session, quotation, lines=lines_by_quotation.get(quotation.id, []))
+                for quotation in quotations
             ],
         }
