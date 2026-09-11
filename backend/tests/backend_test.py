@@ -424,6 +424,60 @@ def test_item_category_subcategory_and_name_filtering(s, admin_headers):
             s.delete(f"{API}/items/{item['id']}", headers=admin_headers)
 
 
+def test_items_limit_offset_pages_without_changing_the_filtered_total(s, admin_headers):
+    """limit/offset is additive: omitting it must return every filtered item
+    exactly as before (no test above passes it), and when given it pages the
+    already-filtered set while X-Total-Count keeps reporting the full count -
+    not the page size - so a caller can build a pager from it."""
+    created = []
+    try:
+        for index in range(3):
+            response = s.post(
+                f"{API}/items",
+                json={
+                    "product_name": f"TEST_PAGE_ITEM_{index}",
+                    "main_category": "TEST_PAGE_CATEGORY",
+                    "unit": "قطعة",
+                },
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created.append(response.json())
+
+        full = s.get(
+            f"{API}/items", params={"main_category": "TEST_PAGE_CATEGORY"}, headers=admin_headers,
+        )
+        full_names = [item["product_name"] for item in full.json()]
+        assert full_names == ["TEST_PAGE_ITEM_0", "TEST_PAGE_ITEM_1", "TEST_PAGE_ITEM_2"]
+        assert full.headers["X-Total-Count"] == "3"
+
+        page = s.get(
+            f"{API}/items",
+            params={"main_category": "TEST_PAGE_CATEGORY", "limit": 2, "offset": 1},
+            headers=admin_headers,
+        )
+        assert [item["product_name"] for item in page.json()] == [
+            "TEST_PAGE_ITEM_1", "TEST_PAGE_ITEM_2",
+        ]
+        assert page.headers["X-Total-Count"] == "3"
+
+        last_page = s.get(
+            f"{API}/items",
+            params={"main_category": "TEST_PAGE_CATEGORY", "limit": 2, "offset": 2},
+            headers=admin_headers,
+        )
+        page_item = last_page.json()[0]
+        assert page_item["product_name"] == "TEST_PAGE_ITEM_2"
+        # Enrichment (price-history summary + formal price) still applies
+        # to a paginated response, not just the unpaginated one.
+        assert page_item["purchase_count"] == 0
+        assert page_item["last_price"] is None
+        assert page_item["last_formal_price"] is None
+    finally:
+        for item in created:
+            s.delete(f"{API}/items/{item['id']}", headers=admin_headers)
+
+
 # ---------- CRUD suppliers/customers/projects/items with autocode + dup ----------
 @pytest.mark.parametrize(
     "coll,prefix",

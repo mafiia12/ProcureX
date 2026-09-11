@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Literal, Optional
 
-from fastapi import Depends, FastAPI, APIRouter, HTTPException, UploadFile, File, Request
+from fastapi import Depends, FastAPI, APIRouter, HTTPException, UploadFile, File, Request, Response
 from fastapi.responses import JSONResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -30,8 +30,9 @@ try:
     from .auth.service import require_erp_role
     from .business_codes import BUSINESS_CODE_CONFIG, next_business_code, reserve_code
     from .database import (
-        DATABASE_URL, IS_SQLITE, Item, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
-        PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal, db, init_db,
+        DATABASE_URL, IS_SQLITE, Item, Payment, PriceHistory, Project, Purchase, PurchaseOrder,
+        PurchaseOrderItem, PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine,
+        SessionLocal, db, init_db,
     )
     from .incoming_requests import (
         IncomingPurchaseRequest, IncomingPurchaseRequestItem, internal_router, public_router,
@@ -69,8 +70,9 @@ except ImportError:
     from auth.service import require_erp_role
     from business_codes import BUSINESS_CODE_CONFIG, next_business_code, reserve_code
     from database import (
-        DATABASE_URL, IS_SQLITE, Item, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
-        PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal, db, init_db,
+        DATABASE_URL, IS_SQLITE, Item, Payment, PriceHistory, Project, Purchase, PurchaseOrder,
+        PurchaseOrderItem, PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine,
+        SessionLocal, db, init_db,
     )
     from incoming_requests import (
         IncomingPurchaseRequest, IncomingPurchaseRequestItem, internal_router, public_router,
@@ -504,12 +506,64 @@ async def list_projects(include_procurement: bool = False, current_user: User = 
     return projects
 
 
+def _price_history_summary_by_code(session, item_codes: set[str]) -> dict[str, dict]:
+    """One grouped SQL query: purchase_count/total_qty/total_value per
+    item_code, plus the most recent row's price/date/supplier (ties broken
+    by the higher record_no, matching insertion order). Replaces an
+    O(items x price_history) Python scan that re-filtered the full
+    price_history table once per item."""
+    if not item_codes:
+        return {}
+    latest_rank = (
+        func.row_number()
+        .over(
+            partition_by=PriceHistory.item_code,
+            order_by=(PriceHistory.date.desc(), PriceHistory.record_no.desc()),
+        )
+        .label("rn")
+    )
+    ranked = (
+        select(
+            PriceHistory.item_code,
+            PriceHistory.unit_price,
+            PriceHistory.date,
+            PriceHistory.supplier,
+            func.count().over(partition_by=PriceHistory.item_code).label("purchase_count"),
+            func.sum(PriceHistory.quantity).over(partition_by=PriceHistory.item_code).label("total_qty"),
+            func.sum(PriceHistory.final_price).over(partition_by=PriceHistory.item_code).label("total_value"),
+            latest_rank,
+        )
+        .where(PriceHistory.item_code.in_(item_codes))
+        .subquery()
+    )
+    rows = session.execute(
+        select(
+            ranked.c.item_code, ranked.c.unit_price, ranked.c.date, ranked.c.supplier,
+            ranked.c.purchase_count, ranked.c.total_qty, ranked.c.total_value,
+        ).where(ranked.c.rn == 1)
+    ).all()
+    return {
+        row.item_code: {
+            "purchase_count": int(row.purchase_count or 0),
+            "total_qty": round(float(row.total_qty or 0), 2),
+            "total_value": round(float(row.total_value or 0), 2),
+            "last_price": row.unit_price,
+            "last_date": row.date,
+            "last_supplier": row.supplier or "",
+        }
+        for row in rows
+    }
+
+
 @api.get("/items")
 async def list_items(
+    response: Response,
     main_category: Optional[str] = None,
     subcategory: Optional[str] = None,
     brand: Optional[str] = None,
     search: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
     current_user: User = Depends(require_erp_role()),
 ):
     items = [clean(d) for d in await db.items.find({}).sort("code", 1).to_list(10000)]
@@ -535,26 +589,32 @@ async def list_items(
             item for item in items
             if any(query in str(item.get(field, "")).casefold() for field in searchable_fields)
         ]
-    hist = await db.price_history.find({}, {"_id": 0}).to_list(100000)
-    for it in items:
-        rows = [h for h in hist if h.get("item_code") == it.get("code")]
-        it["purchase_count"] = len(rows)
-        it["total_qty"] = round(sum(h.get("quantity", 0) for h in rows), 2)
-        it["total_value"] = round(sum(h.get("final_price", 0) for h in rows), 2)
-        rows.sort(key=lambda h: h.get("date", ""))
-        it["last_price"] = rows[-1].get("unit_price") if rows else None
-        it["last_date"] = rows[-1].get("date") if rows else None
-        it["last_supplier"] = rows[-1].get("supplier", "") if rows else ""
 
-    # "Last formal price" is a distinct, explicitly-sourced figure: the
-    # latest *received* Supplier Quotation line for the item (see
-    # rfq._formal_quotation_rows). It never mixes with the legacy
-    # price_history above (direct-purchase imports, not formal quotations).
+    # Total after filtering, before pagination - callers that page (5.3
+    # will) read this to know how many pages exist. Omitting `limit`
+    # preserves the exact previous behavior (every filtered item, in one
+    # response) for every caller that doesn't ask to page.
+    response.headers["X-Total-Count"] = str(len(items))
+    if limit is not None:
+        items = items[offset:offset + limit]
+
     with SessionLocal() as session:
+        history_by_code = _price_history_summary_by_code(
+            session, {it["code"] for it in items if it.get("code")},
+        )
+        # "Last formal price" is a distinct, explicitly-sourced figure: the
+        # latest *received* Supplier Quotation line for the item (see
+        # rfq._formal_quotation_rows). It never mixes with the legacy
+        # price_history above (direct-purchase imports, not formal quotations).
         formal_prices = latest_formal_price_by_item(
             session, {it["id"] for it in items if it.get("id")},
         )
+    empty_history = {
+        "purchase_count": 0, "total_qty": 0, "total_value": 0,
+        "last_price": None, "last_date": None, "last_supplier": "",
+    }
     for it in items:
+        it.update(history_by_code.get(it.get("code"), empty_history))
         formal = formal_prices.get(it["id"])
         it["last_formal_price"] = formal["unit_price"] if formal else None
         it["last_formal_supplier"] = formal["supplier_name"] if formal else ""
