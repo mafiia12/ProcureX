@@ -35,7 +35,10 @@ try:
         PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal,
     )
     from .incoming_requests import IncomingPurchaseRequest, IncomingPurchaseRequestItem
-    from .price_comparisons import PriceComparison, _detail as _comparison_detail
+    from .price_comparisons import (
+        PriceComparison, PriceComparisonRow, PriceComparisonSupplierOffer,
+        _last_prices, _offer_document, _row_document, calculate_comparison,
+    )
     from .procurement_workflow import EngineerApproval
     from .rfq import (
         RequestForQuotation, SupplierQuotation, SupplierQuotationAttachment,
@@ -50,7 +53,10 @@ except ImportError:  # pragma: no cover - direct backend execution
         PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal,
     )
     from incoming_requests import IncomingPurchaseRequest, IncomingPurchaseRequestItem
-    from price_comparisons import PriceComparison, _detail as _comparison_detail
+    from price_comparisons import (
+        PriceComparison, PriceComparisonRow, PriceComparisonSupplierOffer,
+        _last_prices, _offer_document, _row_document, calculate_comparison,
+    )
     from procurement_workflow import EngineerApproval
     from rfq import (
         RequestForQuotation, SupplierQuotation, SupplierQuotationAttachment,
@@ -183,6 +189,49 @@ def _requests_received(session, report_date: str) -> list[dict]:
     return result
 
 
+def _comparison_activity_by_id(session, comparisons: list) -> dict[str, dict]:
+    """rows + supplier_summaries for each comparison, batched across all of
+    them instead of one full price_comparisons._detail() call per
+    comparison. _detail() also joins source-request attachments and RFQ
+    quotations that this call site (the sourcing-activity section) never
+    reads - skipped here entirely, not just batched."""
+    if not comparisons:
+        return {}
+    comparison_ids = [comparison.id for comparison in comparisons]
+
+    rows_by_comparison: dict[str, list] = {}
+    for row in session.scalars(
+        select(PriceComparisonRow)
+        .where(PriceComparisonRow.comparison_id.in_(comparison_ids))
+        .order_by(PriceComparisonRow.comparison_id, PriceComparisonRow.position)
+    ).all():
+        rows_by_comparison.setdefault(row.comparison_id, []).append(row)
+
+    offers_by_comparison: dict[str, list] = {}
+    for offer in session.scalars(
+        select(PriceComparisonSupplierOffer)
+        .where(PriceComparisonSupplierOffer.comparison_id.in_(comparison_ids))
+        .order_by(PriceComparisonSupplierOffer.comparison_id, PriceComparisonSupplierOffer.supplier_name)
+    ).all():
+        offers_by_comparison.setdefault(offer.comparison_id, []).append(offer)
+
+    all_item_codes = {row.item_code for rows in rows_by_comparison.values() for row in rows}
+    last_prices = _last_prices(session, all_item_codes)
+
+    activity_by_id: dict[str, dict] = {}
+    for comparison in comparisons:
+        rows = rows_by_comparison.get(comparison.id, [])
+        offers = offers_by_comparison.get(comparison.id, [])
+        row_documents = [_row_document(row) for row in rows]
+        activity_by_id[comparison.id] = calculate_comparison(
+            comparison.comparison_date,
+            row_documents,
+            {code: last_prices[code] for code in {row.item_code for row in rows} if code in last_prices},
+            [_offer_document(offer) for offer in offers] or None,
+        )
+    return activity_by_id
+
+
 # ---------------- Section 2: Supplier / sourcing activity ----------------
 def _sourcing_activity(session, report_date: str) -> list[dict]:
     rows: list[dict] = []
@@ -238,8 +287,9 @@ def _sourcing_activity(session, report_date: str) -> list[dict]:
             | PriceComparison.updated_at.like(f"{report_date}%")
         )
     ).all()
+    comparison_activity = _comparison_activity_by_id(session, comparisons)
     for comparison in comparisons:
-        detail = _comparison_detail(session, comparison)
+        detail = comparison_activity[comparison.id]
         selected_supplier_ids = {
             row["supplier_id"] for row in detail["rows"] if row.get("selected_for_purchase")
         }

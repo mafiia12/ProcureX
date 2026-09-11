@@ -56,7 +56,7 @@ from db_migrations import (  # noqa: E402
 )
 from excel_io import import_data, parse_workbook  # noqa: E402
 from price_comparisons import (  # noqa: E402
-    PriceComparison, calculate_comparison,
+    PriceComparison, PriceComparisonRow, calculate_comparison,
 )
 from procurement_workflow import (  # noqa: E402
     EngineerApproval, calculate_procurement_kpis,
@@ -9012,6 +9012,45 @@ def test_daily_report_includes_purchase_orders_issued_for_the_selected_date_only
     assert row["final_total"] == 1500
     assert row["item_count"] == 1
     assert row["payment_status"] == "unpaid"
+
+
+def _seed_dpr_comparison(session, report_date, *, supplier_name="مورد مقارنة التقرير اليومي", selected=True):
+    comparison_id = str(uuid.uuid4())
+    timestamp = f"{report_date}T09:00:00+00:00"
+    session.add(PriceComparison(
+        id=comparison_id, comparison_number=f"T-DPR-CMP-{uuid.uuid4().hex[:8]}",
+        project_name="مشروع التقرير اليومي", customer_name="عميل التقرير اليومي",
+        comparison_date=report_date, created_at=timestamp, updated_at=timestamp,
+    ))
+    session.add(PriceComparisonRow(
+        id=str(uuid.uuid4()), comparison_id=comparison_id, position=1,
+        item_code=f"T-DPR-ITM-{uuid.uuid4().hex[:8]}", product_name="صنف مقارنة",
+        unit="قطعة", supplier_code="", supplier_name=supplier_name,
+        quantity=2, unit_price=100, availability="available",
+        price_valid_until="2099-01-01", selected_for_purchase=1 if selected else 0,
+    ))
+    return comparison_id
+
+
+def test_daily_report_sourcing_activity_includes_a_price_comparison_supplier_row(s, admin_headers):
+    """Regression guard for the batched _comparison_activity_by_id() helper:
+    confirms it produces the same per-supplier rows/selection/total the old
+    per-comparison _detail() call did, since no existing test covered this
+    section's "comparison" kind rows before this fix."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal.begin() as session:
+        _seed_dpr_comparison(session, DPR_DATE, supplier_name=f"مورد-{suffix}")
+        _seed_dpr_comparison(session, DPR_OTHER_DATE, supplier_name=f"مورد-اخرى-{suffix}")
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    comparison_rows = [
+        row for row in body["sections"]["sourcing_activity"] if row["kind"] == "comparison"
+    ]
+    row = next(row for row in comparison_rows if row["supplier_name"] == f"مورد-{suffix}")
+    assert not any(row["supplier_name"] == f"مورد-اخرى-{suffix}" for row in comparison_rows)
+    assert row["is_complete"] is True
+    assert row["offer_total"] == 200
+    assert row["selected"] is True
 
 
 def test_daily_report_payment_totals_ignore_legacy_direct_payments(s, admin_headers):
