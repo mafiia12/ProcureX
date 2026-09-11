@@ -92,25 +92,6 @@ jest.mock("@/components/RequireAdmin", () => ({
   default: ({ children }) => children,
 }));
 
-jest.mock("recharts", () => {
-  const Stub = ({ children }) => <div>{children}</div>;
-  return {
-    ResponsiveContainer: Stub,
-    BarChart: Stub,
-    Bar: Stub,
-    XAxis: Stub,
-    YAxis: Stub,
-    Tooltip: Stub,
-    CartesianGrid: Stub,
-    PieChart: Stub,
-    Pie: Stub,
-    Cell: Stub,
-    Legend: Stub,
-    AreaChart: Stub,
-    Area: Stub,
-  };
-});
-
 import App from "@/App";
 
 beforeEach(() => {

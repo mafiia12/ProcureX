@@ -13,14 +13,6 @@ jest.mock("@/lib/api", () => ({
   fmtEGP: (value) => `${value || 0} ج.م`,
   default: { get: (...args) => mockGet(...args) },
 }));
-jest.mock("recharts", () => {
-  const Wrapper = ({ children }) => <div>{children}</div>;
-  return {
-    ResponsiveContainer: Wrapper, BarChart: Wrapper, Bar: Wrapper,
-    XAxis: Wrapper, YAxis: Wrapper, Tooltip: Wrapper, CartesianGrid: Wrapper,
-  };
-});
-
 const dashboard = {
   summary: {
     requests_requiring_action: 2, active_purchase_orders: 3,
