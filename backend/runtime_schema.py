@@ -30,10 +30,6 @@ CORRECTED_ANCESTRY_LEGACY_SEMANTIC_SHA256 = {
     "1696c8f6002fdca7445b5734f90a4e35101dd271ea1d578e266e0606651d6082",
     "6ce55002652092793f4b58ae2e1fbe19c09c1eb55231a645cebcdc61e8d2b9ad",
 }
-SUPPORTED_LEGACY_SEMANTIC_SHA256 = {
-    "9e43df9e25f57a0fa508f91df440881fe495375859ba300ad958c12fd9b6679c",
-    *CORRECTED_ANCESTRY_LEGACY_SEMANTIC_SHA256,
-}
 PRESERVED_FIELDS = ("counts", "financial_totals")
 
 
@@ -348,73 +344,3 @@ def _reconcile_versioned_previous_release(database: Path, before: dict[str, Any]
         except Exception:
             connection.rollback()
             raise
-
-
-def ensure_release_database(database: Path, backup_dir: Path) -> dict[str, Any]:
-    database = database.resolve()
-    if not database.exists() or database.stat().st_size == 0:
-        return _create_fresh_database(database)
-
-    before = inspect_release_database(database)
-    _assert_healthy(before)
-    if before["alembic_table_present"]:
-        if (
-            before["alembic_revisions"] == ["0016_po_payment_ledger"]
-            and before["strict_semantic_sha256"]
-            == "1696c8f6002fdca7445b5734f90a4e35101dd271ea1d578e266e0606651d6082"
-        ):
-            backup = _backup_database(database, backup_dir)
-            changes = _reconcile_versioned_previous_release(database, before)
-            after = inspect_release_database(database)
-            _assert_healthy(after)
-            _assert_preserved(before, after)
-            return {
-                "status": "upgraded_from_0016", "database": str(database),
-                "backup": str(backup), "backup_sha256": _sha256_file(backup),
-                "changes": changes, "before": before, "after": after,
-            }
-        if before["alembic_revisions"] != [HEAD_REVISION]:
-            raise RuntimeError(
-                "ProcureX database revision is not supported by this release"
-            )
-        if before["semantic_sha256"] != EXPECTED_SEMANTIC_SHA256:
-            raise RuntimeError(
-                "Versioned ProcureX database does not match the certified release schema"
-            )
-        return {"status": "current", "database": str(database), "after": before}
-
-    semantic = before["semantic_sha256"]
-    strict_semantic = before["strict_semantic_sha256"]
-    if (
-        semantic != EXPECTED_SEMANTIC_SHA256
-        and strict_semantic not in SUPPORTED_LEGACY_SEMANTIC_SHA256
-    ):
-        raise RuntimeError(
-            "Unversioned ProcureX database has an unsupported schema; refusing startup"
-        )
-
-    backup = _backup_database(database, backup_dir)
-    if semantic == EXPECTED_SEMANTIC_SHA256:
-        _stamp_exact_schema(database, before)
-        changes: dict[str, Any] = {}
-        status = "adopted"
-    else:
-        changes = _reconcile_and_stamp(database, before)
-        status = "reconciled_and_adopted"
-
-    after = inspect_release_database(database)
-    _assert_healthy(after)
-    _assert_preserved(before, after)
-    if after["semantic_sha256"] != EXPECTED_SEMANTIC_SHA256:
-        raise RuntimeError("ProcureX database did not reach the certified schema")
-    if after["alembic_revisions"] != [HEAD_REVISION]:
-        raise RuntimeError("ProcureX database revision was not recorded correctly")
-    return {
-        "status": status,
-        "database": str(database),
-        "backup": str(backup),
-        "backup_sha256": _sha256_file(backup),
-        "changes": changes,
-        "before": before,
-        "after": after,
-    }
