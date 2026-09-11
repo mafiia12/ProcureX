@@ -35,7 +35,8 @@
     "build:public": "craco build --config craco.public.config.js",
     "test": "craco test",
     "test:ci": "craco test --watchAll=false",
-    "verify:public-build": "node scripts/verify-public-build.js"
+    "verify:public-build": "node scripts/verify-public-build.js",
+    "lint": "eslint src"
   },
   "browserslist": {
     "production": [
