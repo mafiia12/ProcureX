@@ -166,6 +166,19 @@ export function ActionButton({ icon: Icon, children, className, ...props }) {
   return <Button className={cn("gap-1.5", className)} {...props}>{Icon && <Icon className="h-4 w-4" />}{children}</Button>;
 }
 
+// Shared retry affordance for a failed initial load - same interaction
+// CrudPage.jsx has always used for its own load failures (a visible button
+// swapped in for the loading text, not just a toast that fades and leaves
+// the screen stuck). Screens that fetch outside of CrudPage (Dashboard,
+// PurchaseOrderDetails) render this instead of hand-rolling their own.
+export function LoadRetryButton({ label, onRetry, testId, className }) {
+  return (
+    <Button size="sm" variant="outline" onClick={onRetry} data-testid={testId} className={className}>
+      {label}
+    </Button>
+  );
+}
+
 export function EmptyState({ title, description, action, icon: Icon = Inbox, compact = false, className }) {
   return (
     <div className={cn("flex flex-col items-center justify-center border border-dashed bg-muted/40 text-center", compact ? "px-4 py-5" : "px-6 py-8", className)}>

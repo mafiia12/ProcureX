@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import PurchaseOrderPaymentDrawer from "@/components/PurchaseOrderPaymentDrawer";
 import ProcurementProgress from "@/components/ProcurementProgress";
 import {
-  ActionBar, Callout, EmptyState, KpiStrip, PageHeader, Panel, StatusBadge, Timeline,
+  ActionBar, Callout, EmptyState, KpiStrip, LoadRetryButton, PageHeader, Panel, StatusBadge, Timeline,
 } from "@/components/procurement-ui";
 import { Button } from "@/components/ui/button";
 import {
@@ -202,9 +202,11 @@ export default function PurchaseOrderDetails() {
     return (
       <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
         {loadError ? (
-          <Button size="sm" variant="outline" onClick={load} data-testid="po-load-retry-button">
-            {tr("تعذر تحميل أمر الشراء — إعادة المحاولة", "Could not load the purchase order — retry")}
-          </Button>
+          <LoadRetryButton
+            onRetry={load}
+            testId="po-load-retry-button"
+            label={tr("تعذر تحميل أمر الشراء — إعادة المحاولة", "Could not load the purchase order — retry")}
+          />
         ) : (
           <span role="status">{tr("جارٍ تحميل أمر الشراء...", "Loading purchase order...")}</span>
         )}

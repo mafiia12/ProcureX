@@ -7,7 +7,7 @@ import {
 import { toast } from "sonner";
 
 import {
-  EmptyState, KpiStrip, Panel, StatusBadge,
+  EmptyState, KpiStrip, LoadRetryButton, Panel, StatusBadge,
 } from "@/components/procurement-ui";
 import { Button } from "@/components/ui/button";
 import {
@@ -115,9 +115,11 @@ export default function Dashboard() {
     return (
       <div className="py-16 text-center text-sm text-muted-foreground">
         {loadError ? (
-          <Button size="sm" variant="outline" onClick={load} data-testid="dashboard-retry-button">
-            {tr("تعذر تحميل لوحة العمل — إعادة المحاولة", "Could not load the dashboard — retry")}
-          </Button>
+          <LoadRetryButton
+            onRetry={load}
+            testId="dashboard-retry-button"
+            label={tr("تعذر تحميل لوحة العمل — إعادة المحاولة", "Could not load the dashboard — retry")}
+          />
         ) : (
           <span role="status">{tr("جارٍ تجهيز لوحة العمل...", "Preparing your workspace...")}</span>
         )}
