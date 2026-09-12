@@ -11,6 +11,7 @@ jest.mock("react-router-dom", () => ({ useNavigate: () => mockNavigate }), { vir
 jest.mock("@/lib/api", () => ({
   __esModule: true,
   fmtEGP: (value) => `${value || 0} ج.م`,
+  errMsg: (error) => error?.response?.data?.detail || "خطأ",
   default: { get: (...args) => mockGet(...args) },
 }));
 const dashboard = {
@@ -235,6 +236,32 @@ test("never renders the legacy direct-purchase KPI summary, even collapsed", asy
   expect(container.querySelector('[data-testid="kpi-total-purchases"]')).toBeFalsy();
   expect(container.textContent).not.toContain("بيانات الشراء المباشر القديمة");
   expect(container.textContent).not.toContain("250 ج.م");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("shows an error state with a retry button when the dashboard fails to load, and retry re-fetches", async () => {
+  mockGet.mockRejectedValueOnce(new Error("network down"));
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<Dashboard />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const retryButton = container.querySelector('[data-testid="dashboard-retry-button"]');
+  expect(retryButton).toBeTruthy();
+  expect(container.querySelector('[data-testid="dashboard-command-header"]')).toBeFalsy();
+
+  mockGet.mockResolvedValueOnce({ data: dashboard });
+  await act(async () => {
+    retryButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  expect(mockGet).toHaveBeenCalledTimes(2);
+  expect(container.querySelector('[data-testid="dashboard-command-header"]')).toBeTruthy();
   await act(async () => root.unmount());
   container.remove();
 });

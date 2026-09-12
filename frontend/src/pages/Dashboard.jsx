@@ -14,7 +14,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { usePreferences } from "@/contexts/PreferencesContext";
-import api, { fmtEGP } from "@/lib/api";
+import api, { errMsg, fmtEGP } from "@/lib/api";
 import { getFollowUpTarget } from "@/lib/followUpNavigation";
 
 export const ATTENTION_META = {
@@ -78,10 +78,18 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { tr } = usePreferences();
   const [dashboard, setDashboard] = useState(null);
+  const [loadError, setLoadError] = useState(false);
 
-  useEffect(() => {
-    api.get("/dashboard").then((response) => setDashboard(response.data));
-  }, []);
+  const load = () => {
+    setLoadError(false);
+    api.get("/dashboard")
+      .then((response) => setDashboard(response.data))
+      .catch((error) => {
+        setLoadError(true);
+        toast.error(errMsg(error));
+      });
+  };
+  useEffect(load, []);
 
   const openFollowUp = (item) => {
     const target = getFollowUpTarget(item);
@@ -104,7 +112,17 @@ export default function Dashboard() {
   }, [dashboard]);
 
   if (!dashboard) {
-    return <div className="py-16 text-center text-sm text-muted-foreground">{tr("جارٍ تجهيز لوحة العمل...", "Preparing your workspace...")}</div>;
+    return (
+      <div className="py-16 text-center text-sm text-muted-foreground">
+        {loadError ? (
+          <Button size="sm" variant="outline" onClick={load} data-testid="dashboard-retry-button">
+            {tr("تعذر تحميل لوحة العمل — إعادة المحاولة", "Could not load the dashboard — retry")}
+          </Button>
+        ) : (
+          <span role="status">{tr("جارٍ تجهيز لوحة العمل...", "Preparing your workspace...")}</span>
+        )}
+      </div>
+    );
   }
 
   const summary = dashboard.summary || {};
