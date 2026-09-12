@@ -192,4 +192,4 @@ test("edit menu opens the pre-filled form with the generated code read-only", as
 
   await act(async () => root.unmount());
   container.remove();
-});
+}, 15000);

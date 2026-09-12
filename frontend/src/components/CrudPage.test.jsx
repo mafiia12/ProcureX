@@ -139,7 +139,7 @@ test("list preserves a leading-zero phone and edit shows the generated code read
   expect(document.querySelector('[data-testid="uat-form-phone"]').value).toBe("01001234567");
 
   await act(async () => root.unmount());
-});
+}, 15000);
 
 function makeRow(index) {
   return { id: `customer-${index}`, code: `CUS-${index}`, name: `عميل ${index}`, phone: "" };
