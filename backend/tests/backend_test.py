@@ -541,6 +541,103 @@ def test_suppliers_limit_offset_pages_the_sorted_register(s, admin_headers):
             s.delete(f"{API}/suppliers/{supplier['id']}", headers=admin_headers)
 
 
+def test_customers_limit_offset_pages_the_sorted_register(s, admin_headers):
+    """Same limit/offset/X-Total-Count contract as /items and /suppliers,
+    added here so Customers' CrudPage screen can page like Items/Suppliers
+    do without changing the unpaginated response any existing caller gets."""
+    created = []
+    try:
+        baseline = s.get(f"{API}/customers", headers=admin_headers)
+        baseline_count = len(baseline.json())
+        assert baseline.headers["X-Total-Count"] == str(baseline_count)
+
+        suffix = uuid.uuid4().hex[:8]
+        for index in range(3):
+            response = s.post(
+                f"{API}/customers",
+                json={"name": f"TEST_PAGE_CUSTOMER_{suffix}_{index}"},
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created.append(response.json())
+
+        full = s.get(f"{API}/customers", headers=admin_headers)
+        full_names = [c["name"] for c in full.json()]
+        assert len(full_names) == baseline_count + 3
+        assert full.headers["X-Total-Count"] == str(baseline_count + 3)
+
+        # entity_list sorts by "code" as a plain string, not numerically, so
+        # 3 sequentially-coded customers aren't guaranteed to land at the
+        # very end of the register - anchor on where they actually sorted.
+        first_index = full_names.index(f"TEST_PAGE_CUSTOMER_{suffix}_0")
+        page = s.get(
+            f"{API}/customers",
+            params={"limit": 2, "offset": first_index + 1},
+            headers=admin_headers,
+        )
+        assert [c["name"] for c in page.json()] == [
+            f"TEST_PAGE_CUSTOMER_{suffix}_1", f"TEST_PAGE_CUSTOMER_{suffix}_2",
+        ]
+        assert page.headers["X-Total-Count"] == str(baseline_count + 3)
+    finally:
+        for customer in created:
+            s.delete(f"{API}/customers/{customer['id']}", headers=admin_headers)
+
+
+def test_projects_limit_offset_pages_and_keeps_include_procurement_enrichment(s, admin_headers):
+    """Same contract again for /projects - and since Projects' CrudPage screen
+    always requests include_procurement=True, that enrichment must still
+    apply per-project on a paginated page, not just on the full list."""
+    created = []
+    try:
+        baseline = s.get(f"{API}/projects", headers=admin_headers)
+        baseline_count = len(baseline.json())
+        assert baseline.headers["X-Total-Count"] == str(baseline_count)
+
+        suffix = uuid.uuid4().hex[:8]
+        for index in range(3):
+            response = s.post(
+                f"{API}/projects",
+                json={"name": f"TEST_PAGE_PROJECT_{suffix}_{index}"},
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created.append(response.json())
+
+        full = s.get(f"{API}/projects", headers=admin_headers)
+        full_names = [p["name"] for p in full.json()]
+        assert len(full_names) == baseline_count + 3
+        assert full.headers["X-Total-Count"] == str(baseline_count + 3)
+
+        # entity_list sorts by "code" as a plain string, not numerically, so
+        # 3 sequentially-coded projects aren't guaranteed to land at the
+        # very end of the register - anchor on where they actually sorted.
+        first_index = full_names.index(f"TEST_PAGE_PROJECT_{suffix}_0")
+        page = s.get(
+            f"{API}/projects",
+            params={"limit": 2, "offset": first_index + 1},
+            headers=admin_headers,
+        )
+        assert [p["name"] for p in page.json()] == [
+            f"TEST_PAGE_PROJECT_{suffix}_1", f"TEST_PAGE_PROJECT_{suffix}_2",
+        ]
+        assert page.headers["X-Total-Count"] == str(baseline_count + 3)
+
+        enriched_page = s.get(
+            f"{API}/projects",
+            params={"include_procurement": True, "limit": 1, "offset": first_index},
+            headers=admin_headers,
+        )
+        enriched_project = enriched_page.json()[0]
+        assert enriched_project["name"] == f"TEST_PAGE_PROJECT_{suffix}_0"
+        assert enriched_project["active_request_count"] == 0
+        assert enriched_project["active_po_count"] == 0
+        assert enriched_project["formal_po_value"] == 0
+    finally:
+        for project in created:
+            s.delete(f"{API}/projects/{project['id']}", headers=admin_headers)
+
+
 # ---------- CRUD suppliers/customers/projects/items with autocode + dup ----------
 @pytest.mark.parametrize(
     "coll,prefix",

@@ -430,13 +430,36 @@ async def list_suppliers(
 
 
 @api.get("/customers")
-async def list_customers(current_user: User = Depends(require_erp_role())):
-    return await entity_list("customers")
+async def list_customers(
+    response: Response,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    current_user: User = Depends(require_erp_role()),
+):
+    customers = await entity_list("customers")
+    # Same contract as /items and /suppliers: omitting limit returns every
+    # customer exactly as before every existing caller does.
+    response.headers["X-Total-Count"] = str(len(customers))
+    if limit is not None:
+        customers = customers[offset:offset + limit]
+    return customers
 
 
 @api.get("/projects")
-async def list_projects(include_procurement: bool = False, current_user: User = Depends(require_erp_role())):
+async def list_projects(
+    response: Response,
+    include_procurement: bool = False,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    current_user: User = Depends(require_erp_role()),
+):
     projects = await entity_list("projects")
+    # Same contract as /items and /suppliers: X-Total-Count reflects every
+    # project before pagination, then the (cheaper) per-project enrichment
+    # below only runs for the page actually being returned.
+    response.headers["X-Total-Count"] = str(len(projects))
+    if limit is not None:
+        projects = projects[offset:offset + limit]
 
     purchases = await db.purchases.find(
         {},

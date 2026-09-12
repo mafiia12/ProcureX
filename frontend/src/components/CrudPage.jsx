@@ -508,7 +508,7 @@ export default function CrudPage({
           </div>
         </div>
       )}
-      {!compactManagement && <div className="text-xs text-muted-foreground">{tr("إجمالي السجلات", "Total records")}: {filtered.length}</div>}
+      {!compactManagement && !paginated && <div className="text-xs text-muted-foreground">{tr("إجمالي السجلات", "Total records")}: {filtered.length}</div>}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent

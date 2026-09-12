@@ -207,6 +207,17 @@ test("paginated mode fetches one page at a time and turns pages on click", async
   await act(async () => root.unmount());
 });
 
+test("paginated mode doesn't also show the plain non-paginated totals line", async () => {
+  const { container, root } = await renderPaginatedPage();
+
+  // The pager bar already states the total ("5" here); the old
+  // non-paginated "Total records: N" footer would otherwise duplicate it
+  // (and show a misleading per-page count instead of the true total).
+  expect(container.textContent).not.toContain("إجمالي السجلات");
+
+  await act(async () => root.unmount());
+});
+
 test("searching in paginated mode falls back to a full fetch and paginates client-side", async () => {
   const { container, root } = await renderPaginatedPage();
   expect(mockGet).toHaveBeenCalledTimes(1);
