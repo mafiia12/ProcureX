@@ -137,6 +137,29 @@ test("shows the finalize action to a commercial manager (inherited from procurem
   container.remove();
 });
 
+test("shows a retry button (not a stuck loading state) when the PO fails to load, and retry re-fetches", async () => {
+  mockGet.mockImplementationOnce(() => Promise.reject(new Error("network down")));
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<PurchaseOrderDetails />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
+  expect(toast.error).toHaveBeenCalled();
+  const retryButton = container.querySelector('[data-testid="po-load-retry-button"]');
+  expect(retryButton).not.toBeNull();
+  expect(container.textContent).not.toContain("جارٍ تحميل أمر الشراء");
+
+  await click(retryButton);
+  expect(mockGet).toHaveBeenCalledWith("/purchase-orders/po-1");
+  expect(container.querySelector('[data-testid="po-detail-item"]')).not.toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("lets a supplier-confirmed order enter delivery", async () => {
   mockGet.mockResolvedValue({ data: { ...order, status: "supplier_confirmed" } });
   const container = document.createElement("div");

@@ -60,6 +60,7 @@ export default function PurchaseOrderDetails() {
     DEEP_LINK_TABS.has(requestedSection) ? requestedSection : "overview",
   );
   const [order, setOrder] = useState(null);
+  const [loadError, setLoadError] = useState(false);
   const [actor, setActor] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -77,6 +78,7 @@ export default function PurchaseOrderDetails() {
   const submitting = useRef(false);
 
   const load = async () => {
+    setLoadError(false);
     try {
       const { data } = await api.get(`/purchase-orders/${purchaseOrderId}`);
       setOrder(data);
@@ -86,6 +88,7 @@ export default function PurchaseOrderDetails() {
         navigate("/purchase-orders", { replace: true });
         return;
       }
+      setLoadError(true);
       toast.error(errMsg(error));
     }
   };
@@ -195,7 +198,19 @@ export default function PurchaseOrderDetails() {
     finally { setBusy(false); }
   };
 
-  if (!order) return <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">{tr("جارٍ تحميل أمر الشراء...", "Loading purchase order...")}</div>;
+  if (!order) {
+    return (
+      <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
+        {loadError ? (
+          <Button size="sm" variant="outline" onClick={load} data-testid="po-load-retry-button">
+            {tr("تعذر تحميل أمر الشراء — إعادة المحاولة", "Could not load the purchase order — retry")}
+          </Button>
+        ) : (
+          <span role="status">{tr("جارٍ تحميل أمر الشراء...", "Loading purchase order...")}</span>
+        )}
+      </div>
+    );
+  }
 
   const receivingOpen = ["in_delivery", "partial_received", "delivery_problem"].includes(order.status);
   const completed = order.status === "completed";
