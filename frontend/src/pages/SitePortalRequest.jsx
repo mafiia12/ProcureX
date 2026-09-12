@@ -589,7 +589,13 @@ export default function SitePortalRequest() {
                     />
                   </div>
                   <div className="sm:col-span-1">
-                    <Button className="h-8 w-8" variant="ghost" size="icon" onClick={() => removeRow(row.key)} aria-label={tr("حذف الصنف", "Remove item")}>
+                    <Button
+                      className="relative h-8 w-8 after:absolute after:-inset-1.5 after:content-['']"
+                      variant="ghost" size="icon"
+                      data-testid="portal-row-delete"
+                      onClick={() => removeRow(row.key)}
+                      aria-label={tr("حذف الصنف", "Remove item")}
+                    >
                       <Trash2 className="h-4 w-4 text-red-500" />
                     </Button>
                   </div>

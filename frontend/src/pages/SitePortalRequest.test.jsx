@@ -163,6 +163,26 @@ test("uses a mobile-first request flow with collapsed secondary content and safe
   await act(async () => root.unmount());
 });
 
+test("the request row's delete button has a real touch target without growing past its visible 32px box", async () => {
+  mockContextAndItems({ previous: [CEMENT] });
+  const { container, root } = await renderPage();
+
+  await click(container.querySelector('[data-testid="portal-previous-item-chip"]'));
+  const deleteButton = container.querySelector('[data-testid="portal-row-delete"]');
+  expect(deleteButton).not.toBeNull();
+
+  // Visible box stays 32x32 (unchanged icon/layout) - the row's grid tracks
+  // (asserted above) must not move to make room for a bigger button.
+  expect(deleteButton.classList.contains("h-8")).toBe(true);
+  expect(deleteButton.classList.contains("w-8")).toBe(true);
+  // The tap target itself is padded out to 44x44 via a transparent
+  // pseudo-element (6px on every side of a 32px box = 44px), so it doesn't
+  // affect layout/grid sizing the way a bigger real box would.
+  expect(deleteButton.className).toContain("after:-inset-1.5");
+
+  await act(async () => root.unmount());
+});
+
 test("required delivery date defaults to the local creation date and prevents earlier dates", async () => {
   mockContextAndItems();
   const { container, root } = await renderPage();
