@@ -65,9 +65,6 @@ chainlit.md
 .ipynb_checkpoints/
 .ac
 
-# Deployment
-.vercel
-
 # Data and databases
 agenthub/agents/youtube/db
 backend/procurement.db
