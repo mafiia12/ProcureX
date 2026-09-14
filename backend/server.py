@@ -3255,4 +3255,5 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
     return application
 
 
-app = create_app()
+# The desktop public launcher uses an existing database without running schema helpers.
+app = create_app(initialize_database=os.getenv("PROCUREX_SKIP_DATABASE_INIT") != "1")
