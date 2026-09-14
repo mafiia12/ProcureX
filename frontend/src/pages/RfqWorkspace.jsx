@@ -16,6 +16,7 @@ import {
 import SearchableSelect from "@/components/SearchableSelect";
 import api, { errMsg, fmtEGP } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { roleAtLeast } from "@/lib/roles";
 
 const QUOTATION_STATUS_LABEL = {
   draft: "مسودة", received: "تم الاستلام", withdrawn: "منسحب",
@@ -36,7 +37,7 @@ export default function RfqWorkspace() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const role = user?.role || "";
-  const canManage = role === "admin" || role === "procurement_responsible";
+  const canManage = roleAtLeast(role, "procurement_responsible");
 
   const [rfq, setRfq] = useState(null);
   const [loading, setLoading] = useState(true);

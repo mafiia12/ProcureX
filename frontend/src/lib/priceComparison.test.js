@@ -1,5 +1,7 @@
 import {
   calculateComparison, calculateLine, calculateSupplierTotal,
+  formalPriceChange, formatPriceChangePercent,
+  nonCheapestSelections, nonCheapestReasonLabel,
 } from "@/lib/priceComparison";
 
 
@@ -295,4 +297,119 @@ test("excludes incomplete request offers from rankings and supplier totals", () 
   expect(result.product_summaries[0].lowest_unit_price).toBe(125);
   expect(result.supplier_summaries).toHaveLength(1);
   expect(result.scenario_summary.mixed_supplier_total).toBe(125);
+});
+
+describe("formalPriceChange", () => {
+  test("current 120 / previous 100 -> up +20%", () => {
+    const change = formalPriceChange(120, 100);
+    expect(change.direction).toBe("up");
+    expect(change.percent).toBe(20);
+    expect(change.delta).toBe(20);
+    expect(formatPriceChangePercent(change.percent)).toBe("+20.0%");
+  });
+
+  test("current 80 / previous 100 -> down -20%", () => {
+    const change = formalPriceChange(80, 100);
+    expect(change.direction).toBe("down");
+    expect(change.percent).toBe(-20);
+    expect(formatPriceChangePercent(change.percent)).toBe("-20.0%");
+  });
+
+  test("current 100 / previous 100 -> unchanged", () => {
+    const change = formalPriceChange(100, 100);
+    expect(change.direction).toBe("same");
+    expect(change.percent).toBe(0);
+    expect(formatPriceChangePercent(change.percent)).toBe("0%");
+  });
+
+  test("previous null/undefined -> no history to compare (null)", () => {
+    expect(formalPriceChange(120, null)).toBeNull();
+    expect(formalPriceChange(120, undefined)).toBeNull();
+  });
+
+  test("previous 0 -> never divides by zero, percent is null but direction still resolves", () => {
+    const change = formalPriceChange(120, 0);
+    expect(change.percent).toBeNull();
+    expect(change.direction).toBe("up");
+    expect(formatPriceChangePercent(change.percent)).toBeNull();
+
+    const unchangedAtZero = formalPriceChange(0, 0);
+    expect(unchangedAtZero.direction).toBe("same");
+    expect(unchangedAtZero.percent).toBeNull();
+  });
+
+  test("rounds cleanly to one decimal instead of raw floating point", () => {
+    const change = formalPriceChange(110, 88);
+    // (110-88)/88*100 = 25.0000000000000036 unrounded.
+    expect(change.percent).toBe(25);
+    expect(formatPriceChangePercent(change.percent)).toBe("+25.0%");
+
+    const messyChange = formalPriceChange(100, 33);
+    // (100-33)/33*100 = 203.03030303...
+    expect(formatPriceChangePercent(messyChange.percent)).toMatch(/^\+\d+\.\d%$/);
+  });
+
+  test("malformed/non-numeric current or previous price never throws", () => {
+    expect(() => formalPriceChange("abc", 100)).not.toThrow();
+    expect(() => formalPriceChange(100, "abc")).not.toThrow();
+    expect(formalPriceChange("abc", 100).current).toBe(0);
+  });
+});
+
+describe("nonCheapestSelections", () => {
+  test("cheapest selected -> not flagged", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 100, 5), selected_for_purchase: 1 },
+      { ...row("item-1", "supplier-2", 120, 5), selected_for_purchase: 0 },
+    ], items, suppliers, "2026-07-28");
+    expect(nonCheapestSelections(result.rows)).toEqual([]);
+  });
+
+  test("non-cheapest selected -> flagged with correct cheapest/selected totals", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 100, 5), selected_for_purchase: 0 },
+      { ...row("item-1", "supplier-2", 120, 5), selected_for_purchase: 1 },
+    ], items, suppliers, "2026-07-28");
+    const flagged = nonCheapestSelections(result.rows);
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]).toMatchObject({
+      item_id: "item-1", selected_supplier_id: "supplier-2", selected_total: 120,
+      cheapest_supplier_id: "supplier-1", cheapest_total: 100,
+      difference: 20, difference_pct: 20,
+    });
+  });
+
+  test("exact tie -> neither tied row is flagged", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 100, 5), selected_for_purchase: 1 },
+      { ...row("item-1", "supplier-2", 100, 5), selected_for_purchase: 0 },
+    ], items, suppliers, "2026-07-28");
+    expect(nonCheapestSelections(result.rows)).toEqual([]);
+  });
+
+  test("an unavailable cheaper offer never makes the selected complete offer look non-cheapest", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 50, 5, { availability: "unavailable" }), selected_for_purchase: 0 },
+      { ...row("item-1", "supplier-2", 120, 5), selected_for_purchase: 1 },
+    ], items, suppliers, "2026-07-28");
+    expect(nonCheapestSelections(result.rows)).toEqual([]);
+  });
+
+  test("only one eligible supplier -> not flagged even if selected", () => {
+    const result = calculateComparison([
+      { ...row("item-1", "supplier-1", 500, 5), selected_for_purchase: 1 },
+    ], items, suppliers, "2026-07-28");
+    expect(nonCheapestSelections(result.rows)).toEqual([]);
+  });
+});
+
+describe("nonCheapestReasonLabel", () => {
+  test("returns the Arabic and English labels for a known code", () => {
+    expect(nonCheapestReasonLabel("better_delivery", "ar")).toBe("مدة توريد أفضل");
+    expect(nonCheapestReasonLabel("better_delivery", "en")).toBe("Better delivery time");
+  });
+
+  test("falls back to the raw code for an unknown value", () => {
+    expect(nonCheapestReasonLabel("mystery_code", "en")).toBe("mystery_code");
+  });
 });

@@ -166,6 +166,19 @@ export function ActionButton({ icon: Icon, children, className, ...props }) {
   return <Button className={cn("gap-1.5", className)} {...props}>{Icon && <Icon className="h-4 w-4" />}{children}</Button>;
 }
 
+// Shared retry affordance for a failed initial load - same interaction
+// CrudPage.jsx has always used for its own load failures (a visible button
+// swapped in for the loading text, not just a toast that fades and leaves
+// the screen stuck). Screens that fetch outside of CrudPage (Dashboard,
+// PurchaseOrderDetails) render this instead of hand-rolling their own.
+export function LoadRetryButton({ label, onRetry, testId, className }) {
+  return (
+    <Button size="sm" variant="outline" onClick={onRetry} data-testid={testId} className={className}>
+      {label}
+    </Button>
+  );
+}
+
 export function EmptyState({ title, description, action, icon: Icon = Inbox, compact = false, className }) {
   return (
     <div className={cn("flex flex-col items-center justify-center border border-dashed bg-muted/40 text-center", compact ? "px-4 py-5" : "px-6 py-8", className)}>
@@ -196,7 +209,7 @@ export function FilterBar({ children, resultLabel, onClear, className }) {
   );
 }
 
-export function DataTable({ columns, rows, rowKey = "id", empty, className, tableClassName, sticky = true, rowTestId }) {
+export function DataTable({ columns, rows, rowKey = "id", empty, className, tableClassName, sticky = true, rowTestId, onRowClick }) {
   const { tr } = useBilingualPreferences();
   return (
     <div className={cn("overflow-auto border bg-card", className)}>
@@ -208,7 +221,19 @@ export function DataTable({ columns, rows, rowKey = "id", empty, className, tabl
         </TableHeader>
         <TableBody>
           {rows.map((row, index) => (
-            <TableRow key={typeof rowKey === "function" ? rowKey(row) : row[rowKey] ?? index} className="h-9 hover:bg-muted/50" data-testid={rowTestId}>
+            <TableRow
+              key={typeof rowKey === "function" ? rowKey(row) : row[rowKey] ?? index}
+              className={cn("h-9 hover:bg-muted/50", onRowClick && "cursor-pointer")}
+              data-testid={rowTestId}
+              {...(onRowClick ? {
+                role: "button",
+                tabIndex: 0,
+                onClick: () => onRowClick(row),
+                onKeyDown: (event) => {
+                  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onRowClick(row); }
+                },
+              } : {})}
+            >
               {columns.map((column) => <TableCell key={column.key} className={cn("py-1 text-sm text-foreground", column.className)}>{column.render ? column.render(row, index) : (row[column.key] ?? "-")}</TableCell>)}
             </TableRow>
           ))}

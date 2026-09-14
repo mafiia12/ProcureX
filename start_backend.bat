@@ -44,6 +44,6 @@ rem     pause
 rem     exit /b 1
 rem )
 
-echo Starting the backend at http://127.0.0.1:8000 ...
+echo Starting the backend on LAN at http://0.0.0.0:8000 (reachable via this PC's IP) ...
 cd /d "%~dp0backend"
-"%VENV_PY%" -m uvicorn server:app --host 127.0.0.1 --port 8000
+"%VENV_PY%" -m uvicorn server:app --host 0.0.0.0 --port 8000

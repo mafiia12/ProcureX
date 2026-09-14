@@ -169,6 +169,46 @@ def semantic_schema(connection: sqlite3.Connection) -> dict[str, Any]:
     return {"tables": tables}
 
 
+def release_semantic_schema(connection: sqlite3.Connection) -> dict[str, Any]:
+    """Return the narrowly normalized release-compatibility schema.
+
+    ``semantic_schema`` remains stable because its historical hashes are an
+    audit and adoption input. This release view additionally normalizes proven
+    SQLite storage equivalents while keeping every exception explicit.
+    """
+    schema = semantic_schema(connection)
+    for table, definition in schema["tables"].items():
+        for column in definition["columns"]:
+            if column["type"] in {"INTEGER", "REAL", "NUMERIC", "BOOLEAN"}:
+                quoted_number = re.fullmatch(
+                    r"'([-+]?(?:\d+(?:\.\d*)?|\.\d+))'",
+                    column["default"] or "",
+                )
+                if quoted_number:
+                    column["default"] = quoted_number.group(1)
+            if (
+                table == "incoming_purchase_request_items"
+                and column["name"] == "correction_draft"
+                and column["type"] == "TEXT"
+            ):
+                column["type"] = "JSON"
+            if (
+                table == "daily_reports"
+                and column["name"] == "snapshot_data"
+                and column["default"] is None
+            ):
+                column["default"] = "'{}'"
+
+        # Duplicate copies of the same B-tree have no additional logical
+        # lookup behavior. exact_ddl() continues to expose both by name.
+        definition["indexes"] = list({
+            (tuple(index["columns"]), index["unique"]): index
+            for index in definition["indexes"]
+        }.values())
+        definition["indexes"].sort(key=lambda item: tuple(item["columns"]))
+    return schema
+
+
 def exact_ddl(connection: sqlite3.Connection) -> list[dict[str, str]]:
     tables = set(_table_names(connection))
     return [

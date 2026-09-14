@@ -59,7 +59,3 @@ class DocumentProcessingError(RuntimeError):
 
 class DocumentProcessingConfigurationError(DocumentProcessingError):
     code = "document_processing_not_configured"
-
-
-class DocumentProcessingCancelled(DocumentProcessingError):
-    code = "document_processing_cancelled"

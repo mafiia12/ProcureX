@@ -19,3 +19,8 @@ test("removed construction calculator has no navigation label", () => {
   expect(messages.ar.construction).toBeUndefined();
   expect(messages.en.construction).toBeUndefined();
 });
+
+test("standalone RFQ nav label matches the required wording", () => {
+  expect(messages.ar.nav.rfqs).toBe("RFQ — طلبات عروض الأسعار");
+  expect(messages.en.nav.rfqs).toBe("RFQ — Requests for Quotation");
+});

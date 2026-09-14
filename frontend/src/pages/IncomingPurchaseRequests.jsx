@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Bell, CheckCircle2, ClipboardList, Download, FileText, Filter,
-  Mail, MessageCircle, MoreHorizontal, Phone, RefreshCw, Search, UserPlus,
+  Bell, CheckCircle2, ClipboardList, Download, Filter,
+  Mail, MessageCircle, MoreHorizontal, Phone, RefreshCw, Search,
   ScanText, X,
   FolderKanban, PlusCircle,
 } from "lucide-react";
@@ -25,6 +25,7 @@ import { Callout, EmptyState, PageHeader, Panel, StatusBadge } from "@/component
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import { cn } from "@/lib/utils";
+import { roleAtLeast } from "@/lib/roles";
 
 export const REQUEST_STATUSES = [
   ["new", "جديد", "New"],
@@ -153,9 +154,9 @@ export default function IncomingPurchaseRequests() {
   const { user } = useAuth();
   const { tr, language, direction, locale } = usePreferences();
   const role = user?.role || "";
-  const canReviewTechnical = role === "admin" || role === "procurement_engineer";
-  const canConvertManualItem = role === "admin" || role === "procurement_responsible";
-  const canManageRFQ = role === "admin" || role === "procurement_responsible";
+  const canReviewTechnical = roleAtLeast(role, "procurement_engineer");
+  const canConvertManualItem = roleAtLeast(role, "procurement_responsible");
+  const canManageRFQ = roleAtLeast(role, "procurement_responsible");
 
   const [requests, setRequests] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -343,7 +344,7 @@ export default function IncomingPurchaseRequests() {
       try {
         const response = await api.get(`/workflow/rfqs/by-request/${selected.id}`);
         if (!cancelled) setRfq(response.data);
-      } catch (error) {
+      } catch {
         if (!cancelled) setRfq(null);
       }
     })();
@@ -425,24 +426,6 @@ export default function IncomingPurchaseRequests() {
       setNote("");
       toast.success("تمت إضافة الملاحظة الداخلية");
       await loadDetail(selected.id);
-    } catch (error) { toast.error(requestError(error)); }
-  };
-
-  const convertCustomer = async () => {
-    try {
-      const { data } = await internalRequestApi.post(`/${selected.id}/convert-customer`);
-      toast.success(data.created ? `تم إنشاء العميل ${data.customer_code}` : `العميل مرتبط بالفعل ${data.customer_code}`);
-      await loadDetail(selected.id);
-    } catch (error) { toast.error(requestError(error)); }
-  };
-
-  const convertDocument = async (documentType) => {
-    try {
-      const { data } = await internalRequestApi.post(`/${selected.id}/convert`, {
-        document_type: documentType, converted_by: author,
-      });
-      toast.success(`تم إنشاء المستند المبدئي ${data.document_number}`);
-      await Promise.all([loadDetail(selected.id), loadList()]);
     } catch (error) { toast.error(requestError(error)); }
   };
 
@@ -528,6 +511,11 @@ export default function IncomingPurchaseRequests() {
                         <MessageCircle className="h-3 w-3" /> {tr("واتساب", "WhatsApp")}
                       </StatusBadge>
                     )}
+                    {!!request.source_request_id && (
+                      <StatusBadge tone="warning">
+                        {tr("مصحح", "Corrected")}
+                      </StatusBadge>
+                    )}
                   </span>
                   <StatusBadge tone={request.priority === "urgent" || request.priority === "high" ? "danger" : request.priority === "normal" ? "warning" : "neutral"}>{priorityLabel(request.priority, language)}</StatusBadge>
                 </div>
@@ -560,6 +548,11 @@ export default function IncomingPurchaseRequests() {
                     <div className="mt-1 text-xs text-muted-foreground">
                       {selected.project_name || tr("بدون مشروع", "No project")} · {tr("تم الاستلام", "Received")} {new Date(selected.created_at).toLocaleString(locale)}
                       {selected.source === "whatsapp" && ` · ${tr("المصدر: واتساب", "Source: WhatsApp")}`}
+                      {!!selected.source_request_id && (
+                        <span data-testid="corrected-from-source">
+                          {" "}· {tr(`مصحح من ${selected.source_request_number}`, `Corrected from ${selected.source_request_number}`)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -760,23 +753,18 @@ export default function IncomingPurchaseRequests() {
                 )
               )}
 
-              <Panel title={tr("الإجراءات التالية", "Next actions")}>
+              {selected.status === "pricing" && selected.project_id && <Panel title={tr("الإجراءات التالية", "Next actions")}>
                 <div className="flex flex-wrap gap-2">
                   <Button
-                    variant="default"
+                    variant="outline"
                     size="sm"
                     onClick={sendToComparison}
-                    disabled={selected.status !== "pricing" || !selected.project_id}
                   >
                     {tr("بدء مقارنة الأسعار", "Start supplier comparison")}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={convertCustomer} disabled={Boolean(selected.converted_customer_id)}><UserPlus className="ms-1 h-4 w-4" /> {selected.converted_customer_id ? tr("تم ربط العميل", "Client linked") : tr("تحويل إلى عميل", "Convert to client")}</Button>
-                  <Button variant="outline" size="sm" onClick={() => convertDocument("internal_request")} disabled={Boolean(selected.converted_document)}><FileText className="ms-1 h-4 w-4" /> {tr("طلب شراء داخلي", "Internal purchase request")}</Button>
-                  <Button variant="outline" size="sm" onClick={() => convertDocument("purchase_draft")} disabled={Boolean(selected.converted_document)}><ClipboardList className="ms-1 h-4 w-4" /> {tr("مسودة شراء", "Purchase draft")}</Button>
                 </div>
-                {(selected.status !== "pricing" || !selected.project_id) && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{tr("يتاح بدء المقارنة بعد الاعتماد الفني وربط الطلب بالمشروع.", "Supplier comparison becomes available after technical approval and project linking.")}</p>}
-                {selected.converted_document && <div className="mt-2 flex items-center gap-2 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" /> {tr(`تم إنشاء ${selected.converted_document.document_number} كمسودة داخلية، وليس عملية شراء مكتملة.`, `${selected.converted_document.document_number} was created as an internal draft, not a completed purchase.`)}</div>}
-              </Panel>
+              </Panel>}
+              {selected.converted_document && <details className="border bg-muted/30 p-2.5 text-xs text-muted-foreground"><summary className="cursor-pointer">{tr("مرجع مستند داخلي سابق", "Historical internal document")}</summary><p className="mt-2" dir="ltr">{selected.converted_document.document_number}</p></details>}
 
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                 <div className="space-y-1.5 border bg-card p-3">

@@ -17,8 +17,7 @@ Use these services:
 | Backups | Render paid Postgres PITR + Render Cron logical dump to R2 | No | Recovery and independently retained export |
 
 Neon Launch can replace Render Postgres without code changes. Use its pooled,
-TLS-required connection string for `DATABASE_URL`. Vercel can replace the Render
-Static Site using `frontend/vercel.json`; it must still build the public-only entry.
+TLS-required connection string for `DATABASE_URL`.
 
 ### Estimated monthly cost (27 July 2026)
 
@@ -227,8 +226,8 @@ No command in this section has been executed by this preparation phase.
      all return 404;
    - invalid MIME/signature, oversize files, honeypot, and rate limits reject;
    - one valid form submission produces one reference and a private R2 object.
-8. Deploy the static site from the `frontend` root. Render uses the public CRACO
-   entry in `render.yaml`; Vercel uses `frontend/vercel.json`.
+8. Deploy the static site from the `frontend` root using the public CRACO
+   entry in `render.yaml`.
 9. Inspect built JavaScript and reject release if it contains `/api/internal/`,
    `/purchases`, `/suppliers`, or other internal route strings.
 10. Configure and verify DNS/TLS, then disable both `onrender.com` subdomains.

@@ -1,6 +1,7 @@
 import axios from "axios";
+import { BACKEND_URL } from "@/lib/api";
 
-const baseURL = `${process.env.REACT_APP_BACKEND_URL || "http://localhost:8001"}/api`;
+const baseURL = `${BACKEND_URL}/api`;
 export const publicDocumentApi = axios.create({
   baseURL: `${baseURL}/public/purchase-requests`,
 });

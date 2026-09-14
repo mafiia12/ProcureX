@@ -36,6 +36,7 @@ try:
         migrate_daily_reports,
         migrate_whatsapp_intake,
         migrate_whatsapp_settings_and_source,
+        migrate_returned_item_corrections,
     )
 except ImportError:
     from db_migrations import (
@@ -51,6 +52,7 @@ except ImportError:
         migrate_daily_reports,
         migrate_whatsapp_intake,
         migrate_whatsapp_settings_and_source,
+        migrate_returned_item_corrections,
     )
 
 
@@ -493,9 +495,10 @@ def init_db() -> Optional[Path]:
     daily_report_backup = migrate_daily_reports(engine)
     whatsapp_intake_backup = migrate_whatsapp_intake(engine)
     whatsapp_settings_backup = migrate_whatsapp_settings_and_source(engine)
+    returned_item_corrections_backup = migrate_returned_item_corrections(engine)
     Base.metadata.create_all(engine)
     return (
-        whatsapp_settings_backup or whatsapp_intake_backup or daily_report_backup or supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
+        returned_item_corrections_backup or whatsapp_settings_backup or whatsapp_intake_backup or daily_report_backup or supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
         or classification_backup
     )
 

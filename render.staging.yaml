@@ -53,6 +53,114 @@ services:
         sync: false
       - key: R2_REGION
         value: auto
+      # This service remains Meta's one registered webhook target for the
+      # staging Meta app/number: Meta calls a single fixed URL,
+      # whatsapp_router is mounted on both surfaces, and this is the
+      # surface already hardened for anonymous internet traffic.
+      # procurex-staging-erp-api carries its own copy of these same values
+      # too (see its comment) so Settings/Test Connection there can call
+      # Meta directly - whatsapp_settings itself still lives in the one
+      # shared database, so the admin on/off toggle stays correct
+      # regardless of which service actually receives the webhook.
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: WHATSAPP_ENABLED
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+
+  # Two separate API services sharing one PostgreSQL database, so the
+  # internet-facing anonymous request form (procurex-staging-public-api)
+  # never runs in the same process as ERP code. A single APP_SURFACE=full
+  # service would be cheaper (it already mounts the public and WhatsApp
+  # routers - see server.py's create_app) but was rejected: a bug or a
+  # volumetric attack against the anonymous public endpoint would take the
+  # ERP down with it, and the ERP's /docs, /openapi.json, and internal
+  # routes would sit on the same public hostname as the anonymous intake
+  # form instead of behind authenticated-staff-only traffic.
+  - type: web
+    name: procurex-staging-erp-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    autoDeployTrigger: checksPass
+    buildCommand: pip install -r requirements-production.txt
+    # Free staging instances do not support pre-deploy commands. Apply the
+    # staging migration explicitly; startup remains read-only and fails on drift.
+    startCommand: python scripts/assert_schema_current.py && uvicorn server:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /api/public/purchase-requests/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: APP_ENV
+        value: staging
+      - key: APP_SURFACE
+        value: full
+      - key: AUTH_SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      # Render's filesystem is ephemeral. The full surface's "local disk"
+      # attachment option is only valid at a persistent path outside the
+      # application directory (see attachment_storage.py), which does not
+      # exist on Render - so S3-compatible storage is the only correct
+      # setting here, exactly like the public API.
+      - key: ATTACHMENT_STORAGE_BACKEND
+        value: s3
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_REGION
+        value: auto
+      - key: CORS_ORIGINS
+        sync: false
+      - key: TRUSTED_HOSTS
+        sync: false
+      - key: FORCE_HTTPS
+        value: "true"
+      # Temporarily false: Render's actual proxy-to-container hop address
+      # has not been verified, so request.client.host/X-Forwarded-For
+      # cannot yet be trusted as the real visitor IP here. The IP-keyed
+      # login limiter (auth/router.py) self-disables whenever this is not
+      # exactly "true"; the username-keyed limiter stays fully active
+      # regardless, so login brute-force protection is not weakened. Flip
+      # to "true" only after Render's forwarding behavior is confirmed -
+      # INTERNAL_REQUEST_TOKEN below is already set either way.
+      - key: TRUST_PROXY_HEADERS
+        value: "false"
+      - key: INTERNAL_REQUEST_TOKEN
+        generateValue: true
+      # Duplicated from procurex-staging-public-api - not a duplicate
+      # settings store. whatsapp_admin_router (Settings, Test Connection) is
+      # mounted only on this full surface and calls Meta's API directly to
+      # verify connectivity, so it needs its own copy of these same Meta
+      # credentials. procurex-staging-public-api remains Meta's one
+      # registered webhook target for staging; the on/off toggle and
+      # connection status still live in the single shared whatsapp_settings
+      # row in Postgres, not here.
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: WHATSAPP_ENABLED
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
 
   - type: web
     name: procurex-staging-public-form
@@ -63,6 +171,39 @@ services:
     staticPublishPath: build
     envVars:
       - key: REACT_APP_PUBLIC_API_URL
+        sync: false
+      - key: GENERATE_SOURCEMAP
+        value: "false"
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+
+  - type: web
+    name: procurex-staging-erp-app
+    runtime: static
+    rootDir: frontend
+    autoDeployTrigger: checksPass
+    buildCommand: npm install --package-lock=false --no-audit --no-fund && npm run build
+    staticPublishPath: build
+    envVars:
+      # Create React App inlines REACT_APP_* values into the built JS at
+      # build time, not at runtime - changing this requires a rebuild
+      # (a new deploy), not just a restart.
+      - key: REACT_APP_BACKEND_URL
         sync: false
       - key: GENERATE_SOURCEMAP
         value: "false"

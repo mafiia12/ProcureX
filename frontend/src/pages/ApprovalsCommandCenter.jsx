@@ -20,6 +20,8 @@ import { Callout, EmptyState, KpiStrip, StatusBadge, Timeline } from "@/componen
 import {
   APPROVAL_STAGES, APPROVAL_STAGE_LABELS, approvalProgressStage,
 } from "@/lib/approvalStages";
+import { formatPriceChangePercent, nonCheapestReasonLabel } from "@/lib/priceComparison";
+import { roleAtLeast } from "@/lib/roles";
 
 const DECISION_LABELS = { approved: ["اعتماد", "Approve"], rejected: ["رفض", "Reject"], revision_requested: ["تعديل مطلوب", "Request revision"] };
 const QUOTATION_STATUS_LABEL = { draft: ["مسودة", "Draft"], received: ["تم الاستلام", "Received"], withdrawn: ["منسحب", "Withdrawn"] };
@@ -69,7 +71,7 @@ export default function ApprovalsCommandCenter() {
       try {
         const { data: workspaceDetail } = await api.get(`/workflow/approvals/${id}/review-workspace`);
         setWorkspace(workspaceDetail);
-      } catch (workspaceError) {
+      } catch {
         setWorkspace(null);
       }
     } catch (error) { toast.error(errMsg(error)); }
@@ -128,7 +130,7 @@ export default function ApprovalsCommandCenter() {
   const pendingTechnical = internalItems.filter((item) => item.status === "pending_approval" && item.approval_stage === APPROVAL_STAGES.COMPARISON_TECHNICAL).length;
   const pendingFund = internalItems.filter((item) => item.status === "pending_approval" && item.approval_stage === APPROVAL_STAGES.EXPENDITURE_APPROVAL).length;
   const pendingRelease = internalItems.filter((item) => item.status === "pending_approval" && item.approval_stage === APPROVAL_STAGES.FUNDS_AVAILABILITY).length;
-  const canAct = selected?.approval_type === "comparison_workflow" && selected.status === "pending_approval" && (role === "admin" || selected.responsible_role === role);
+  const canAct = selected?.approval_type === "comparison_workflow" && selected.status === "pending_approval" && roleAtLeast(role, selected.responsible_role);
   const currentStage = approvalProgressStage(selected?.approval_stage);
 
   return <div className="space-y-3" data-testid="approvals-command-center">
@@ -205,8 +207,8 @@ function InternalApproval({ selected, role, note, setNote, canAct, currentStage,
   const readyForPO = selected.status === "approved" && selected.approval_stage === APPROVAL_STAGES.PO_READY;
   const linkedOrders = selected.purchase_orders || [];
   const hasPurchaseOrders = readyForPO && linkedOrders.length > 0;
-  const canReleaseFunds = role === "admin" || role === "commercial_manager";
-  const canCreatePO = role === "admin" || role === "procurement_responsible";
+  const canReleaseFunds = roleAtLeast(role, "commercial_manager");
+  const canCreatePO = roleAtLeast(role, "procurement_responsible");
   return <><ApprovalProgressInline currentStage={currentStage} tr={tr} /><div className={`flex flex-wrap items-center justify-between gap-2 border px-2.5 py-2 ${readyForPO ? "border-emerald-500/30 bg-emerald-500/5" : "border-primary/20 bg-primary/5"}`} data-testid="approval-next-decision"><div><div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">{tr("المطلوب الآن", "Decision required now")}</div><div className="mt-0.5 text-sm font-bold">{hasPurchaseOrders ? tr("تم إنشاء أمر الشراء", "Purchase order created") : stageLabel(selected.approval_stage, tr)}</div></div><div className="text-xs text-muted-foreground">{tr("المسؤول", "Responsible")}: <b className="text-foreground">{dictionaryLabel(roleLabels, selected.responsible_role, tr, selected.responsible_role)}</b></div></div>
     {selected.status === "pending_approval" && !isRelease && <div>{canAct ? <div className="sticky bottom-2 z-10 flex flex-wrap gap-1.5 border bg-card/95 p-1.5 shadow-sm backdrop-blur" data-testid="approval-decision-actions"><Button size="sm" onClick={() => requestDecision("approved")} className="h-8 bg-emerald-700 text-white hover:bg-emerald-800"><ShieldCheck className="h-4 w-4" /> {selected.approval_stage === APPROVAL_STAGES.COMPARISON_TECHNICAL ? tr("اعتماد المقارنة", "Approve comparison") : tr("موافقة تجارية / اعتماد الصرف", "Commercial / expenditure approval")}</Button><Button size="sm" variant="outline" className="h-8" onClick={() => requestDecision("revision_requested")}><Undo2 className="h-4 w-4" />{tr("تعديل مطلوب", "Request revision")}</Button><Button size="sm" variant="destructive" className="h-8" onClick={() => requestDecision("rejected")}><XCircle className="h-4 w-4" />{tr("رفض", "Reject")}</Button></div> : <RoleNotice selected={selected} role={role} tr={tr} />}</div>}
     {isRelease && <Callout tone="primary" className="block space-y-3"><div className="font-bold text-foreground">{tr("الموافقة التجارية / اعتماد الصرف مكتمل — المبلغ لم يُتح بعد", "Commercial approval is complete — funds are not yet available")}</div><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={releaseMethod} onChange={(event) => setReleaseMethod(event.target.value)}><option value="">{tr("طريقة الإتاحة (اختياري)", "Availability method (optional)")}</option><option value="cash">{tr("نقدي", "Cash")}</option><option value="transfer">{tr("تحويل", "Transfer")}</option><option value="custody">{tr("عهدة", "Custody")}</option><option value="other">{tr("أخرى", "Other")}</option></select><Input value={note} onChange={(event) => setNote(event.target.value)} placeholder={tr("ملاحظة اختيارية", "Optional note")} />{canReleaseFunds ? <Button className="w-full" onClick={releaseFunds}><WalletCards className="h-5 w-5" />{tr("تأكيد إتاحة المبلغ لمسؤول المشتريات", "Confirm funds availability for procurement")}</Button> : <RoleNotice selected={selected} role={role} tr={tr} />}</Callout>}
@@ -301,7 +303,7 @@ function QuotationAttachmentLink({ rfqId, quotationId, attachment }) {
 }
 
 function ReviewWorkspace({ workspace, timeline = [] }) {
-  const { tr, direction } = usePreferences();
+  const { tr, direction, language } = usePreferences();
   if (!workspace) return null;
   const request = workspace.request || null;
   const items = workspace.request_items || [];
@@ -310,6 +312,12 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
   const rfq = workspace.rfq || null;
   const quotations = workspace.supplier_quotations || [];
   const comparison = workspace.comparison || null;
+  // Decision-quality audit context: what was true AT THE TIME Procurement
+  // selected a non-cheapest supplier (see backend's non_cheapest_supplier_
+  // selected audit event) - never recomputed from the live comparison, so
+  // it stays correct even if prices change afterward.
+  const nonCheapestEvent = timeline.find((event) => event.event_type === "non_cheapest_supplier_selected");
+  const nonCheapestDecisions = nonCheapestEvent?.metadata_json?.decisions || [];
 
   return <Tabs defaultValue="request" dir={direction} className="border bg-muted/20 p-2" data-testid="review-workspace">
     <TabsList className="flex h-8 w-full justify-start overflow-x-auto">
@@ -420,6 +428,25 @@ function ReviewWorkspace({ workspace, timeline = [] }) {
         ? <div className="text-sm text-muted-foreground">{tr("غير متاح / سجل سابق", "Unavailable / legacy record")}</div>
         : <div className="space-y-3">
           <div className="text-xs text-muted-foreground">{comparison.comparison_number}</div>
+          {!!nonCheapestDecisions.length && <div className="space-y-2" data-testid="non-cheapest-decision-context">
+            {nonCheapestDecisions.map((decision, index) => (
+              <Callout key={decision.item_id || decision.item_code || index} tone="warning" testId="non-cheapest-decision-item">
+                <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold text-foreground">
+                  <span>⚠ {tr("مورد غير الأرخص", "Non-cheapest supplier selected")}</span>
+                  {decision.product_name && <span className="font-normal text-muted-foreground">— {decision.product_name}</span>}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {tr("السبب", "Reason")}: <b className="text-foreground">{nonCheapestReasonLabel(decision.reason_code, language)}</b>
+                  {decision.reason_text && <> — {decision.reason_text}</>}
+                </div>
+                <div className="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
+                  <div><div className="text-muted-foreground">{tr("المختار", "Selected")}</div><b>{decision.selected_supplier_name} — {fmtEGP(decision.selected_total)}</b></div>
+                  <div><div className="text-muted-foreground">{tr("الأرخص الصالح", "Cheapest valid")}</div><b>{decision.cheapest_supplier_name} — {fmtEGP(decision.cheapest_total)}</b></div>
+                  <div><div className="text-muted-foreground">{tr("الفرق", "Difference")}</div><b className="text-amber-700 dark:text-amber-400" dir="ltr">+{fmtEGP(decision.difference)} ({formatPriceChangePercent(decision.difference_pct) || "-"})</b></div>
+                </div>
+              </Callout>
+            ))}
+          </div>}
           {comparison.product_summaries.map((product) => {
             const key = product.item_id || product.item_code;
             const productRows = comparison.rows.filter((row) => (row.item_id || row.item_code) === key);
