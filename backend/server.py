@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import logging
 import hashlib
@@ -29,6 +30,7 @@ try:
     from .auth.models import User
     from .auth.service import require_erp_role
     from .business_codes import BUSINESS_CODE_CONFIG, next_business_code, reserve_code
+    from . import diagnostics
     from .database import (
         DATABASE_URL, IS_SQLITE, Item, Payment, PriceHistory, Project, Purchase, PurchaseOrder,
         PurchaseOrderItem, PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine,
@@ -66,6 +68,7 @@ except ImportError:
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import BUSINESS_CODE_CONFIG, next_business_code, reserve_code
+    import diagnostics
     from database import (
         DATABASE_URL, IS_SQLITE, Item, Payment, PriceHistory, Project, Purchase, PurchaseOrder,
         PurchaseOrderItem, PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine,
@@ -3225,6 +3228,40 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
             },
             headers={"Cache-Control": "no-store"},
         )
+
+    @application.middleware("http")
+    async def perf_diagnostics(request, call_next):
+        """Structured per-request timing: never logs query strings, headers,
+        or bodies - only method/path/status/duration/db counters. See
+        docs/performance-reliability-audit.md."""
+        request_id = uuid.uuid4().hex[:12]
+        request.state.request_id = request_id
+        diagnostics.reset_request_metrics()
+        start = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = (time.perf_counter() - start) * 1000
+            metrics = diagnostics.snapshot()
+            logger.info(
+                "perf req_id=%s method=%s path=%s status=EXC duration_ms=%.1f "
+                "db_ms=%.1f db_queries=%d ext_ms=%.1f ext_calls=%d",
+                request_id, request.method, request.url.path, duration_ms,
+                metrics.db_time_ms, metrics.db_query_count,
+                metrics.external_time_ms, metrics.external_call_count,
+            )
+            raise
+        duration_ms = (time.perf_counter() - start) * 1000
+        metrics = diagnostics.snapshot()
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "perf req_id=%s method=%s path=%s status=%d duration_ms=%.1f "
+            "db_ms=%.1f db_queries=%d ext_ms=%.1f ext_calls=%d",
+            request_id, request.method, request.url.path, response.status_code, duration_ms,
+            metrics.db_time_ms, metrics.db_query_count,
+            metrics.external_time_ms, metrics.external_call_count,
+        )
+        return response
 
     @application.middleware("http")
     async def security_headers(request, call_next):
