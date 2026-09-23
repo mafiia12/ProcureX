@@ -15,7 +15,11 @@ const resolveBackendUrl = () => process.env.REACT_APP_BACKEND_URL || "";
 
 export const BACKEND_URL = resolveBackendUrl().replace(/\/+$/, "");
 
-const api = axios.create({ baseURL: `${BACKEND_URL}/api` });
+// Without a timeout, axios waits forever on a stuck/hung backend request -
+// the UI just spins with no error and no way for the user to know
+// something is wrong (see docs/performance-reliability-audit.md). 30s
+// matches publicRequestApi's existing timeout.
+const api = axios.create({ baseURL: `${BACKEND_URL}/api`, timeout: 30_000 });
 
 api.interceptors.request.use((config) => {
   const token = typeof window !== "undefined"

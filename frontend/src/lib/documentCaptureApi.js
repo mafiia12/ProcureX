@@ -2,11 +2,18 @@ import axios from "axios";
 import { BACKEND_URL } from "@/lib/api";
 
 const baseURL = `${BACKEND_URL}/api`;
+// Longer than lib/api.js's default: document extraction can legitimately
+// take up to DOCUMENT_PROVIDER_TIMEOUT_SECONDS (120s, see backend/.env.example)
+// on the server, so the client timeout must stay above that, not match the
+// app-wide 30s default (see docs/performance-reliability-audit.md).
+const DOCUMENT_TIMEOUT_MS = 150_000;
 export const publicDocumentApi = axios.create({
   baseURL: `${baseURL}/public/purchase-requests`,
+  timeout: DOCUMENT_TIMEOUT_MS,
 });
 export const internalDocumentApi = axios.create({
   baseURL: `${baseURL}/internal/incoming-purchase-requests`,
+  timeout: DOCUMENT_TIMEOUT_MS,
 });
 
 internalDocumentApi.interceptors.request.use((config) => {
