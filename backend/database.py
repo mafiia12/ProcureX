@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,11 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+try:
+    from . import diagnostics
+except ImportError:
+    import diagnostics
 
 try:
     from .db_migrations import (
@@ -439,6 +445,25 @@ engine_options = {
 }
 if IS_SQLITE:
     engine_options["connect_args"] = {"check_same_thread": False}
+else:
+    # SQLAlchemy's pool_size=5/max_overflow=10 defaults were never chosen
+    # against ProcureX's actual deployment: two separate app instances
+    # (procurex-public-api, procurex-erp-api - see render.yaml) each open
+    # their own pool against the same Postgres database, so the real ceiling
+    # is instances x (pool_size + max_overflow), which must be verified
+    # against that Postgres plan's actual max_connections before either
+    # instance count or pool size changes (see performance audit, section
+    # "POSTGRESQL-SPECIFIC AUDIT" in docs/performance-reliability-audit.md -
+    # not measured here since this audit had no Postgres instance to test
+    # against). These env vars make the values tunable without a code change
+    # once that number is known; the defaults below match what was already
+    # running (SQLAlchemy's own defaults) except pool_recycle, which was
+    # previously -1 (never recycle) - a real gap against a hosted Postgres
+    # that may silently drop idle connections server-side.
+    engine_options["pool_size"] = int(os.getenv("DB_POOL_SIZE", "5"))
+    engine_options["max_overflow"] = int(os.getenv("DB_POOL_MAX_OVERFLOW", "10"))
+    engine_options["pool_timeout"] = int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30"))
+    engine_options["pool_recycle"] = int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800"))
 engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -450,7 +475,20 @@ def _sqlite_pragmas(dbapi_connection, _connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
+
+
+@event.listens_for(engine, "before_cursor_execute")
+def _time_query_start(conn, cursor, statement, parameters, context, executemany):
+    context._procurex_query_start = time.perf_counter()
+
+
+@event.listens_for(engine, "after_cursor_execute")
+def _time_query_end(conn, cursor, statement, parameters, context, executemany):
+    start = getattr(context, "_procurex_query_start", None)
+    if start is not None:
+        diagnostics.record_query((time.perf_counter() - start) * 1000)
 
 
 def init_db() -> Optional[Path]:
