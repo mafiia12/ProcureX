@@ -779,12 +779,21 @@ async def submit_public_request(
 
 @internal_router.get("", dependencies=[Depends(require_internal_access)])
 async def list_incoming_requests(
+    response: Response,
     search: str = "",
     status: str = "",
     priority: str = "",
     assigned_employee: str = "",
+    limit: int = 500,
+    offset: int = 0,
     current_user: User = Depends(require_erp_role()),
 ):
+    # `limit` was previously silently ignored - the query always returned the
+    # newest 500 with no way to page past them (see performance audit,
+    # docs/performance-reliability-audit.md). 500 stays the default so
+    # existing callers keep today's response shape; offset makes the rest
+    # reachable instead of un-fetchable once a business passes 500 REQs.
+    limit = max(1, min(limit, 500))
     with SessionLocal() as session:
         statement = select(IncomingPurchaseRequest)
         if search.strip():
@@ -804,7 +813,13 @@ async def list_incoming_requests(
             statement = statement.where(
                 IncomingPurchaseRequest.assigned_employee.ilike(f"%{assigned_employee.strip()}%")
             )
-        rows = session.scalars(statement.order_by(IncomingPurchaseRequest.created_at.desc()).limit(500)).all()
+        total = session.scalar(
+            select(func.count()).select_from(statement.with_only_columns(IncomingPurchaseRequest.id).subquery())
+        )
+        response.headers["X-Total-Count"] = str(total)
+        rows = session.scalars(
+            statement.order_by(IncomingPurchaseRequest.created_at.desc()).limit(limit).offset(offset)
+        ).all()
         counts = dict(session.execute(
             select(IncomingPurchaseRequestItem.request_id, func.count())
             .where(IncomingPurchaseRequestItem.request_id.in_([row.id for row in rows]))
