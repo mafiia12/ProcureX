@@ -459,3 +459,46 @@ Idle baseline: 8 ms (SQLite), 12 ms (PostgreSQL). On PostgreSQL, 20 concurrent s
 Tests: `backend/tests/attachment_storage_test.py`. It runs the real botocore stack against a local fake S3 endpoint (500/503 retried 3×, 403 and 404 not retried, read timeout, connection reset, connect timeout, credential-free errors) plus app-level checks: unrelated latency under slow storage, zero DB connections checked out during storage calls, thread cap, 503/404 mapping, no metadata rows or orphaned objects after a failed multi-file upload, and exactly one REQ after a storage-failure retry. Reverting the offload makes the latency test fail (4.2 s wait, concurrency 1).
 
 Re-run: `python scripts/storage_offload_probe.py --delay 2.5 --levels 1 5 10 20 [--database-url <disposable postgres>]`.
+
+---
+
+## 17. Legacy approval creation boundary
+
+### Audit
+
+- `POST /api/workflow/approvals/from-comparison` took `ApprovalCreateIn.approval_type: Literal["external_engineer", "comparison_workflow"] = "external_engineer"`. **Any API call that omitted the field created a legacy external-engineer approval.**
+- Legitimate callers: the only UI caller (`SupplierPriceComparison.jsx`) always sends `approval_type: "comparison_workflow"`. No script, desktop or launcher code creates approvals. The only caller that omitted the field was one backend test of the legacy flow.
+- Revisions (`POST /api/workflow/approvals/{id}/revision`) rebuild the create model from the previous approval and inherit its type.
+- The model columns `engineer_approvals.approval_type` / `responsible_role` keep `server_default='external_engineer'`. Only `_create_approval` constructs approvals, and it always sets the type explicitly, so these DDL defaults are not a creation path. Changing them would be a schema change and is not needed.
+- Live desktop DB: 0 legacy approvals, 0 approval payments. Production PostgreSQL: **not inspected** (see the census below).
+
+### Change (no schema change, migration head stays 0024)
+
+| Case | Before | After |
+|---|---|---|
+| New approval, `approval_type` omitted | legacy `external_engineer`, status `draft` | `comparison_workflow`, `pending_approval` |
+| New approval, `approval_type: "comparison_workflow"` (the UI) | unchanged | unchanged |
+| New approval, `approval_type: "external_engineer"` | created | **422 `legacy_approval_creation_disabled`**, nothing written |
+| Revision of a comparison-workflow approval | inherits type | unchanged: stays `comparison_workflow` |
+| Revision of a historical legacy approval | inherits type | unchanged: stays `external_engineer` |
+| Existing legacy approvals: public link, decision, payment, proof, verify, cash confirm, list, detail | work | unchanged |
+
+New legacy creation is refused rather than kept as a compatibility path: nothing in the repo needs it, and its payment flow has the defect below. To restore it, remove the `LEGACY_APPROVAL_TYPE` guard in `create_approval_from_comparison` (one `if` block). The default would still be `comparison_workflow`.
+
+### Misleading 409 (fixed; index unchanged)
+
+`approval_payments` has `ix_approval_payments_cash_reference UNIQUE (cash_reference)` (migration 0009), and non-cash payments store `''`. So only one InstaPay/Vodafone Cash payment can ever exist in the whole database, and the next one violates the index. The global `IntegrityError` handler reported every unique violation as `duplicate_request`, "تم تنفيذ هذه العملية بالفعل" ("this operation was already done"), which is false here: nothing was recorded. The handler now recognises this index (by constraint name on PostgreSQL, by `approval_payments.cash_reference` on SQLite) and returns **409 `legacy_payment_reference_conflict`** with an accurate message ("no payment was recorded; contact procurement"). Raw database text is never returned. Every other unique violation keeps `duplicate_request`.
+
+**`LEGACY_PAYMENT_INDEX` = DEFERRED_LEGACY.** The V1 flow never writes `approval_payments`: comparison-workflow approvals pay through `purchase_order_payments`. Future remediation, only if production must keep taking legacy non-cash payments: a migration that creates `ix_approval_payments_cash_reference_nonblank UNIQUE (cash_reference) WHERE cash_reference <> ''` and then drops the old index. That drop needs an explicit exception to the additive-only migration gate (`scripts/validate_migrations.py`).
+
+### Production census (read-only, NOT run)
+
+```
+cd backend
+psql "$PRODUCTION_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f scripts/legacy_approval_census.sql
+```
+
+It runs inside `BEGIN TRANSACTION READ ONLY … ROLLBACK` with a 15 s statement timeout: counts by `approval_type`, legacy counts by status, `approval_payments` total and by method/status, the number of blank-reference payments, and the index definition.
+
+- **0 `external_engineer` rows:** no historical migration is required for launch; the boundary change is sufficient.
+- **Any `external_engineer` rows:** preserve them. They keep working through the retained read/decision/payment/revision paths. Then separately assess the payment index. If `blank_cash_reference_payments` is already 1, no further legacy non-cash payment can be recorded until the remediation above is applied.
