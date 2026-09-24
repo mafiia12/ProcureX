@@ -414,3 +414,48 @@ Results table (to be filled from `staging.json`):
 | 10 | 32.7 / 826 ms | PENDING | | |
 | 20 | 22.4 / 1,763 ms | PENDING | | |
 | 50 | 24.5 / 3,463 ms | PENDING | | |
+
+---
+
+## 16. Attachment storage (R2/S3): blocking calls offloaded and bounded
+
+### Before
+
+boto3 is synchronous. Every attachment route (public REQ intake, Site Portal REQ and clarification, RFQ quotation upload/download, REQ attachment downloads, document capture upload/download, legacy payment proof) is `async def` and called `put_object`/`get_object`/`delete_object` **directly on the event loop**, several of them **inside an open DB session or transaction**. The boto3 client had no `Config`: 60 s connect + 60 s read timeouts, legacy retries, pool 10. Downloads streamed the raw body object (1 KB chunks for R2, "lines" for local files) and never closed it.
+
+Measured with `scripts/storage_offload_probe.py` (real uvicorn, 1 worker, fake storage blocking 2.5 s per call, SQLite):
+
+| Attachment ops in flight | Attachment request max | Concurrent storage calls | Unrelated `GET /api/suppliers` max |
+|---|---|---|---|
+| 1 download | 2.5 s | 1 | **2,523 ms** |
+| 5 downloads | 12.6 s | 1 | **12,545 ms** |
+| 20 downloads | 50.3 s | 1 | **32,626 ms** |
+| 20 uploads | 50.4 s | 1 | **50,348 ms** |
+
+The worker executed one storage call at a time and every other request queued behind it.
+
+### Fix (`backend/attachment_storage.py`)
+
+- Request handlers use async helpers (`put_attachment`, `get_attachment`, `delete_attachment`, `stream_attachment`, `delete_attachments_quietly_async`). Each storage call runs via `anyio.to_thread.run_sync` on a **dedicated `CapacityLimiter`** (`ATTACHMENT_STORAGE_MAX_THREADS`, default 10 per worker). Excess calls queue instead of spawning threads, and slow storage can never starve Starlette's default pool (40 threads) that serves the sync `def` routes.
+- **No storage call holds a DB session.** Uploads write objects first, then open the session, re-check authorization/state, and write metadata. Downloads read metadata, close the session, then open the object. The document worker reads files after closing its session. On any failure after a write, the objects are removed (best-effort; a cleanup failure is logged and never replaces the original error). `create_incoming_request` and `create_document` no longer touch storage at all.
+- Downloads stream 64 KB chunks off the event loop and always close the body (returning the R2 connection to the pool), including on client disconnect.
+- boto3 `Config`: `connect_timeout` 3 s (`R2_CONNECT_TIMEOUT_SECONDS`), `read_timeout` 10 s per socket read (`R2_READ_TIMEOUT_SECONDS`), standard retry mode with `total_max_attempts` 3 including the first call (`R2_MAX_ATTEMPTS`), `max_pool_connections` = max(10, storage threads) (`R2_MAX_POOL_CONNECTIONS`). Worst case per call ≈ 3 × (3 + 10) s + backoff ≈ 40 s, versus minutes before. All calls are retry-safe (same key, same bytes; get/delete idempotent).
+- Errors: missing object → `FileNotFoundError` → 404. Any other provider/transport failure (403, 5xx after retries, connect/read timeout, reset) → `AttachmentStorageUnavailable` → **503 `storage_unavailable`** with `Retry-After: 5`. The logged message names only the operation and provider error code; exception chains are suppressed, so credentials never reach logs or clients.
+- No HEAD/stat calls are made on the request path (only the offline `migrate_attachments_to_r2.py`). No schema change.
+- Behaviour fix found on the way: the legacy payment-proof upload deleted the *new* proof object if deleting the *previous* one failed after commit. Old-object cleanup is now best-effort after commit.
+
+### After (same probe, same 2.5 s delay)
+
+| Attachment ops in flight | Attachment request max | Concurrent storage calls | Unrelated `GET /api/suppliers` p50 / max (SQLite) | p50 / max (PostgreSQL, pool 5+2) |
+|---|---|---|---|---|
+| 1 download | 2.5 s | 1 | 7.5 / 14 ms | 10.6 / 15 ms |
+| 5 downloads | 2.7 s | 5 | 8.2 / 30 ms | 11.5 / 40 ms |
+| 10 downloads | 2.6 s | 10 | 8.1 / 88 ms | 10.2 / 79 ms |
+| 20 downloads | 5.2 s | 10 (capped) | 10.2 / 147 ms | 12.5 / 163 ms |
+| 20 uploads | 5.3 s | 10 (capped) | 9.7 / 296 ms | 12.2 / 357 ms |
+
+Idle baseline: 8 ms (SQLite), 12 ms (PostgreSQL). On PostgreSQL, 20 concurrent slow uploads caused no pool timeouts with a 7-connection pool, which confirms that no storage call holds a connection.
+
+Tests: `backend/tests/attachment_storage_test.py`. It runs the real botocore stack against a local fake S3 endpoint (500/503 retried 3×, 403 and 404 not retried, read timeout, connection reset, connect timeout, credential-free errors) plus app-level checks: unrelated latency under slow storage, zero DB connections checked out during storage calls, thread cap, 503/404 mapping, no metadata rows or orphaned objects after a failed multi-file upload, and exactly one REQ after a storage-failure retry. Reverting the offload makes the latency test fail (4.2 s wait, concurrency 1).
+
+Re-run: `python scripts/storage_offload_probe.py --delay 2.5 --levels 1 5 10 20 [--database-url <disposable postgres>]`.
