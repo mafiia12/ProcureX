@@ -61,6 +61,7 @@ try:
     )
     from .site_portal import router as portal_router
     from .daily_report import router as daily_report_router
+    from .proxy_diagnostics import router as client_ip_diagnostics_router
     from .whatsapp.router import router as whatsapp_router
     from .whatsapp.admin_router import router as whatsapp_admin_router
 except ImportError:
@@ -99,6 +100,7 @@ except ImportError:
     )
     from site_portal import router as portal_router
     from daily_report import router as daily_report_router
+    from proxy_diagnostics import router as client_ip_diagnostics_router
     from whatsapp.router import router as whatsapp_router
     from whatsapp.admin_router import router as whatsapp_admin_router
 
@@ -3112,6 +3114,8 @@ def _validate_hosted_configuration(surface: str) -> None:
     if environment not in {"staging", "production"}:
         return
     label = "Production" if environment == "production" else "Staging"
+    if environment == "production" and os.getenv("CLIENT_IP_DIAGNOSTICS", "").strip().lower() == "true":
+        raise RuntimeError("Production must not enable CLIENT_IP_DIAGNOSTICS (staging-only diagnostic)")
     if surface not in {"full", "public"}:
         raise RuntimeError(f"{label} startup requires APP_SURFACE to be 'full' or 'public'")
 
@@ -3204,6 +3208,10 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
         application.include_router(rfq_router)
         application.include_router(daily_report_router, prefix="/api")
         application.include_router(whatsapp_router)
+
+    if os.getenv("CLIENT_IP_DIAGNOSTICS", "").strip().lower() == "true":
+        # Staging-only proxy/IP check; see proxy_diagnostics.py.
+        application.include_router(client_ip_diagnostics_router)
 
     application.add_event_handler("startup", start_document_worker)
     application.add_event_handler("shutdown", stop_document_worker)

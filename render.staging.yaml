@@ -42,6 +42,11 @@ services:
         value: "true"
       - key: TRUST_PROXY_HEADERS
         value: "false"
+      # Staging-only: GET /api/diagnostics/client-ip shows how Render presents
+      # a visitor's address (peer vs X-Forwarded-For), as kinds and salted
+      # fingerprints only. Production refuses to start with this enabled.
+      - key: CLIENT_IP_DIAGNOSTICS
+        value: "true"
       - key: REQUEST_PRIVACY_SALT
         generateValue: true
       - key: PUBLIC_REQUEST_RATE_LIMIT
@@ -169,6 +174,11 @@ services:
       # INTERNAL_REQUEST_TOKEN below is already set either way.
       - key: TRUST_PROXY_HEADERS
         value: "false"
+      # Staging-only: GET /api/diagnostics/client-ip shows how Render presents
+      # a visitor's address (peer vs X-Forwarded-For), as kinds and salted
+      # fingerprints only. Production refuses to start with this enabled.
+      - key: CLIENT_IP_DIAGNOSTICS
+        value: "true"
       - key: INTERNAL_REQUEST_TOKEN
         generateValue: true
       # Duplicated from procurex-staging-public-api - not a duplicate

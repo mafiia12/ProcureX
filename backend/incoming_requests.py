@@ -436,11 +436,25 @@ def _hash_private(value: str) -> str:
     return hashlib.sha256(f"{salt}:{value}".encode("utf-8")).hexdigest()
 
 
+def _trusted_proxy_hops() -> int:
+    try:
+        return max(1, int(os.getenv("TRUSTED_PROXY_HOPS", "1")))
+    except ValueError:
+        return 1
+
+
 def _client_ip(request: Request) -> str:
     if os.getenv("TRUST_PROXY_HEADERS", "").lower() == "true":
-        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        if forwarded:
-            return forwarded
+        # Each proxy APPENDS the address it received the request from, so
+        # only the entries our own proxies added - the rightmost
+        # TRUSTED_PROXY_HOPS - are trustworthy. The leftmost entry is
+        # whatever the client chose to send (previously used here, which let
+        # any visitor pick their own rate-limit identity).
+        forwarded = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",")]
+        forwarded = [part for part in forwarded if part]
+        hops = _trusted_proxy_hops()
+        if len(forwarded) >= hops:
+            return forwarded[-hops]
     return request.client.host if request.client else "unknown"
 
 
