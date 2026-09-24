@@ -454,3 +454,15 @@ See git log on `fix/pre-golive-hardening` for the focused, root-cause-grouped co
 **Still open:** HORIZONTAL_SCALING_READY = NO (WhatsApp webhook commit order and draft locking; per-process rate limiters; Linux multi-worker validation on staging). Render plan CPU/RAM, Postgres `max_connections` and proxy timeouts are UNKNOWN from the repo (capacity plan §11). The N+1 in `GET /api/workflow/approvals` (203 queries per call) is the top query-level follow-up.
 
 ## PRODUCTION_CONCURRENCY_REVIEW = PASS_WITH_EXTERNAL_VALIDATION
+
+---
+
+## Pre-Go-Live Closure
+
+*Added 2026-09-24 on branch `fix/pre-golive-closure`. Details and measurements: `docs/production-capacity-plan.md` sections 13–15.*
+
+**Fixed and measured on PostgreSQL:** approval list N+1 (N+3 → 4 queries; 1,368 approvals 812 → 167 ms; responses byte-identical); WhatsApp webhook idempotency (concurrent duplicates 2–5 REQs → 1); rate limiters shared across workers via a new `rate_limit_events` table (migration 0024; exactly 10 of 80 concurrent attempts allowed at limit 10); client IP taken from the trusted proxy hop instead of the client-controlled leftmost `X-Forwarded-For` entry; document-job stale recovery (2–3 double-processed of 60 → 0).
+
+**New finding, not fixed:** the second external-engineer non-cash approval payment in the database is rejected by the unique index on `approval_payments.cash_reference` (''); legacy flow only; the fix needs an index drop that the additive migration gate forbids (capacity plan 13.6).
+
+**Superseded:** the laptop capacity figures above are not production capacity. Render facts and the staging load, soak, lock, restart and keep-alive checks are **PENDING** (capacity plan sections 11, 14, 15).

@@ -1,6 +1,8 @@
 # ProcureX Production Capacity Plan
 
-**Date:** 2026-09-24 · **Branch:** `fix/pre-golive-hardening` · **Companion to:** `docs/performance-reliability-audit.md` (section "Production Concurrency & Scaling")
+**Date:** 2026-09-24 · **Branches:** `fix/pre-golive-hardening` (capacity review), `fix/pre-golive-closure` (closure fixes, sections 13–15) · **Companion to:** `docs/performance-reliability-audit.md` (section "Production Concurrency & Scaling")
+
+> **Status.** Every throughput, latency and user-count figure in sections 4, 8 and 10 was measured on a **Windows laptop**, not on Render. They are **not production capacity**. Production capacity comes from the Render staging run in section 15, which is **PENDING** (it needs this branch deployed to staging and the Render facts in section 11).
 
 Every number below was measured. Where a fact could not be measured from this environment (Render plan resources, Render proxy timeouts, the production Postgres `max_connections`), it is marked **UNKNOWN** and listed under [Render facts still required](#render-facts-still-required).
 
@@ -144,8 +146,9 @@ With uvicorn's default `--timeout-keep-alive 5`, 1 worker at 50 users dropped **
 | **PO from the same comparison** | same | **2 POs**, now **fixed → 1** (row lock on the comparison; 1 worker was already safe because the async route runs serialized) |
 | **Corrected-REQ resubmission** | same, **and on a single instance** | **10 → 10 child REQs across 2 instances, 4 on ONE worker**, now **fixed → 1**. Live bug in the current production config (sync route in the thread pool). |
 | Document-extraction job claim | 2 processes × 4 threads, 60 queued jobs | **219 claims, 57 jobs processed twice**, now **fixed → 60/60, 0 double** (3/3 runs), via `FOR UPDATE SKIP LOCKED` |
-| WhatsApp webhook | code analysis (a live test would call Meta) | dedup row is in the DB (good), but `handle_inbound` commits the REQ **before** the processed-message row, and nothing locks the conversation draft. Two concurrent deliveries, or two quick "تأكيد" messages, on two processes could create two REQs. Safe on the single public worker. **Blocker for >1 public process.** |
-| Rate limiters (login, public intake) | code | per-process memory: N processes allow up to N× the configured limit. The public API is kept at 1 worker. On the ERP (2 workers) the username login limit is effectively up to 2 × `AUTH_LOGIN_RATE_LIMIT`. |
+| WhatsApp webhook | 8 threads, own DB connections, router's DB-only `_handle_message` (no Meta calls) | same message id 8× → **2–3 REQs**; 8 different "تأكيد" → **5 REQs**. **Fixed** (section 13.2) → **1 REQ** in both, 3/3 runs, duplicates skipped without errors. **SAFE** |
+| Rate limiters (login, public intake) | 2 processes × 8 threads, one key, limit 10 | were per-process memory (N workers = up to N× the limit). **Fixed** (section 13.3): shared DB table, exactly **10 of 80** allowed, 3/3 runs. **SAFE** |
+| Document-job stale recovery | 60 jobs left `processing` by a "crashed" worker, 2 processes × 4 threads | **2–3 jobs processed twice per run.** **Fixed** (section 13.5) → 60/60, 0 double, 4/4 runs |
 | Closed daily-report cache | code + regression test | per-process, and a reopen elsewhere left other workers serving the pre-reopen body. **Fixed:** keyed by `closed_at`, so it is correct across processes with no shared store. |
 | Auth / JWT | code | HS256 with env `AUTH_SECRET_KEY` (mandatory when hosted); the user row, including active flag and role, is re-read on every request. **SAFE.** (Dev without a key: random per-process secret, so never run >1 worker in dev without setting it.) |
 | Attachments | `render.yaml` + hosted-startup checks | R2/S3 on both hosted services; hosted public startup refuses anything else. **SAFE** |
@@ -217,23 +220,27 @@ POSTGRES_MAX_CONNECTIONS for Render `basic-256mb` is **UNKNOWN**; run `SHOW max_
 | POSTGRES_AUTHORITATIVE | YES |
 | BUSINESS_CODE_CONCURRENCY_SAFE | YES (measured) |
 | IDEMPOTENCY_SAFE | YES for the 7 tested write paths after fixes |
-| WHATSAPP_MULTI_INSTANCE_SAFE | **NO**: REQ committed before dedup row, no draft lock |
+| WHATSAPP_MULTI_INSTANCE_SAFE | YES after section 13.2 (measured on PostgreSQL) |
 | ATTACHMENTS_SHARED | YES (R2/S3) |
 | AUTH_MULTI_INSTANCE_SAFE | YES |
 | BACKGROUND_TASKS_SAFE | YES after the SKIP LOCKED fix |
 | MIGRATION_DEPLOY_SAFE | YES |
-| Rate limiters shared | **NO**: per-process memory |
+| RATE_LIMITING_MULTI_WORKER_SAFE | YES after section 13.3 (measured on PostgreSQL) |
+| LINUX_MULTI_WORKER_VALIDATED | **PENDING** (staging, section 15) |
+| Real client IP on Render | **PENDING** (staging diagnostic, section 13.4) |
 
-**HORIZONTAL_SCALING_READY = NO.** Blockers:
-1. WhatsApp webhook: claim the message id (insert the processed row) before any side effect, and lock the conversation draft.
-2. Rate limiters: move to shared state. Postgres is enough; no Redis is needed at this scale.
-3. Validate Linux multi-worker and multi-instance behaviour on staging with the harness.
+**HORIZONTAL_SCALING_READY = NO** (initial production stays 1 instance per service regardless). Remaining blockers:
+1. Validate Linux multi-worker behaviour on Render staging with the harness (section 15).
+2. Confirm Render's client-address behaviour with the staging diagnostic and set `TRUST_PROXY_HEADERS`/`TRUSTED_PROXY_HOPS` or `FORWARDED_ALLOW_IPS` accordingly (section 13.4). Until then, IP-keyed limits may collapse into one shared bucket.
+3. Multi-instance load test on staging (two instances behind Render's balancer) before ever raising an instance count.
 
-The ERP API can scale out once blocker 3 is done, as long as its login-limit weakening is accepted. It receives no webhooks, and its public-intake routes are only reachable through the public service's hostname in practice (they are mounted on both surfaces, so an ERP-host submission path would see an N× limit).
+The former WhatsApp and rate-limiter blockers are fixed and measured (sections 13.2–13.3).
 
 ---
 
-## 8. Expected capacity
+## 8. Expected capacity (laptop estimate, superseded by section 15)
+
+> These figures describe the Windows laptop. Replace them with the staging results in section 15 before using them for production planning.
 
 - **Simultaneous requests (measured, this laptop, 2 workers):** p95 < 1 s up to **~10 in-flight requests**. Degradation (p95 > 1 s) starts at about 10–20. No errors up to 75.
 - **Active users:** a staff member working in the ERP generates about 3–6 API calls per page and a page every 20–60 s, i.e. about 0.1–0.3 req/s. At ~22–33 req/s saturation, a 50% utilization target is 11–16 req/s, which is **~50 actively-working users** (conservative end).
@@ -299,3 +306,111 @@ python scripts/load_test.py --base-url http://127.0.0.1:8020 \
 - Refuses non-loopback hosts unless `--allow-host <host>` is given, and always refuses production-looking hosts (`procurex-erp-api`, `procurex-public-api`, `redecor`, or `*.onrender.com` without `staging`).
 - `--base-url a,b` spreads users across several instances; `--server-pid` can repeat. `--only name,name` restricts the mix.
 - Output: one JSON line per stage on stdout (RPS, p50/p95/p99/max, error rate, status counts, CPU, RSS, DB connections and lock waits) plus the full JSON file with per-endpoint percentiles.
+
+---
+
+## 13. Pre-go-live closure fixes (branch `fix/pre-golive-closure`)
+
+Developed in an isolated git worktree so the other session's uncommitted S3/R2 attachment work was never touched. That work's 981-line diff applies cleanly on top of this branch (checked with `git apply --check`).
+
+### 13.1 Approval list N+1 (`GET /api/workflow/approvals`)
+
+Profile: `N + 3` queries. That is 1 approvals query, 1 PO query loading full rows just for `approval_id`, 1 auth user lookup, and **one `ApprovalPayment` query per approval** (only `payments[0].status` and `.id` were used). Fix: one batched "newest payment per approval" query (subquery on the same filtered statement, so no bound-parameter limit on SQLite) and an `approval_id`-only PO lookup.
+
+| Dataset | Queries | DB time | Wall (median of 5) | Payload | Response |
+|---|---|---|---|---|---|
+| 9 rows (search filter) | 12 → **4** | 4.6 → 2.6 ms | 16 → 11 ms | 10.7 KB | identical |
+| 228 approvals | 231 → **4** | 48.3 → 3.0 ms | 147 → 32 ms | 259 KB | identical |
+| 1,368 approvals | 1,371 → **4** | 276 → 8 ms | 812 → 167 ms | 1.55 MB | identical |
+
+Equivalence was checked on canonical JSON (rows keyed by id, sorted keys) across 6 filter combinations (none, status, payment status ×2, project, search) on both datasets: **12/12 identical**. The check caught a bug in my first version (a loop variable shadowed the `payment_status` filter), which is why it exists. Regression tests pin the constant query count, newest-payment-wins, the payment filter, and `has_purchase_order` ignoring cancelled POs. The list remains unpaginated (1.55 MB at 1,368 approvals): a separate, later concern.
+
+### 13.2 WhatsApp webhook idempotency
+
+- The processed-message id is now **claimed (inserted and flushed) before any side effect**. A second worker's insert waits on the primary key and then fails, so the message is skipped with no reply and no error, and Meta still gets its 200.
+- The conversation draft is read `FOR UPDATE`.
+- Because `create_incoming_request` (site_portal) commits the REQ itself and releases that lock, the draft is marked `confirmed` *before* the call, so the REQ and the confirmed status commit atomically.
+- A waiter that lands between that commit and the write-back of the REQ number reads the number from the committed REQ.
+- Results (PostgreSQL, 8 threads): same id → 1 REQ (was 2–3); 8 different confirmations → 1 REQ (was 5); all 16 replies carry the real REQ number.
+- Trade-off: a crash after the claim commits makes that message at-most-once rather than at-least-once. That is the right default for REQ creation, and the engineer sees the failure reply and can resend.
+
+### 13.3 Rate limiting across workers
+
+| Limiter | Class | Before | After |
+|---|---|---|---|
+| Login, per username | SECURITY_CRITICAL | per worker: 2 ERP workers = up to 2 × `AUTH_LOGIN_RATE_LIMIT` | shared, exact |
+| Login, per IP | SECURITY_CRITICAL (runs only when `TRUST_PROXY_HEADERS=true`) | per worker | shared, exact |
+| Public request + document upload, per IP | ABUSE_CONTROL | per worker (public API 1 worker; the ERP host mounts the same routes on 2) | shared, exact |
+| WhatsApp webhook | none needed | HMAC-signed | unchanged |
+
+Implementation: table `rate_limit_events` (migration **0024**, additive; keys stored as SHA-256 only). Each hit is one transaction: prune, count, record or 429. On PostgreSQL a per-key `pg_advisory_xact_lock` makes the count exact. Measured: 80 concurrent attempts from 2 processes, limit 10, **exactly 10 allowed**, 3/3 runs. Same interface, so the existing limiter tests pass unchanged. No Redis.
+
+Deploy impact: production must run the verified migration to 0024 **before** deploying this branch (`preDeployCommand` refuses otherwise). Desktop SQLite gets the table from `init_db`: checked on a read-only `VACUUM INTO` copy of the live desktop DB, 73 → 74 tables, row counts unchanged, integrity ok. The certified semantic hash is updated, and the model and migration produce the identical schema.
+
+### 13.4 Client IP behind the proxy
+
+- **Bug fixed.** With `TRUST_PROXY_HEADERS=true` the app used the **leftmost** `X-Forwarded-For` entry, which the client controls: any visitor could choose their rate-limit identity or claim `127.0.0.1`. It now uses the entry appended by our own proxy (rightmost `TRUSTED_PROXY_HOPS`, default 1), the same rule uvicorn's `--proxy-headers` uses.
+- **Current production state** (`TRUST_PROXY_HEADERS=false`, no `FORWARDED_ALLOW_IPS`): the app sees Render's proxy-hop address. The login IP limiter disables itself in that state (by design), but the **public-request limiter keys on it**. If Render presents one address, all public visitors share one 5-per-15-minute bucket. **Must be verified on staging before go-live.**
+- **Staging diagnostic** (`CLIENT_IP_DIAGNOSTICS=true`, set in `render.staging.yaml`, refused in production). `GET /api/diagnostics/client-ip` returns the peer, each `X-Forwarded-For` entry and `X-Real-IP` as a kind (loopback/private/public) plus a salted fingerprint, and the resulting rate-limit identity; no raw addresses. `GET /api/diagnostics/runtime` returns the serving worker PID, the `statement_timeout`/`lock_timeout` the DB applies, and pool status.
+- **Decision rule after the staging check:** if the peer is a private address and `X-Forwarded-For` ends in the visitor's public address, set `TRUST_PROXY_HEADERS=true`, `TRUSTED_PROXY_HOPS=1` (and keep `INTERNAL_REQUEST_TOKEN`, which hosted validation already requires). Confirm that two different devices get different `rate_limit_identity` fingerprints and that a forged leftmost entry does not change it.
+
+### 13.5 Document-job stale recovery
+
+Found by re-running the claim race with leftover jobs. Resetting stale `processing` jobs by loading rows and assigning fields let a second worker's reset overwrite a claim the first had just made: **2–3 of 60 recovered jobs processed twice per run.** The reset is now one conditional `UPDATE … WHERE status='processing' AND locked_at < cutoff`, which PostgreSQL re-checks against the committed row. Result: 60/60, 0 doubles, 4/4 runs.
+
+### 13.6 New finding, not fixed: second external-engineer InstaPay/Vodafone Cash payment fails
+
+`approval_payments.cash_reference` has a **unique** index, and non-cash payments store `''`, so the **second non-cash payment choice in the whole database is rejected** (reproduced through the public approval API on PostgreSQL). Since the capacity review it returns a misleading 409 "already done". It affects only the legacy `external_engineer` approval flow, which the current UI no longer creates (`SupplierPriceComparison.jsx` always sends `comparison_workflow`). The proper fix, a partial unique index `WHERE cash_reference <> ''`, drops an index, which the repo's additive-only migration gate forbids. That needs an explicit decision.
+
+---
+
+## 14. Production gates to evaluate with the Render facts
+
+### 14.1 ERP memory gate (2 workers)
+
+Measured peak (Windows RSS, 75 concurrent users): **293 MB** for 2 workers + supervisor. Required RAM = peak × 1.5 (allocator variance, larger production data, a 1.5 MB approvals payload being serialized, GC timing, platform overhead) = **~440 MB**. No swap or OOM restart counted on.
+
+| ERP plan RAM (fill in from Render) | Headroom over 293 MB | Verdict |
+|---|---|---|
+| 256 MB | −37 MB | **NO**: run 1 worker, or upgrade the plan |
+| 512 MB | 219 MB (43%) | YES, but re-check RSS on staging |
+| 1 GB+ | ≥ 731 MB | YES |
+
+`ERP_2_WORKER_MEMORY_SAFE` = the row matching the real plan. A single worker needs ~140 MB peak (×1.5 = 210 MB).
+
+### 14.2 PostgreSQL connection budget
+
+App theoretical max = ERP 2 × (5 + 2) + public 1 × (5 + 2) = **21**. Reserve: superuser 3 + migration job 2 + backup cron 1 + admin/psql 3 + monitoring (whatever `pg_stat_activity` shows at idle). Required `max_connections` ≥ 21 + 9 + monitoring, i.e. **≥ 30 minimum, ≥ 40 recommended**. Safe app budget = 70% × (`max_connections` − reserved). If `SHOW max_connections` is below 40, set `DB_POOL_SIZE=3` first (section 4.4: a small pool cost nothing).
+
+---
+
+## 15. Render staging validation (PENDING)
+
+Prerequisites, all needing the operator:
+1. Push `fix/pre-golive-closure` (plus the capacity-review commits it contains) to the branch staging deploys from.
+2. Apply migration 0024 to the staging database with the existing staging migration procedure. The staging start command refuses to boot on schema drift.
+3. A disposable staging-only ERP admin account (`LOADTEST_USERNAME`/`LOADTEST_PASSWORD`) and the staging hostnames.
+4. Optionally, the staging Postgres external connection string for the lock test and connection sampling.
+
+Runbook (from `backend/`):
+
+| Check | Command / action | Pass criterion |
+|---|---|---|
+| Worker count + DB timeouts | `GET https://<staging-erp>/api/diagnostics/runtime` ~60× on fresh connections | 2 distinct `worker_pid` (ERP), 1 (public); `statement_timeout=10s`, `lock_timeout=3s` |
+| Client IP | `GET /api/diagnostics/client-ip` from two different networks, and once with a forged `X-Forwarded-For: 1.2.3.4` | apply the section 13.4 decision rule; the forged entry must not change `rate_limit_identity` |
+| Load | `python scripts/load_test.py --base-url https://<staging-erp> --allow-host <staging-erp> --stages 1,5,10,20,50 --stage-seconds 60 --pg-url <staging-db> --json-out staging.json` | 0% errors, no 30 s stalls; record RPS/p50/p95/p99 |
+| Soak | same, `--stages 10 --stage-seconds 1200` | flat RSS (Render metrics), flat DB connections, no p95 drift, no worker restarts |
+| Lock timeout | during a 20-user run: `psql <staging-db> -c "BEGIN; LOCK TABLE engineer_approvals IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(15); ROLLBACK;"` | locked requests get 503 after about 3 s, others keep working, recovery immediate |
+| Graceful restart | start a 10-user run, press "Restart service" in Render | failed requests limited to the restart window, instance back healthy, DB connections return to baseline; record Render's actual grace period |
+| Keep-alive | harness output at 20/50 users | no `RemoteProtocolError`/resets beyond noise |
+| Connection budget | `SHOW max_connections;` plus idle `pg_stat_activity` on staging **and** production (read-only) | section 14.2 |
+
+Results table (to be filled from `staging.json`):
+
+| Users | Laptop RPS / p95 | Staging RPS / p95 | RPS ratio | p95 ratio |
+|---|---|---|---|---|
+| 1 | 21.1 / 172 ms | PENDING | | |
+| 5 | 32.7 / 469 ms | PENDING | | |
+| 10 | 32.7 / 826 ms | PENDING | | |
+| 20 | 22.4 / 1,763 ms | PENDING | | |
+| 50 | 24.5 / 3,463 ms | PENDING | | |
