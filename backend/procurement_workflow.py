@@ -1042,17 +1042,29 @@ def list_approvals(
                 EngineerApproval.engineer_name.ilike(needle)
             )
         rows = session.scalars(statement).all()
-        ordered_approval_ids = {
-            row.approval_id for row in session.scalars(
-                select(PurchaseOrder).where(PurchaseOrder.status != "cancelled")
-            ).all() if row.approval_id
-        }
+        ordered_approval_ids = set(session.scalars(
+            select(PurchaseOrder.approval_id).where(
+                PurchaseOrder.status != "cancelled", PurchaseOrder.approval_id != "",
+            )
+        ).all())
+        # One batched query instead of one per approval (was N+3 queries: 203
+        # at 200 approvals). Same rule as _payments(): newest payment wins.
+        latest_payment: dict[str, tuple[str, str]] = {}
+        if rows:
+            for paid_approval_id, latest_id, latest_status in session.execute(
+                select(ApprovalPayment.approval_id, ApprovalPayment.id, ApprovalPayment.status)
+                .where(ApprovalPayment.approval_id.in_(
+                    statement.with_only_columns(EngineerApproval.id).order_by(None)
+                ))
+                .order_by(ApprovalPayment.created_at.desc())
+            ):
+                latest_payment.setdefault(paid_approval_id, (latest_id, latest_status))
         result = []
         for approval in rows:
             data = _row(approval, exclude={"secure_token"})
-            payments = _payments(session, approval.id)
-            data["payment_status"] = payments[0]["status"] if payments else "not_started"
-            data["payment_id"] = payments[0]["id"] if payments else ""
+            payment_id, payment_state = latest_payment.get(approval.id, ("", "not_started"))
+            data["payment_status"] = payment_state
+            data["payment_id"] = payment_id
             data["has_purchase_order"] = approval.id in ordered_approval_ids
             if not payment_status or data["payment_status"] == payment_status:
                 result.append(data)
