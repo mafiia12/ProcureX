@@ -368,6 +368,18 @@ def resubmit_corrected_items(
         assigned_project_ids = {project.id for project in _assigned_projects(session, user.id)}
         if original.project_id not in assigned_project_ids:
             raise HTTPException(403, "لم يعد هذا المشروع مخصصًا لحسابك")
+        # The existing-children check below is check-then-insert, and this is
+        # a sync route (thread pool), so parallel calls raced even on ONE
+        # worker: 10 concurrent clicks on PostgreSQL created 4 child REQs.
+        # Locking the original REQ row serializes them; each later caller
+        # then sees the first one's committed children and takes the
+        # idempotent-retry path. No-op on SQLite, whose single writer already
+        # serializes.
+        session.execute(
+            select(IncomingPurchaseRequest.id)
+            .where(IncomingPurchaseRequest.id == original.id)
+            .with_for_update()
+        )
 
         items = session.scalars(
             select(IncomingPurchaseRequestItem).where(

@@ -23,7 +23,7 @@ from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
-from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
+from sqlalchemy.exc import IntegrityError, OperationalError, TimeoutError as PoolTimeoutError
 
 try:
     from .auth.admin_router import router as admin_users_router
@@ -1246,6 +1246,18 @@ async def create_purchase_orders_from_comparison(
     timestamp = datetime.now(timezone.utc).isoformat()
 
     with db.transaction() as tx:
+        # The duplicate check above runs outside this transaction, so two
+        # workers/instances could both pass it (measured: 2 POs from one
+        # comparison across 2 instances). Lock the comparison row and check
+        # again; the loser waits for the winner's commit, then sees its PO.
+        # No-op on SQLite, whose single writer already serializes.
+        tx.session.execute(
+            select(PriceComparison.id)
+            .where(PriceComparison.id == body.comparison_id)
+            .with_for_update()
+        )
+        if await tx.purchase_orders.find_one({"comparison_id": body.comparison_id}):
+            raise HTTPException(409, "تم إنشاء أوامر شراء لهذه المقارنة من قبل")
         for order, po_number in zip(canonical_orders, po_numbers):
             purchase_order_id = str(uuid.uuid4())
 
@@ -3239,6 +3251,31 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
         sqlstate = getattr(getattr(error, "orig", None), "sqlstate", None)
         if sqlstate in {"57014", "55P03"}:
             return _database_busy(request, f"sqlstate_{sqlstate}")
+        return await safe_unhandled_error(request, error)
+
+    @application.exception_handler(IntegrityError)
+    async def database_unique_conflict(request: Request, error: IntegrityError):
+        # A concurrent duplicate (double click, retry, second worker) lost the
+        # race to a unique constraint: the row it tried to create already
+        # exists, so this is a 409, not a server bug. Measured on PostgreSQL:
+        # payment/receipt/approval/RFQ duplicates each returned 500 here.
+        orig = getattr(error, "orig", None)
+        if getattr(orig, "sqlstate", None) == "23505" or "UNIQUE constraint failed" in str(orig):
+            logger.warning(
+                "Concurrent duplicate rejected: method=%s path=%s constraint=%s",
+                request.method, request.url.path,
+                getattr(getattr(orig, "diag", None), "constraint_name", None) or "unique",
+            )
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": {
+                        "code": "duplicate_request",
+                        "message": "تم تنفيذ هذه العملية بالفعل. يرجى تحديث الصفحة.",
+                    }
+                },
+                headers={"Cache-Control": "no-store"},
+            )
         return await safe_unhandled_error(request, error)
 
     @application.exception_handler(Exception)

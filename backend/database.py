@@ -807,6 +807,11 @@ class LocalDatabase:
         with SessionLocal.begin() as session:
             yield LocalDatabase(session)
 
+    @property
+    def session(self):
+        """The bound session inside transaction(); None on the global db."""
+        return self._session
+
     def __getattr__(self, name: str):
         try:
             return self._collections[name]

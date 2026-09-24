@@ -1,8 +1,9 @@
 """Bounded-database-wait behavior (see docs/production-capacity-plan.md).
 
 Covers the PostgreSQL engine defaults (pool size/overflow/timeout plus the
-server-side statement/lock timeouts) and the 503 mapping for pool
-exhaustion and statement/lock timeouts. Self-contained: runs standalone
+server-side statement/lock timeouts), the 503 mapping for pool exhaustion
+and statement/lock timeouts, and the 409 mapping for a concurrent duplicate
+that loses the race to a unique constraint. Self-contained: runs standalone
 against its own temp SQLite DB, and also as part of the full suite (same
 pattern as attachment_offload_test.py). No PostgreSQL connection is made:
 the option builder is pure and the error handlers are exercised with
@@ -33,7 +34,7 @@ if _STANDALONE:
     os.environ.setdefault("PROCUREX_LOG_DIR", str(Path(_TEST_DIR.name) / "logs"))
 
 from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError  # noqa: E402
+from sqlalchemy.exc import IntegrityError, OperationalError, TimeoutError as PoolTimeoutError  # noqa: E402
 
 from database import engine, postgres_engine_options  # noqa: E402
 from server import create_app  # noqa: E402
@@ -108,6 +109,14 @@ def overload_client():
     async def sqlstate_error(sqlstate: str):
         raise OperationalError("SELECT 1", {}, _DriverError(sqlstate))
 
+    @app.post("/__test__/integrity/{sqlstate}")
+    def integrity_error(sqlstate: str):
+        raise IntegrityError("INSERT", {}, _DriverError(sqlstate))
+
+    @app.post("/__test__/sqlite-unique")
+    def sqlite_unique():
+        raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed: rfqs.source_request_id"))
+
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
 
@@ -135,3 +144,17 @@ def test_other_operational_errors_stay_a_sanitized_500(overload_client):
     assert response.json()["detail"]["code"] == "internal_error"
     assert "Retry-After" not in response.headers
 
+
+@pytest.mark.parametrize("path", ["/__test__/integrity/23505", "/__test__/sqlite-unique"])
+def test_concurrent_unique_violation_returns_409(overload_client, path):
+    response = overload_client.post(path)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "duplicate_request"
+
+
+def test_other_integrity_errors_stay_a_sanitized_500(overload_client):
+    response = overload_client.post("/__test__/integrity/23503")  # foreign key violation
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "internal_error"
