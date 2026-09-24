@@ -718,8 +718,17 @@ class ApprovalCreateIn(BaseModel):
     engineer_phone: str = ""
     expiry_at: str = ""
     created_by: str = ""
-    approval_type: Literal["external_engineer", "comparison_workflow"] = "external_engineer"
+    # V1 creates internal comparison-workflow approvals only. Omitting the
+    # field must never select the legacy external-engineer flow (it used to
+    # default to it). "external_engineer" stays in the Literal only because
+    # the revision endpoint rebuilds this model from a historical approval:
+    # a revision of a legacy approval remains legacy. New legacy creation is
+    # refused in create_approval_from_comparison.
+    approval_type: Literal["external_engineer", "comparison_workflow"] = "comparison_workflow"
     decision_reasons: list[DecisionReasonIn] = Field(default_factory=list, max_length=200)
+
+
+LEGACY_APPROVAL_TYPE = "external_engineer"
 
 
 def _approval_code() -> str:
@@ -935,6 +944,15 @@ def create_approval_from_comparison(
     current_user: User = Depends(require_erp_role("procurement_responsible")),
 ):
     body.created_by = current_user.username
+    if body.approval_type == LEGACY_APPROVAL_TYPE:
+        # Compatibility boundary: existing legacy approvals keep working
+        # (reads, public link, payments, revisions), but no new one can be
+        # started - the UI stopped creating them, and their payment flow has
+        # a known defect (see docs/production-capacity-plan.md section 17).
+        raise HTTPException(422, {
+            "code": "legacy_approval_creation_disabled",
+            "message": "مسار اعتماد المهندس الخارجي القديم متوقف لإنشاء اعتمادات جديدة. استخدم مسار الاعتماد الداخلي.",
+        })
     with SessionLocal.begin() as session:
         comparison = session.get(PriceComparison, body.comparison_id)
         if not comparison:

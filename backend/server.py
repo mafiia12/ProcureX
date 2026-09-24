@@ -3169,6 +3169,29 @@ def _validate_hosted_configuration(surface: str) -> None:
         raise RuntimeError(f"{label} R2_ENDPOINT_URL must use HTTPS")
 
 
+# Unique indexes whose violation does NOT mean "this same operation already
+# ran". Keyed by index name (PostgreSQL reports it) with the table.column
+# SQLite reports instead. Everything else keeps the generic duplicate_request.
+_NON_IDEMPOTENT_UNIQUE_CONFLICTS = {
+    # Legacy external-engineer payments: every non-cash payment stores
+    # cash_reference='' under a plain unique index, so the second one in the
+    # whole database collides with an unrelated payment (DEFERRED_LEGACY,
+    # docs/production-capacity-plan.md section 17). Nothing was recorded.
+    "ix_approval_payments_cash_reference": (
+        "approval_payments.cash_reference",
+        "legacy_payment_reference_conflict",
+        "تعذر تسجيل طريقة الدفع بسبب تعارض في مرجع الدفع، ولم يتم تسجيل أي دفعة. يرجى التواصل مع فريق المشتريات.",
+    ),
+}
+
+
+def _non_idempotent_unique_conflict(constraint: str, error_text: str) -> tuple[str, str] | None:
+    for index_name, (sqlite_column, code, message) in _NON_IDEMPOTENT_UNIQUE_CONFLICTS.items():
+        if constraint == index_name or f"UNIQUE constraint failed: {sqlite_column}" in error_text:
+            return code, message
+    return None
+
+
 def create_app(surface: Optional[str] = None, initialize_database: bool = True) -> FastAPI:
     environment = os.getenv("APP_ENV", "development").strip().lower()
     if environment not in {"development", "test", "testing", "staging", "production"}:
@@ -3271,10 +3294,24 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
         # payment/receipt/approval/RFQ duplicates each returned 500 here.
         orig = getattr(error, "orig", None)
         if getattr(orig, "sqlstate", None) == "23505" or "UNIQUE constraint failed" in str(orig):
+            constraint = getattr(getattr(orig, "diag", None), "constraint_name", None) or ""
+            conflict = _non_idempotent_unique_conflict(constraint, str(orig))
+            if conflict is not None:
+                # Not a repeat of the same operation: saying "already done"
+                # would claim business work that never happened.
+                code, message = conflict
+                logger.warning(
+                    "Unique conflict rejected: method=%s path=%s constraint=%s code=%s",
+                    request.method, request.url.path, constraint or "unique", code,
+                )
+                return JSONResponse(
+                    status_code=409,
+                    content={"detail": {"code": code, "message": message}},
+                    headers={"Cache-Control": "no-store"},
+                )
             logger.warning(
                 "Concurrent duplicate rejected: method=%s path=%s constraint=%s",
-                request.method, request.url.path,
-                getattr(getattr(orig, "diag", None), "constraint_name", None) or "unique",
+                request.method, request.url.path, constraint or "unique",
             )
             return JSONResponse(
                 status_code=409,

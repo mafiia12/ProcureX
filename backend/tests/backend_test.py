@@ -3064,6 +3064,25 @@ def test_construction_alembic_upgrade_and_downgrade_cycle(tmp_path):
             migration.op = original_op
 
 
+def _seed_historical_legacy_approval(comparison_id, **fields):
+    """A legacy external-engineer approval exactly as the approval endpoint
+    wrote it before new legacy creation was disabled - the shape of the
+    historical rows production may still hold."""
+    from procurement_workflow import (
+        ApprovalCreateIn, _approval_detail, _calculated_selected_rows, _create_approval,
+    )
+    with SessionLocal.begin() as session:
+        comparison = session.get(PriceComparison, comparison_id)
+        selection = _calculated_selected_rows(session, comparison)
+        approval = _create_approval(
+            session, comparison, selection["rows"],
+            ApprovalCreateIn(comparison_id=comparison_id, created_by="tester",
+                             approval_type="external_engineer", **fields),
+            supplier_summaries=selection["supplier_summaries"],
+        )
+        return _approval_detail(session, approval, include_token=True)
+
+
 def test_guided_project_approval_payment_revision_and_cash_workflow(s, admin_headers):
     """One end-to-end test keeps the state-machine relationships visible."""
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -3147,12 +3166,20 @@ def test_guided_project_approval_payment_revision_and_cash_workflow(s, admin_hea
             }],
         }, headers=admin_headers)
         assert comparison.status_code == 200, comparison.text
-        response = s.post(f"{API}/workflow/approvals/from-comparison", headers={**INTERNAL_HEADERS, **admin_headers}, json={
+        # New legacy approvals can no longer be started through the API ...
+        refused = s.post(f"{API}/workflow/approvals/from-comparison", headers={**INTERNAL_HEADERS, **admin_headers}, json={
             "comparison_id": comparison.json()["id"], "engineer_name": "مهندس الاعتماد",
             "engineer_email": "engineer@example.com", "created_by": "tester",
+            "approval_type": "external_engineer",
         })
-        assert response.status_code == 201, response.text
-        approval = response.json()["approval"]
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"]["code"] == "legacy_approval_creation_disabled"
+        # ... but historical ones (created before that) must keep working.
+        approval = _seed_historical_legacy_approval(
+            comparison.json()["id"], engineer_name="مهندس الاعتماد",
+            engineer_email="engineer@example.com",
+        )
+        assert approval["approval_type"] == "external_engineer"
         assert approval["lines"][0]["supplier_name"] == supplier["name"]
         assert approval["lines"][0]["unit_price"] == 125
         assert s.post(f"{API}/workflow/approvals/from-comparison", headers={**INTERNAL_HEADERS, **admin_headers}, json={
@@ -7308,6 +7335,140 @@ def _send_for_approval(client, admin_headers, comparison_id, decision_reasons=No
             "decision_reasons": decision_reasons or [],
         },
     )
+
+
+# ---------- Approval type boundary: new V1 approvals vs historical legacy ones ----------
+
+def _approval_rows_for(comparison_id):
+    with SessionLocal() as session:
+        return session.scalars(
+            select(EngineerApproval).where(EngineerApproval.comparison_id == comparison_id)
+        ).all()
+
+
+def test_new_approval_omitting_type_is_comparison_workflow(s, admin_headers):
+    comparison_id, *_ = _make_two_supplier_comparison(s, "type-omitted", admin_headers, select_expensive=False)
+    response = s.post(
+        f"{API}/workflow/approvals/from-comparison",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+        json={"comparison_id": comparison_id},  # no approval_type at all
+    )
+    assert response.status_code == 201, response.text
+    approval = response.json()["approval"]
+    assert approval["approval_type"] == "comparison_workflow"
+    assert approval["status"] == "pending_approval"
+    assert approval["responsible_role"] == "procurement_engineer"
+    assert [row.approval_type for row in _approval_rows_for(comparison_id)] == ["comparison_workflow"]
+
+
+def test_new_legacy_approval_is_refused_and_writes_nothing(s, admin_headers):
+    comparison_id, *_ = _make_two_supplier_comparison(s, "type-legacy", admin_headers, select_expensive=False)
+    response = s.post(
+        f"{API}/workflow/approvals/from-comparison",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+        json={"comparison_id": comparison_id, "approval_type": "external_engineer"},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "legacy_approval_creation_disabled"
+    assert _approval_rows_for(comparison_id) == []
+    unknown = s.post(
+        f"{API}/workflow/approvals/from-comparison",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+        json={"comparison_id": comparison_id, "approval_type": "something_else"},
+    )
+    assert unknown.status_code == 422
+    assert _approval_rows_for(comparison_id) == []
+
+
+def test_revision_of_comparison_workflow_approval_stays_comparison_workflow(s, admin_headers):
+    comparison_id, *_ = _make_two_supplier_comparison(s, "type-rev-v1", admin_headers, select_expensive=False)
+    created = s.post(
+        f"{API}/workflow/approvals/from-comparison",
+        headers={**INTERNAL_HEADERS, **admin_headers}, json={"comparison_id": comparison_id},
+    )
+    assert created.status_code == 201, created.text
+    approval_id = created.json()["approval"]["id"]
+    decided = s.post(
+        f"{API}/workflow/approvals/{approval_id}/decision",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+        json={"decision": "revision_requested", "actor": "tester", "note": "غيّر الكمية"},
+    )
+    assert decided.status_code == 200, decided.text
+    revision = s.post(
+        f"{API}/workflow/approvals/{approval_id}/revision",
+        headers={**INTERNAL_HEADERS, **admin_headers}, json={"actor": "tester"},
+    )
+    assert revision.status_code == 201, revision.text
+    assert revision.json()["approval"]["approval_type"] == "comparison_workflow"
+    assert revision.json()["approval"]["revision_number"] == 1
+
+
+def test_revision_of_historical_legacy_approval_stays_legacy(s, admin_headers):
+    comparison_id, *_ = _make_two_supplier_comparison(s, "type-rev-legacy", admin_headers, select_expensive=False)
+    legacy = _seed_historical_legacy_approval(comparison_id, engineer_name="مهندس قديم")
+    for step in ("ready", "sent"):
+        assert s.post(
+            f"{API}/workflow/approvals/{legacy['id']}/{step}",
+            headers={**INTERNAL_HEADERS, **admin_headers}, json={"actor": "tester"},
+        ).status_code == 200
+    token = legacy["secure_token"]
+    assert s.get(f"{API}/public/approvals/{token}").status_code == 200
+    assert s.post(
+        f"{API}/public/approvals/{token}/decision",
+        json={"decision": "revision_requested", "note": "غيّر المورد"},
+    ).status_code == 200
+    revision = s.post(
+        f"{API}/workflow/approvals/{legacy['id']}/revision",
+        headers={**INTERNAL_HEADERS, **admin_headers}, json={"actor": "tester"},
+    )
+    assert revision.status_code == 201, revision.text
+    body = revision.json()["approval"]
+    assert body["approval_type"] == "external_engineer"
+    assert body["revision_number"] == 1 and body["previous_revision_id"] == legacy["id"]
+
+
+def _approved_historical_legacy_approval(client, admin_headers, suffix):
+    comparison_id, *_ = _make_two_supplier_comparison(client, suffix, admin_headers, select_expensive=False)
+    legacy = _seed_historical_legacy_approval(comparison_id, engineer_name="مهندس قديم")
+    for step in ("ready", "sent"):
+        client.post(f"{API}/workflow/approvals/{legacy['id']}/{step}",
+                    headers={**INTERNAL_HEADERS, **admin_headers}, json={"actor": "tester"})
+    client.get(f"{API}/public/approvals/{legacy['secure_token']}")
+    decided = client.post(f"{API}/public/approvals/{legacy['secure_token']}/decision", json={"decision": "approved"})
+    assert decided.status_code == 200, decided.text
+    return legacy
+
+
+def test_legacy_payment_index_conflict_is_not_reported_as_done(s, admin_headers):
+    """DEFERRED_LEGACY: approval_payments.cash_reference is uniquely indexed
+    and every non-cash payment stores '', so a second non-cash payment
+    anywhere collides. The index stays (no destructive migration this
+    sprint); the 409 must say what actually happened, not "already done"."""
+    from procurement_workflow import ApprovalPayment
+
+    with SessionLocal() as session:
+        has_blank_reference = session.scalar(
+            select(func.count()).select_from(ApprovalPayment).where(ApprovalPayment.cash_reference == "")
+        )
+    if not has_blank_reference:
+        first = _approved_historical_legacy_approval(s, admin_headers, "pay-conflict-a")
+        assert s.post(f"{API}/public/approvals/{first['secure_token']}/payments",
+                      json={"method": "instapay"}).status_code == 201
+
+    second = _approved_historical_legacy_approval(s, admin_headers, "pay-conflict-b")
+    conflict = s.post(f"{API}/public/approvals/{second['secure_token']}/payments", json={"method": "vodafone_cash"})
+    assert conflict.status_code == 409, conflict.text
+    detail = conflict.json()["detail"]
+    assert detail["code"] == "legacy_payment_reference_conflict"
+    assert "بالفعل" not in detail["message"]  # never "already done"
+    assert "cash_reference" not in conflict.text and "UNIQUE" not in conflict.text
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count()).select_from(ApprovalPayment).where(ApprovalPayment.approval_id == second["id"])
+        ) == 0
+    # The cash path is unaffected: it allocates a unique reference.
+    cash = s.post(f"{API}/public/approvals/{second['secure_token']}/payments", json={"method": "cash"})
+    assert cash.status_code == 201, cash.text
 
 
 def test_cheapest_supplier_selection_needs_no_reason(s, admin_headers):
