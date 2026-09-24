@@ -23,6 +23,7 @@ from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
 
 try:
     from .auth.admin_router import router as admin_users_router
@@ -3210,6 +3211,35 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
     application.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
     if os.getenv("FORCE_HTTPS", "false").lower() == "true":
         application.add_middleware(HTTPSRedirectMiddleware)
+
+    def _database_busy(request: Request, reason: str) -> JSONResponse:
+        logger.warning(
+            "Database busy: reason=%s method=%s path=%s", reason, request.method, request.url.path,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": {
+                    "code": "database_busy",
+                    "message": "الخادم مشغول حالياً. يرجى إعادة المحاولة بعد لحظات.",
+                }
+            },
+            headers={"Cache-Control": "no-store", "Retry-After": "5"},
+        )
+
+    @application.exception_handler(PoolTimeoutError)
+    async def database_pool_exhausted(request: Request, error: PoolTimeoutError):
+        # Every pooled connection stayed checked out past DB_POOL_TIMEOUT_SECONDS.
+        return _database_busy(request, "pool_timeout")
+
+    @application.exception_handler(OperationalError)
+    async def database_operational_error(request: Request, error: OperationalError):
+        # 57014 query_canceled (DB_STATEMENT_TIMEOUT_MS), 55P03 lock_not_available
+        # (DB_LOCK_TIMEOUT_MS): bounded, retryable overload - not a server bug.
+        sqlstate = getattr(getattr(error, "orig", None), "sqlstate", None)
+        if sqlstate in {"57014", "55P03"}:
+            return _database_busy(request, f"sqlstate_{sqlstate}")
+        return await safe_unhandled_error(request, error)
 
     @application.exception_handler(Exception)
     async def safe_unhandled_error(request: Request, error: Exception):

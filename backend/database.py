@@ -437,15 +437,10 @@ MODELS = {
 }
 
 
-DATABASE_URL = _database_url()
-IS_SQLITE = DATABASE_URL.startswith("sqlite:")
-engine_options = {
-    "future": True,
-    "pool_pre_ping": True,
-}
-if IS_SQLITE:
-    engine_options["connect_args"] = {"check_same_thread": False}
-else:
+def postgres_engine_options() -> Dict[str, Any]:
+    """Pool and server-side timeout settings for the PostgreSQL engine,
+    read from the environment (see .env.example / deploy docs)."""
+    options: Dict[str, Any] = {}
     # SQLAlchemy's pool_size=5/max_overflow=10 defaults were never chosen
     # against ProcureX's actual deployment: two separate app instances
     # (procurex-public-api, procurex-erp-api - see render.yaml) each open
@@ -455,15 +450,52 @@ else:
     # instance count or pool size changes (see performance audit, section
     # "POSTGRESQL-SPECIFIC AUDIT" in docs/performance-reliability-audit.md -
     # not measured here since this audit had no Postgres instance to test
-    # against). These env vars make the values tunable without a code change
-    # once that number is known; the defaults below match what was already
-    # running (SQLAlchemy's own defaults) except pool_recycle, which was
-    # previously -1 (never recycle) - a real gap against a hosted Postgres
-    # that may silently drop idle connections server-side.
-    engine_options["pool_size"] = int(os.getenv("DB_POOL_SIZE", "5"))
-    engine_options["max_overflow"] = int(os.getenv("DB_POOL_MAX_OVERFLOW", "10"))
-    engine_options["pool_timeout"] = int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30"))
-    engine_options["pool_recycle"] = int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800"))
+    # against). These env vars make the values tunable without a code change.
+    # pool_recycle was previously -1 (never recycle) - a real gap against a
+    # hosted Postgres that may silently drop idle connections server-side.
+    #
+    # Defaults below were then measured against a disposable Postgres (see
+    # docs/production-capacity-plan.md): no request ever held more than 4
+    # active connections per worker up to 75 concurrent users, and even
+    # pool_size=1 served 20 users without a single pool wait. max_overflow
+    # 0/5/10 gave the same throughput and p95 and only opened more
+    # connections, so overflow is a small burst margin, not capacity.
+    # pool_timeout is short on purpose: most routes are `async def` running
+    # synchronous SQLAlchemy on the event loop, so a pool wait there freezes
+    # the whole worker - fail fast (503) instead.
+    options["pool_size"] = int(os.getenv("DB_POOL_SIZE", "5"))
+    options["max_overflow"] = int(os.getenv("DB_POOL_MAX_OVERFLOW", "2"))
+    options["pool_timeout"] = int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "5"))
+    options["pool_recycle"] = int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800"))
+    # Server-side bounds on every app statement. Measured: a single lock wait
+    # inside an async route froze every request on that worker for the full
+    # lock duration (15s in the test) because nothing bounded it. The slowest
+    # legitimate statement seen under load was under 200ms. 0 disables either
+    # bound. Alembic and migrate_sqlite_to_postgres.py build their own engines
+    # and are unaffected.
+    server_options = [
+        f"-c {name}={value}"
+        for name, value in (
+            ("statement_timeout", int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "10000"))),
+            ("lock_timeout", int(os.getenv("DB_LOCK_TIMEOUT_MS", "3000"))),
+        )
+        if value > 0
+    ]
+    if server_options:
+        options["connect_args"] = {"options": " ".join(server_options)}
+    return options
+
+
+DATABASE_URL = _database_url()
+IS_SQLITE = DATABASE_URL.startswith("sqlite:")
+engine_options = {
+    "future": True,
+    "pool_pre_ping": True,
+}
+if IS_SQLITE:
+    engine_options["connect_args"] = {"check_same_thread": False}
+else:
+    engine_options.update(postgres_engine_options())
 engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
