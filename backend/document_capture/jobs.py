@@ -47,6 +47,12 @@ def _claim() -> str | None:
             )
             .order_by(DocumentProcessingJob.created_at)
             .limit(1)
+            # Every web worker process runs its own copy of this loop. Without
+            # the row lock, two workers read the same queued job and both
+            # processed it (measured on PostgreSQL: 60 jobs -> 219 claims).
+            # SKIP LOCKED hands each worker a different job instead of making
+            # it wait. Ignored on SQLite (single desktop process).
+            .with_for_update(skip_locked=True)
         ).first()
         if not job:
             session.commit()
