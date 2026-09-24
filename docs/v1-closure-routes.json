@@ -1,0 +1,1056 @@
+[
+  {
+    "path": "/openapi.json",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "endpoint": "fastapi.applications.openapi"
+  },
+  {
+    "path": "/docs",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "endpoint": "fastapi.applications.swagger_ui_html"
+  },
+  {
+    "path": "/docs/oauth2-redirect",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "endpoint": "fastapi.applications.swagger_ui_redirect"
+  },
+  {
+    "path": "/redoc",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "endpoint": "fastapi.applications.redoc_html"
+  },
+  {
+    "path": "/api/auth/login",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "auth.router.login"
+  },
+  {
+    "path": "/api/auth/logout",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "auth.router.logout"
+  },
+  {
+    "path": "/api/auth/me",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "auth.router.me"
+  },
+  {
+    "path": "/api/admin/users",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "auth.admin_router.list_users"
+  },
+  {
+    "path": "/api/admin/users",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "auth.admin_router.create_user"
+  },
+  {
+    "path": "/api/admin/users/{user_id}",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "auth.admin_router.update_user"
+  },
+  {
+    "path": "/api/admin/users/{user_id}/reset-password",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "auth.admin_router.reset_password"
+  },
+  {
+    "path": "/api/admin/users/{user_id}/projects",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "auth.admin_router.assign_project"
+  },
+  {
+    "path": "/api/admin/users/{user_id}/projects/{project_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "auth.admin_router.remove_project"
+  },
+  {
+    "path": "/api/admin/whatsapp/settings",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "whatsapp.admin_router.get_settings"
+  },
+  {
+    "path": "/api/admin/whatsapp/settings",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "whatsapp.admin_router.update_settings"
+  },
+  {
+    "path": "/api/admin/whatsapp/settings/test-connection",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "whatsapp.admin_router.test_connection"
+  },
+  {
+    "path": "/api/portal/purchase-requests",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "site_portal.list_portal_requests"
+  },
+  {
+    "path": "/api/portal/returned-items",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "site_portal.list_returned_items"
+  },
+  {
+    "path": "/api/portal/returned-items/{item_id}/correct",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "site_portal.save_returned_item_correction"
+  },
+  {
+    "path": "/api/portal/purchase-requests/{request_id}/resubmit-corrections",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "site_portal.resubmit_corrected_items"
+  },
+  {
+    "path": "/api/portal/purchase-requests/{request_id}/clarification",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "site_portal.submit_clarification"
+  },
+  {
+    "path": "/api/portal/context",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "site_portal.get_portal_context"
+  },
+  {
+    "path": "/api/portal/items",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "site_portal.search_portal_items"
+  },
+  {
+    "path": "/api/portal/previous-items",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "site_portal.previously_requested_items"
+  },
+  {
+    "path": "/api/portal/purchase-requests",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "site_portal.submit_portal_request"
+  },
+  {
+    "path": "/api/suppliers",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_suppliers"
+  },
+  {
+    "path": "/api/customers",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_customers"
+  },
+  {
+    "path": "/api/projects",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_projects"
+  },
+  {
+    "path": "/api/items",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_items"
+  },
+  {
+    "path": "/api/items",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.create_item"
+  },
+  {
+    "path": "/api/items/{entity_id}",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "server.update_item"
+  },
+  {
+    "path": "/api/purchase-orders",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_purchase_orders"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.get_purchase_order"
+  },
+  {
+    "path": "/api/items/{entity_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "server.delete_item"
+  },
+  {
+    "path": "/api/suppliers",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server._create"
+  },
+  {
+    "path": "/api/suppliers/{entity_id}",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "server._update"
+  },
+  {
+    "path": "/api/suppliers/{entity_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "server._delete"
+  },
+  {
+    "path": "/api/customers",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server._create"
+  },
+  {
+    "path": "/api/customers/{entity_id}",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "server._update"
+  },
+  {
+    "path": "/api/customers/{entity_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "server._delete"
+  },
+  {
+    "path": "/api/projects",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server._create"
+  },
+  {
+    "path": "/api/projects/{entity_id}",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "server._update"
+  },
+  {
+    "path": "/api/projects/{entity_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "server._delete"
+  },
+  {
+    "path": "/api/purchase-orders/from-comparison",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.create_purchase_orders_from_comparison"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}/status",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "server.update_purchase_order_status"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}/finalize",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.finalize_purchase_order"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}/receipts",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.record_purchase_order_receipt"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}/reports/{audience}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.purchase_order_report"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "server.delete_purchase_order"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}/payments",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_po_payments"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}/payments",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.record_po_payment"
+  },
+  {
+    "path": "/api/purchase-orders/{purchase_order_id}/payments/{payment_id}/void",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.void_po_payment"
+  },
+  {
+    "path": "/api/purchases",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_purchases"
+  },
+  {
+    "path": "/api/purchases/{purchase_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.get_purchase"
+  },
+  {
+    "path": "/api/purchases",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.create_purchase"
+  },
+  {
+    "path": "/api/purchases/{purchase_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "server.delete_purchase"
+  },
+  {
+    "path": "/api/payments",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_payments"
+  },
+  {
+    "path": "/api/payments",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.create_payment"
+  },
+  {
+    "path": "/api/payments/{payment_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "server.delete_payment"
+  },
+  {
+    "path": "/api/price-history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_price_history"
+  },
+  {
+    "path": "/api/supplier-price-history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.list_supplier_price_history"
+  },
+  {
+    "path": "/api/settings",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.get_settings"
+  },
+  {
+    "path": "/api/settings/{key}",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "server.update_settings"
+  },
+  {
+    "path": "/api/system/diagnostics",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.system_diagnostics"
+  },
+  {
+    "path": "/api/system/backup",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.create_system_backup"
+  },
+  {
+    "path": "/api/system/open-folder/{kind}",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.open_system_folder"
+  },
+  {
+    "path": "/api/dashboard",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.dashboard"
+  },
+  {
+    "path": "/api/export/excel",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.export_excel"
+  },
+  {
+    "path": "/api/import/excel",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "server.import_excel"
+  },
+  {
+    "path": "/api/",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "server.root"
+  },
+  {
+    "path": "/api/price-comparisons/last-formal-prices",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "price_comparisons.last_formal_prices"
+  },
+  {
+    "path": "/api/price-comparisons",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "price_comparisons.list_comparisons"
+  },
+  {
+    "path": "/api/price-comparisons/{comparison_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "price_comparisons.get_comparison"
+  },
+  {
+    "path": "/api/price-comparisons",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "price_comparisons.create_comparison"
+  },
+  {
+    "path": "/api/price-comparisons/{comparison_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "price_comparisons.delete_comparison"
+  },
+  {
+    "path": "/api/price-comparisons/{comparison_id}",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "price_comparisons.update_comparison"
+  },
+  {
+    "path": "/api/price-comparisons/{comparison_id}/export.xlsx",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "price_comparisons.export_comparison"
+  },
+  {
+    "path": "/api/public/purchase-requests/health",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.public_request_health"
+  },
+  {
+    "path": "/api/public/purchase-requests",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "incoming_requests.submit_public_request"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.list_incoming_requests"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/notifications",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.list_request_notifications"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/notifications/unread-count",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.unread_notification_count"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/notifications/{notification_id}/read",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "incoming_requests.mark_notification_read"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.get_incoming_request"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/assignment",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "incoming_requests.assign_request"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/notes",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "incoming_requests.add_internal_note"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/items/{item_id}/review",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "incoming_requests.review_request_item"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/items/{item_id}/convert-to-item",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "incoming_requests.convert_manual_item_to_master"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/items/{item_id}/approved-price",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "incoming_requests.update_approved_item_price"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/approved/items",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.list_approved_items"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/hold/overdue",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.list_overdue_hold_items"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/status",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "incoming_requests.change_request_status"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/attachments/{attachment_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.get_request_attachment"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/general-attachments/{attachment_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "incoming_requests.get_request_general_attachment"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/convert-customer",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "incoming_requests.convert_requester_to_customer"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/convert",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "incoming_requests.convert_request_to_document"
+  },
+  {
+    "path": "/api/public/purchase-requests/document-extraction-capability",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "document_capture.router.document_extraction_capability"
+  },
+  {
+    "path": "/api/public/purchase-requests/documents",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "document_capture.router.upload_purchase_request_document"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "document_capture.router.list_documents"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "document_capture.router.document_review"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/items",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "document_capture.router.add_extracted_item"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/items/{item_id}",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "document_capture.router.delete_extracted_item"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/items/{item_id}/split",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "document_capture.router.split_extracted_item"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/items/merge",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "document_capture.router.merge_extracted_items"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/items/{item_id}",
+    "methods": [
+      "PATCH"
+    ],
+    "endpoint": "document_capture.router.update_extracted_item"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/confirm",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "document_capture.router.confirm_review"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/retry",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "document_capture.router.retry_document"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/cancel",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "document_capture.router.cancel_document"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/items/{item_id}/master-creation-request",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "document_capture.router.request_master_creation"
+  },
+  {
+    "path": "/api/internal/incoming-purchase-requests/{request_id}/documents/{document_id}/files/{file_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "document_capture.router.download_document_file"
+  },
+  {
+    "path": "/api/public/approvals/{token}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "procurement_workflow.public_approval"
+  },
+  {
+    "path": "/api/public/approvals/{token}/decision",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.public_decision"
+  },
+  {
+    "path": "/api/public/approvals/{token}/payments",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.create_payment_intent"
+  },
+  {
+    "path": "/api/public/approvals/{token}/payments/{payment_id}/proof",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.upload_payment_proof"
+  },
+  {
+    "path": "/api/workflow/incoming-purchase-requests/{request_id}/project-suggestions",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "procurement_workflow.project_suggestions"
+  },
+  {
+    "path": "/api/workflow/incoming-purchase-requests/{request_id}/link-project",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.link_existing_project"
+  },
+  {
+    "path": "/api/workflow/incoming-purchase-requests/{request_id}/create-project",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.create_project_from_request"
+  },
+  {
+    "path": "/api/workflow/approvals/from-comparison",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.create_approval_from_comparison"
+  },
+  {
+    "path": "/api/workflow/approvals",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "procurement_workflow.list_approvals"
+  },
+  {
+    "path": "/api/workflow/action-summary",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "procurement_workflow.workflow_action_summary"
+  },
+  {
+    "path": "/api/workflow/approvals/{approval_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "procurement_workflow.get_approval"
+  },
+  {
+    "path": "/api/workflow/approvals/{approval_id}/review-workspace",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "procurement_workflow.approval_review_workspace"
+  },
+  {
+    "path": "/api/workflow/approvals/{approval_id}/decision",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.internal_approval_decision"
+  },
+  {
+    "path": "/api/workflow/approvals/{approval_id}/funds-release",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.confirm_funds_release"
+  },
+  {
+    "path": "/api/workflow/incoming-purchase-requests/{request_id}/technical-decision",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.request_technical_decision"
+  },
+  {
+    "path": "/api/workflow/approvals/{approval_id}/ready",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.mark_approval_ready"
+  },
+  {
+    "path": "/api/workflow/approvals/{approval_id}/sent",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.mark_approval_sent"
+  },
+  {
+    "path": "/api/workflow/approvals/{approval_id}/share-event",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.record_share_event"
+  },
+  {
+    "path": "/api/workflow/approvals/{approval_id}/revision",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.create_approval_revision"
+  },
+  {
+    "path": "/api/workflow/payments/{payment_id}/proof",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "procurement_workflow.get_payment_proof"
+  },
+  {
+    "path": "/api/workflow/payments/{payment_id}/verify",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.verify_payment"
+  },
+  {
+    "path": "/api/workflow/payments/{payment_id}/reject",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.reject_payment"
+  },
+  {
+    "path": "/api/workflow/payments/{payment_id}/confirm-cash",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "procurement_workflow.confirm_cash"
+  },
+  {
+    "path": "/api/workflow/projects/{project_id}/procurement-hub",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "procurement_workflow.project_procurement_hub"
+  },
+  {
+    "path": "/api/workflow/rfqs",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "rfq.list_rfqs"
+  },
+  {
+    "path": "/api/workflow/rfqs",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "rfq.create_rfq"
+  },
+  {
+    "path": "/api/workflow/rfqs/by-request/{request_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "rfq.get_rfq_by_request"
+  },
+  {
+    "path": "/api/workflow/rfqs/{rfq_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "rfq.get_rfq"
+  },
+  {
+    "path": "/api/workflow/rfqs/{rfq_id}/suppliers",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "rfq.add_rfq_supplier"
+  },
+  {
+    "path": "/api/workflow/rfqs/{rfq_id}/quotations",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "rfq.create_quotation"
+  },
+  {
+    "path": "/api/workflow/rfqs/{rfq_id}/quotations/{quotation_id}",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "rfq.update_quotation"
+  },
+  {
+    "path": "/api/workflow/rfqs/{rfq_id}/quotations/{quotation_id}/attachments",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "rfq.upload_quotation_attachments"
+  },
+  {
+    "path": "/api/workflow/rfqs/{rfq_id}/quotations/{quotation_id}/attachments/{attachment_id}",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "rfq.download_quotation_attachment"
+  },
+  {
+    "path": "/api/workflow/rfqs/{rfq_id}/comparison-rows",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "rfq.rfq_comparison_rows"
+  },
+  {
+    "path": "/api/reports/daily",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "daily_report.get_daily_report"
+  },
+  {
+    "path": "/api/reports/daily/{report_date}/notes",
+    "methods": [
+      "PUT"
+    ],
+    "endpoint": "daily_report.save_daily_report_notes"
+  },
+  {
+    "path": "/api/reports/daily/{report_date}/close",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "daily_report.close_daily_report"
+  },
+  {
+    "path": "/api/reports/daily/{report_date}/reopen",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "daily_report.reopen_daily_report"
+  },
+  {
+    "path": "/api/integrations/whatsapp/webhook",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "whatsapp.router.verify_webhook"
+  },
+  {
+    "path": "/api/integrations/whatsapp/webhook",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "whatsapp.router.receive_webhook"
+  }
+]

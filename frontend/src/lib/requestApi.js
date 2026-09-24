@@ -1,8 +1,10 @@
 import axios from "axios";
 import { BACKEND_URL } from "@/lib/api";
 
+// See lib/api.js for why this needs an explicit timeout.
 export const internalRequestApi = axios.create({
   baseURL: `${BACKEND_URL}/api/internal/incoming-purchase-requests`,
+  timeout: 30_000,
 });
 
 internalRequestApi.interceptors.request.use((config) => {

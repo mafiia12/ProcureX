@@ -35,7 +35,10 @@ try:
         PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal,
     )
     from .incoming_requests import IncomingPurchaseRequest, IncomingPurchaseRequestItem
-    from .price_comparisons import PriceComparison, _detail as _comparison_detail
+    from .price_comparisons import (
+        PriceComparison, PriceComparisonRow, PriceComparisonSupplierOffer,
+        _last_prices, _offer_document, _row_document, calculate_comparison,
+    )
     from .procurement_workflow import EngineerApproval
     from .rfq import (
         RequestForQuotation, SupplierQuotation, SupplierQuotationAttachment,
@@ -50,7 +53,10 @@ except ImportError:  # pragma: no cover - direct backend execution
         PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal,
     )
     from incoming_requests import IncomingPurchaseRequest, IncomingPurchaseRequestItem
-    from price_comparisons import PriceComparison, _detail as _comparison_detail
+    from price_comparisons import (
+        PriceComparison, PriceComparisonRow, PriceComparisonSupplierOffer,
+        _last_prices, _offer_document, _row_document, calculate_comparison,
+    )
     from procurement_workflow import EngineerApproval
     from rfq import (
         RequestForQuotation, SupplierQuotation, SupplierQuotationAttachment,
@@ -183,6 +189,49 @@ def _requests_received(session, report_date: str) -> list[dict]:
     return result
 
 
+def _comparison_activity_by_id(session, comparisons: list) -> dict[str, dict]:
+    """rows + supplier_summaries for each comparison, batched across all of
+    them instead of one full price_comparisons._detail() call per
+    comparison. _detail() also joins source-request attachments and RFQ
+    quotations that this call site (the sourcing-activity section) never
+    reads - skipped here entirely, not just batched."""
+    if not comparisons:
+        return {}
+    comparison_ids = [comparison.id for comparison in comparisons]
+
+    rows_by_comparison: dict[str, list] = {}
+    for row in session.scalars(
+        select(PriceComparisonRow)
+        .where(PriceComparisonRow.comparison_id.in_(comparison_ids))
+        .order_by(PriceComparisonRow.comparison_id, PriceComparisonRow.position)
+    ).all():
+        rows_by_comparison.setdefault(row.comparison_id, []).append(row)
+
+    offers_by_comparison: dict[str, list] = {}
+    for offer in session.scalars(
+        select(PriceComparisonSupplierOffer)
+        .where(PriceComparisonSupplierOffer.comparison_id.in_(comparison_ids))
+        .order_by(PriceComparisonSupplierOffer.comparison_id, PriceComparisonSupplierOffer.supplier_name)
+    ).all():
+        offers_by_comparison.setdefault(offer.comparison_id, []).append(offer)
+
+    all_item_codes = {row.item_code for rows in rows_by_comparison.values() for row in rows}
+    last_prices = _last_prices(session, all_item_codes)
+
+    activity_by_id: dict[str, dict] = {}
+    for comparison in comparisons:
+        rows = rows_by_comparison.get(comparison.id, [])
+        offers = offers_by_comparison.get(comparison.id, [])
+        row_documents = [_row_document(row) for row in rows]
+        activity_by_id[comparison.id] = calculate_comparison(
+            comparison.comparison_date,
+            row_documents,
+            {code: last_prices[code] for code in {row.item_code for row in rows} if code in last_prices},
+            [_offer_document(offer) for offer in offers] or None,
+        )
+    return activity_by_id
+
+
 # ---------------- Section 2: Supplier / sourcing activity ----------------
 def _sourcing_activity(session, report_date: str) -> list[dict]:
     rows: list[dict] = []
@@ -238,8 +287,9 @@ def _sourcing_activity(session, report_date: str) -> list[dict]:
             | PriceComparison.updated_at.like(f"{report_date}%")
         )
     ).all()
+    comparison_activity = _comparison_activity_by_id(session, comparisons)
     for comparison in comparisons:
-        detail = _comparison_detail(session, comparison)
+        detail = comparison_activity[comparison.id]
         selected_supplier_ids = {
             row["supplier_id"] for row in detail["rows"] if row.get("selected_for_purchase")
         }
@@ -532,6 +582,27 @@ async def _build_report(session, report_date: str, viewer_role: str) -> dict:
     }
 
 
+# In-process cache for CLOSED report dates only - a closed date's sections
+# are logically frozen (this module's whole point is that only the summary
+# is *stored* frozen; the detail sections were always recomputed live even
+# for a closed date, which meant every repeat view of history redid every
+# query in _build_report for no reason). The open/current-date report is
+# never cached: it's still changing, and every existing test that reads
+# "today" without closing anything expects a live recompute every time.
+#
+# Keyed by (report_date, viewer_role): _needs_attention() varies by the
+# viewer's role, so a shared per-date cache would leak one role's view to
+# another. Invalidated on both close and reopen - a closed report can be
+# reopened, edited (implicitly, by new activity landing on that date) and
+# closed again, and a stale cached body from before that round-trip would
+# silently keep serving the old snapshot.
+_closed_report_cache: dict[str, dict[str, dict]] = {}
+
+
+def _invalidate_closed_report_cache(report_date: str) -> None:
+    _closed_report_cache.pop(report_date, None)
+
+
 @router.get("")
 async def get_daily_report(
     date: str = "", current_user: User = Depends(require_erp_role()),
@@ -541,9 +612,17 @@ async def get_daily_report(
         report_row = session.scalar(
             select(DailyReport).where(DailyReport.report_date == report_date)
         )
-        body = await _build_report(session, report_date, current_user.role)
-
-    is_closed = bool(report_row and report_row.closed_at)
+        is_closed = bool(report_row and report_row.closed_at)
+        cached_body = (
+            _closed_report_cache.get(report_date, {}).get(current_user.role)
+            if is_closed else None
+        )
+        if cached_body is not None:
+            body = cached_body
+        else:
+            body = await _build_report(session, report_date, current_user.role)
+            if is_closed:
+                _closed_report_cache.setdefault(report_date, {})[current_user.role] = body
     response = {
         "report_date": report_date,
         "report_number": report_row.report_number if report_row else _report_number(report_date),
@@ -624,6 +703,10 @@ async def close_daily_report(
         row.closed_by = _display_name(current_user)
         row.updated_at = now
         session.commit()
+        # This close already computed `body` for the snapshot above - warm
+        # the cache with it for the closing user's role instead of throwing
+        # that work away and recomputing on the very next GET.
+        _closed_report_cache[report_date] = {current_user.role: body}
         return {
             "report_date": row.report_date, "report_number": row.report_number,
             "closed_at": row.closed_at, "closed_by": row.closed_by,
@@ -644,4 +727,5 @@ async def reopen_daily_report(
         row.updated_by = _display_name(current_user)
         row.updated_at = _now()
         session.commit()
+        _invalidate_closed_report_cache(report_date)
         return {"report_date": row.report_date, "closed_at": ""}

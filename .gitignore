@@ -28,6 +28,7 @@ next-env.d.ts
 # Production builds
 /build
 frontend/build/
+frontend/build-launcher/
 dist/
 dist
 
@@ -64,9 +65,6 @@ chainlit.md
 .chainlit
 .ipynb_checkpoints/
 .ac
-
-# Deployment
-.vercel
 
 # Data and databases
 agenthub/agents/youtube/db

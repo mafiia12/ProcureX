@@ -904,30 +904,308 @@ test("adding a manual item to the catalog links the existing row without losing 
   container.remove();
 });
 
-test("the comparison matrix shows the last formal price for the same supplier and item, and an explicit empty state otherwise", async () => {
+function mockLastFormalPrices(prices) {
   mockGet.mockImplementation((url, config) => {
     if (url === "/price-comparisons/last-formal-prices") {
-      return Promise.resolve({ data: { prices: {
-        "item-1|supplier-1": { unit_price: 1250, date: "2026-08-10", quotation_id: "q-1" },
-      } } });
+      return Promise.resolve({ data: { prices } });
     }
     return getResponse(url, config);
   });
+}
+
+async function renderComparison(comparisonDetail = detail) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(<SupplierPriceComparison initialComparison={detail} />);
+    root.render(<SupplierPriceComparison initialComparison={comparisonDetail} />);
     await new Promise((resolve) => setTimeout(resolve, 30));
   });
+  return { container, root };
+}
+
+test("the comparison matrix shows the last formal price for the same supplier and item, and an explicit empty state otherwise", async () => {
+  mockLastFormalPrices({
+    "item-1|supplier-1": { unit_price: 1250, date: "2026-08-10", quotation_id: "q-1" },
+  });
+  const { container, root } = await renderComparison();
 
   const priceCells = container.querySelectorAll('[data-testid^="last-supplier-price-"]');
   expect(priceCells.length).toBe(2);
+  // row-1: item-1/supplier-1, current unit_price 100 vs. previous 1250 -> down.
   const withPrice = [...priceCells].find((el) => el.textContent.includes("1250.00"));
-  const withoutPrice = [...priceCells].find((el) => el.textContent.includes("لا يوجد سعر سابق"));
+  // row-2: item-1/supplier-2 has no matching last-formal-prices entry.
+  const withoutPrice = [...priceCells].find((el) => el.textContent.includes("لا يوجد سعر رسمي سابق"));
   expect(withPrice).toBeTruthy();
-  expect(withPrice.textContent).toContain("2026-08-10");
+  expect(withPrice.getAttribute("title")).toContain("2026-08-10");
+  expect(withPrice.textContent).toContain("-92.0%");
   expect(withoutPrice).toBeTruthy();
+  // The editable current-price input is untouched and still holds row-1's
+  // real current price (100), not the previous formal price (1250).
+  expect(container.querySelector('[data-testid="inline-unit-price-row-1"]').value).toBe("100");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("current 120 / previous 100 displays +20% with an up indicator", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
+  const upDetail = { ...detail, rows: [{ ...detail.rows[0], unit_price: 120 }] };
+  const { container, root } = await renderComparison(upDetail);
+
+  const cell = container.querySelector('[data-testid="last-supplier-price-row-1"]');
+  expect(cell.textContent).toContain("+20.0%");
+  const indicator = container.querySelector('[data-testid="price-change-indicator-row-1"]');
+  expect(indicator.className).toEqual(expect.stringContaining("amber"));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("current 80 / previous 100 displays -20% with a down indicator", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
+  const downDetail = { ...detail, rows: [{ ...detail.rows[0], unit_price: 80 }] };
+  const { container, root } = await renderComparison(downDetail);
+
+  const cell = container.querySelector('[data-testid="last-supplier-price-row-1"]');
+  expect(cell.textContent).toContain("-20.0%");
+  const indicator = container.querySelector('[data-testid="price-change-indicator-row-1"]');
+  expect(indicator.className).toEqual(expect.stringContaining("emerald"));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("current 100 / previous 100 shows the unchanged state, not a percentage", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
+  const sameDetail = { ...detail, rows: [{ ...detail.rows[0], unit_price: 100 }] };
+  const { container, root } = await renderComparison(sameDetail);
+
+  const cell = container.querySelector('[data-testid="last-supplier-price-row-1"]');
+  expect(cell.textContent).toContain("نفس السعر السابق");
+  expect(cell.textContent).not.toMatch(/%/);
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("previous = 0 shows the direction without a percentage, never a division error", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 0, date: "2026-08-01", quotation_id: "q-1" } });
+  const { container, root } = await renderComparison();
+
+  const cell = container.querySelector('[data-testid="last-supplier-price-row-1"]');
+  expect(cell.textContent).not.toMatch(/%/);
+  expect(cell.textContent).not.toContain("NaN");
+  expect(cell.textContent).not.toContain("Infinity");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("a received quotation is never shown as its own previous price - the exclusion token reaches the API", async () => {
+  globalThis.mockComparisonLocationState = {
+    supplierQuotations: [{ id: "current-q-1", supplier_id: "supplier-1", status: "received" }],
+  };
+  mockLastFormalPrices({});
+  const { container, root } = await renderComparison();
+
+  const call = mockGet.mock.calls.find(([url]) => url === "/price-comparisons/last-formal-prices");
+  expect(call).toBeTruthy();
+  expect(call[1].params.pairs).toContain("item-1:supplier-1:current-q-1");
+
+  await act(async () => root.unmount());
+  container.remove();
+  globalThis.mockComparisonLocationState = null;
+});
+
+// ---------------- Non-cheapest supplier selection reason ----------------
+
+function twoSupplierDetail(overrides = {}) {
+  return {
+    id: "comparison-2", comparison_number: "CMP-000002", comparison_date: "2026-07-28",
+    project_name: "مشروع", customer_name: "عميل", notes: "",
+    rows: [
+      {
+        id: "row-cheap", item_id: "item-1", supplier_id: "supplier-1", quantity: 2,
+        item_code: "ITM-1", product_name: "منتج اختبار", brand: "A",
+        main_category: "رئيسي", subcategory: "فرعي", specifications: "مواصفة",
+        supplier_code: "SUP-1", supplier_name: "المورد الأخضر",
+        unit: "قطعة", unit_price: 100, discount_pct: 0, tax_pct: 0,
+        shipping_cost: 0, other_cost: 0, delivery_days: 5, payment_terms: "نقدي",
+        availability: "available", price_valid_until: "2099-12-31", notes: "",
+        selected_for_purchase: 0,
+      },
+      {
+        id: "row-expensive", item_id: "item-1", supplier_id: "supplier-2", quantity: 2,
+        item_code: "ITM-1", product_name: "منتج اختبار", brand: "A",
+        main_category: "رئيسي", subcategory: "فرعي", specifications: "مواصفة",
+        supplier_code: "SUP-2", supplier_name: "المورد الثاني",
+        unit: "قطعة", unit_price: 120, discount_pct: 0, tax_pct: 0,
+        shipping_cost: 0, other_cost: 0, delivery_days: 2, payment_terms: "",
+        availability: "available", price_valid_until: "2099-12-31", notes: "",
+        selected_for_purchase: 1,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function mockApprovalCreation() {
+  mockPost.mockImplementation((url) => {
+    if (url === "/workflow/approvals/from-comparison") {
+      return Promise.resolve({ data: { approval: { id: "approval-1", approval_number: "APR-000099" } } });
+    }
+    return Promise.resolve({ data: detail });
+  });
+}
+
+test("selecting the cheapest supplier needs no reason UI and sends directly", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const cheapSelected = twoSupplierDetail({
+    rows: [
+      { ...twoSupplierDetail().rows[0], selected_for_purchase: 1 },
+      { ...twoSupplierDetail().rows[1], selected_for_purchase: 0 },
+    ],
+  });
+  const { container, root } = await renderComparison(cheapSelected);
+
+  expect(container.querySelector('[data-testid="non-cheapest-summary-indicator"]')).toBeNull();
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  expect(container.querySelector('[data-testid="non-cheapest-reason-dialog"]')).toBeNull();
+  expect(mockPost).toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.objectContaining({
+    decision_reasons: [],
+  }));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("selecting a non-cheapest supplier shows the reason dialog at the send boundary with correct totals/difference", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const { container, root } = await renderComparison(twoSupplierDetail());
+
+  const indicator = container.querySelector('[data-testid="non-cheapest-summary-indicator"]');
+  expect(indicator).not.toBeNull();
+  expect(indicator.textContent).toContain("1");
+  expect(container.querySelector('[data-testid^="non-cheapest-badge-"]')).not.toBeNull();
+
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  expect(mockPost).not.toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.anything());
+  const dialog = container.querySelector('[data-testid="non-cheapest-reason-dialog"]');
+  expect(dialog).not.toBeNull();
+  expect(dialog.textContent).toContain("240.00");
+  expect(dialog.textContent).toContain("200.00");
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("a predefined reason is accepted and reaches the API", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const { container, root } = await renderComparison(twoSupplierDetail());
+
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  const select = container.querySelector('[data-testid^="non-cheapest-reason-select-"]');
+  await act(async () => {
+    select.value = "better_delivery";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => {
+    container.querySelector('[data-testid="confirm-non-cheapest-reasons"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(mockPost).toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.objectContaining({
+    decision_reasons: [expect.objectContaining({
+      item_id: "item-1", reason_code: "better_delivery", reason_text: "",
+    })],
+  }));
+  expect(container.querySelector('[data-testid="non-cheapest-reason-dialog"]')).toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("choosing Other without a note is blocked; adding the note allows sending", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const { container, root } = await renderComparison(twoSupplierDetail());
+
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  const select = container.querySelector('[data-testid^="non-cheapest-reason-select-"]');
+  await act(async () => {
+    select.value = "other";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => { container.querySelector('[data-testid="confirm-non-cheapest-reasons"]').click(); });
+  expect(mockPost).not.toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.anything());
+  expect(container.querySelector('[data-testid="non-cheapest-reason-dialog"]')).not.toBeNull();
+
+  const textInput = container.querySelector('[data-testid^="non-cheapest-reason-text-"]');
+  await act(async () => setNativeValue(textInput, "طلب خاص من العميل"));
+  await act(async () => {
+    container.querySelector('[data-testid="confirm-non-cheapest-reasons"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(mockPost).toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.objectContaining({
+    decision_reasons: [expect.objectContaining({
+      reason_code: "other", reason_text: "طلب خاص من العميل",
+    })],
+  }));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("editing the price so the selected supplier becomes cheapest removes the requirement", async () => {
+  mockLastFormalPrices({});
+  mockApprovalCreation();
+  const { container, root } = await renderComparison(twoSupplierDetail());
+
+  expect(container.querySelector('[data-testid="non-cheapest-summary-indicator"]')).not.toBeNull();
+
+  // Procurement edits the selected (expensive) supplier's price down below
+  // the other row's - it is now genuinely the cheapest. The edit is local
+  // state (matrix input), immediately re-evaluated with no save needed.
+  const priceInput = container.querySelector('[data-testid="inline-unit-price-row-expensive"]');
+  await act(async () => setNativeValue(priceInput, "50"));
+  expect(container.querySelector('[data-testid="non-cheapest-summary-indicator"]')).toBeNull();
+
+  // Sending still requires a save first (existing, unrelated guard) - save
+  // with the same cheaper price so the persisted comparison matches.
+  const cheaperDetail = twoSupplierDetail({
+    rows: [
+      twoSupplierDetail().rows[0],
+      { ...twoSupplierDetail().rows[1], unit_price: 50 },
+    ],
+  });
+  mockPut.mockResolvedValue({ data: cheaperDetail });
+  await act(async () => {
+    container.querySelector('[data-testid="comparison-save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  await act(async () => { container.querySelector('[data-testid="comparison-summary-send"]').click(); });
+  expect(container.querySelector('[data-testid="non-cheapest-reason-dialog"]')).toBeNull();
+  expect(mockPost).toHaveBeenCalledWith("/workflow/approvals/from-comparison", expect.objectContaining({
+    decision_reasons: [],
+  }));
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("historical indicator does not replace or disable the editable current price control", async () => {
+  mockLastFormalPrices({ "item-1|supplier-1": { unit_price: 100, date: "2026-08-01", quotation_id: "q-1" } });
+  const { container, root } = await renderComparison();
+
+  const input = container.querySelector('[data-testid="inline-unit-price-row-1"]');
+  expect(input).toBeTruthy();
+  expect(input.tagName).toBe("INPUT");
+  expect(input.disabled).toBe(false);
+  expect(input.value).toBe("100");
 
   await act(async () => root.unmount());
   container.remove();

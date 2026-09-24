@@ -7,10 +7,7 @@ import hmac
 import json
 import os
 import re
-import threading
-import time
 import uuid
-from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -27,6 +24,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -43,12 +41,14 @@ try:
     from .auth.service import require_erp_role
     from .business_codes import next_business_code
     from .database import Base, Customer, Item, SessionLocal
+    from .rate_limit import RateLimiter
 except ImportError:
     from attachment_storage import get_attachment_storage
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import next_business_code
     from database import Base, Customer, Item, SessionLocal
+    from rate_limit import RateLimiter
 # procurement_workflow imports IncomingPurchaseRequest etc. from this module,
 # so _audit/normalize_match must be imported lazily (inside the function that
 # needs them) to avoid a circular import at module load time.
@@ -203,6 +203,21 @@ class IncomingPurchaseRequestItem(Base):
         default="",
         server_default="",
     )
+
+    # Ancestry for a line inside a corrected child REQ: the ORIGINAL returned
+    # item (in the parent REQ) this line was resubmitted from. Empty for every
+    # ordinary line. Item-level (not request-level like
+    # IncomingPurchaseRequest.source_item_id above) because one grouped
+    # corrected REQ can carry several corrected lines, each tracing back to a
+    # different original item — see site_portal.py's returned-items flow.
+    source_item_id: Mapped[str] = mapped_column(String, index=True, default="", server_default="")
+
+    # Pending correction, saved by the Site Engineer but not yet resubmitted.
+    # {} until a draft is saved; then {product_name, unit, quantity, note,
+    # required_delivery_date, saved_by, saved_at}. Only meaningful while this
+    # item's review_status is "rejected"/"need_clarification" and it has no
+    # child line yet (source_item_id of some other item pointing back at it).
+    correction_draft: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
 
 class IncomingRequestAttachment(Base):
     __tablename__ = "incoming_request_attachments"
@@ -404,8 +419,7 @@ internal_router = APIRouter(
     tags=["internal-incoming-purchase-requests"],
 )
 
-_rate_events: dict[str, deque[float]] = defaultdict(deque)
-_rate_lock = threading.Lock()
+_rate_limiter = RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECONDS)
 
 
 @public_router.get("/health", include_in_schema=False)
@@ -431,19 +445,7 @@ def _client_ip(request: Request) -> str:
 
 
 def _check_rate_limit(key: str) -> None:
-    now = time.monotonic()
-    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
-    with _rate_lock:
-        events = _rate_events[key]
-        while events and events[0] < cutoff:
-            events.popleft()
-        if len(events) >= RATE_LIMIT_MAX:
-            raise HTTPException(
-                429,
-                "تم إرسال عدد كبير من الطلبات. يرجى المحاولة لاحقاً",
-                headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
-            )
-        events.append(now)
+    _rate_limiter.hit(key, "تم إرسال عدد كبير من الطلبات. يرجى المحاولة لاحقاً")
 
 
 def _validate_public_payload(body: PublicRequestIn) -> None:
@@ -526,7 +528,9 @@ def require_internal_access(
         raise HTTPException(403, "المسارات الداخلية متاحة محلياً فقط")
 
 
-def _request_summary(row: IncomingPurchaseRequest, item_count: int = 0) -> dict:
+def _request_summary(
+    row: IncomingPurchaseRequest, item_count: int = 0, source_request_number: str = "",
+) -> dict:
     return {
         "id": row.id,
         "request_number": row.request_number,
@@ -546,6 +550,7 @@ def _request_summary(row: IncomingPurchaseRequest, item_count: int = 0) -> dict:
         "requester_user_id": row.requester_user_id,
         "source_request_id": row.source_request_id,
         "source_item_id": row.source_item_id,
+        "source_request_number": source_request_number,
         "required_delivery_date": row.required_delivery_date,
         "priority": row.priority,
         "notes": row.notes,
@@ -580,7 +585,13 @@ def _detail(session, row: IncomingPurchaseRequest) -> dict:
         )
     ).all() if item_ids else []
     attachment_map = {attachment.request_item_id: attachment for attachment in attachments}
-    result = _request_summary(row, len(items))
+    source_request_number = ""
+    if row.source_request_id:
+        source_request_number = session.scalar(
+            select(IncomingPurchaseRequest.request_number)
+            .where(IncomingPurchaseRequest.id == row.source_request_id)
+        ) or ""
+    result = _request_summary(row, len(items), source_request_number)
     result["items"] = [{
         "id": item.id,
         "position": item.position,
@@ -596,6 +607,7 @@ def _detail(session, row: IncomingPurchaseRequest) -> dict:
         "review_reason": item.review_reason,
         "reviewed_by": item.reviewed_by,
         "reviewed_at": item.reviewed_at,
+        "source_item_id": item.source_item_id,
         "attachment": ({
             "id": attachment_map[item.id].id,
             "original_filename": attachment_map[item.id].original_filename,
@@ -767,12 +779,21 @@ async def submit_public_request(
 
 @internal_router.get("", dependencies=[Depends(require_internal_access)])
 async def list_incoming_requests(
+    response: Response,
     search: str = "",
     status: str = "",
     priority: str = "",
     assigned_employee: str = "",
+    limit: int = 500,
+    offset: int = 0,
     current_user: User = Depends(require_erp_role()),
 ):
+    # `limit` was previously silently ignored - the query always returned the
+    # newest 500 with no way to page past them (see performance audit,
+    # docs/performance-reliability-audit.md). 500 stays the default so
+    # existing callers keep today's response shape; offset makes the rest
+    # reachable instead of un-fetchable once a business passes 500 REQs.
+    limit = max(1, min(limit, 500))
     with SessionLocal() as session:
         statement = select(IncomingPurchaseRequest)
         if search.strip():
@@ -792,13 +813,27 @@ async def list_incoming_requests(
             statement = statement.where(
                 IncomingPurchaseRequest.assigned_employee.ilike(f"%{assigned_employee.strip()}%")
             )
-        rows = session.scalars(statement.order_by(IncomingPurchaseRequest.created_at.desc()).limit(500)).all()
+        total = session.scalar(
+            select(func.count()).select_from(statement.with_only_columns(IncomingPurchaseRequest.id).subquery())
+        )
+        response.headers["X-Total-Count"] = str(total)
+        rows = session.scalars(
+            statement.order_by(IncomingPurchaseRequest.created_at.desc()).limit(limit).offset(offset)
+        ).all()
         counts = dict(session.execute(
             select(IncomingPurchaseRequestItem.request_id, func.count())
             .where(IncomingPurchaseRequestItem.request_id.in_([row.id for row in rows]))
             .group_by(IncomingPurchaseRequestItem.request_id)
         ).all()) if rows else {}
-        return [_request_summary(row, counts.get(row.id, 0)) for row in rows]
+        source_ids = {row.source_request_id for row in rows if row.source_request_id}
+        source_numbers = dict(session.execute(
+            select(IncomingPurchaseRequest.id, IncomingPurchaseRequest.request_number)
+            .where(IncomingPurchaseRequest.id.in_(source_ids))
+        ).all()) if source_ids else {}
+        return [
+            _request_summary(row, counts.get(row.id, 0), source_numbers.get(row.source_request_id, ""))
+            for row in rows
+        ]
 
 
 @internal_router.get("/notifications", dependencies=[Depends(require_internal_access)])

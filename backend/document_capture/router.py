@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated
@@ -62,7 +61,6 @@ from .models import (
     ItemCandidate,
     ItemMasterCreationRequest,
     PurchaseRequestDocument,
-    RequestAuditEvent,
 )
 from .security import validate_document_uploads
 from .service import audit, confirm_document, create_document, now_iso

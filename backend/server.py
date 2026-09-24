@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import logging
 import hashlib
@@ -14,7 +15,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Literal, Optional
 
-from fastapi import Depends, FastAPI, APIRouter, HTTPException, UploadFile, File, Request
+from fastapi import Depends, FastAPI, APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -29,9 +30,11 @@ try:
     from .auth.models import User
     from .auth.service import require_erp_role
     from .business_codes import BUSINESS_CODE_CONFIG, next_business_code, reserve_code
+    from . import diagnostics
     from .database import (
-        DATABASE_URL, IS_SQLITE, Item, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
-        PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal, db, init_db,
+        DATABASE_URL, IS_SQLITE, Item, Payment, PriceHistory, Project, Purchase, PurchaseOrder,
+        PurchaseOrderItem, PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine,
+        SessionLocal, db, init_db,
     )
     from .incoming_requests import (
         IncomingPurchaseRequest, IncomingPurchaseRequestItem, internal_router, public_router,
@@ -59,18 +62,17 @@ try:
     from .daily_report import router as daily_report_router
     from .whatsapp.router import router as whatsapp_router
     from .whatsapp.admin_router import router as whatsapp_admin_router
-    from .excel_io import (parse_workbook, import_data, build_export_workbook,
-                           next_code, next_seq_id, next_record_no,
-                           recompute_payment_status)
 except ImportError:
     from auth.admin_router import router as admin_users_router
     from auth.router import router as auth_router
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import BUSINESS_CODE_CONFIG, next_business_code, reserve_code
+    import diagnostics
     from database import (
-        DATABASE_URL, IS_SQLITE, Item, Payment, Project, Purchase, PurchaseOrder, PurchaseOrderItem,
-        PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine, SessionLocal, db, init_db,
+        DATABASE_URL, IS_SQLITE, Item, Payment, PriceHistory, Project, Purchase, PurchaseOrder,
+        PurchaseOrderItem, PurchaseOrderPayment, PurchaseOrderReceipt, PurchaseOrderReceiptLine,
+        SessionLocal, db, init_db,
     )
     from incoming_requests import (
         IncomingPurchaseRequest, IncomingPurchaseRequestItem, internal_router, public_router,
@@ -98,9 +100,6 @@ except ImportError:
     from daily_report import router as daily_report_router
     from whatsapp.router import router as whatsapp_router
     from whatsapp.admin_router import router as whatsapp_admin_router
-    from excel_io import (parse_workbook, import_data, build_export_workbook,
-                          next_code, next_seq_id, next_record_no,
-                          recompute_payment_status)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -330,8 +329,28 @@ async def entity_list(coll_name):
 
 
 @api.get("/suppliers")
-async def list_suppliers(include_procurement: bool = False, current_user: User = Depends(require_erp_role())):
+async def list_suppliers(
+    response: Response,
+    include_procurement: bool = False,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    current_user: User = Depends(require_erp_role()),
+):
     suppliers = await entity_list("suppliers")
+    # Historical codes are durable comparison snapshots. Order their numeric
+    # suffixes without rewriting those codes or their relationships.
+    def supplier_order(supplier):
+        code = str(supplier.get("code") or "")
+        match = re.fullmatch(r"SUP-(\d+)", code)
+        return (0, int(match.group(1)), code, supplier["id"]) if match else (1, 0, code, supplier["id"])
+
+    suppliers.sort(key=supplier_order)
+    # Same contract as /items: omitting limit returns every supplier exactly
+    # as before (every existing caller), X-Total-Count always carries the
+    # pre-pagination count for a future pager.
+    response.headers["X-Total-Count"] = str(len(suppliers))
+    if limit is not None:
+        suppliers = suppliers[offset:offset + limit]
     if not include_procurement:
         return suppliers
     with SessionLocal() as session:
@@ -414,13 +433,36 @@ async def list_suppliers(include_procurement: bool = False, current_user: User =
 
 
 @api.get("/customers")
-async def list_customers(current_user: User = Depends(require_erp_role())):
-    return await entity_list("customers")
+async def list_customers(
+    response: Response,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    current_user: User = Depends(require_erp_role()),
+):
+    customers = await entity_list("customers")
+    # Same contract as /items and /suppliers: omitting limit returns every
+    # customer exactly as before every existing caller does.
+    response.headers["X-Total-Count"] = str(len(customers))
+    if limit is not None:
+        customers = customers[offset:offset + limit]
+    return customers
 
 
 @api.get("/projects")
-async def list_projects(include_procurement: bool = False, current_user: User = Depends(require_erp_role())):
+async def list_projects(
+    response: Response,
+    include_procurement: bool = False,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    current_user: User = Depends(require_erp_role()),
+):
     projects = await entity_list("projects")
+    # Same contract as /items and /suppliers: X-Total-Count reflects every
+    # project before pagination, then the (cheaper) per-project enrichment
+    # below only runs for the page actually being returned.
+    response.headers["X-Total-Count"] = str(len(projects))
+    if limit is not None:
+        projects = projects[offset:offset + limit]
 
     purchases = await db.purchases.find(
         {},
@@ -496,12 +538,64 @@ async def list_projects(include_procurement: bool = False, current_user: User = 
     return projects
 
 
+def _price_history_summary_by_code(session, item_codes: set[str]) -> dict[str, dict]:
+    """One grouped SQL query: purchase_count/total_qty/total_value per
+    item_code, plus the most recent row's price/date/supplier (ties broken
+    by the higher record_no, matching insertion order). Replaces an
+    O(items x price_history) Python scan that re-filtered the full
+    price_history table once per item."""
+    if not item_codes:
+        return {}
+    latest_rank = (
+        func.row_number()
+        .over(
+            partition_by=PriceHistory.item_code,
+            order_by=(PriceHistory.date.desc(), PriceHistory.record_no.desc()),
+        )
+        .label("rn")
+    )
+    ranked = (
+        select(
+            PriceHistory.item_code,
+            PriceHistory.unit_price,
+            PriceHistory.date,
+            PriceHistory.supplier,
+            func.count().over(partition_by=PriceHistory.item_code).label("purchase_count"),
+            func.sum(PriceHistory.quantity).over(partition_by=PriceHistory.item_code).label("total_qty"),
+            func.sum(PriceHistory.final_price).over(partition_by=PriceHistory.item_code).label("total_value"),
+            latest_rank,
+        )
+        .where(PriceHistory.item_code.in_(item_codes))
+        .subquery()
+    )
+    rows = session.execute(
+        select(
+            ranked.c.item_code, ranked.c.unit_price, ranked.c.date, ranked.c.supplier,
+            ranked.c.purchase_count, ranked.c.total_qty, ranked.c.total_value,
+        ).where(ranked.c.rn == 1)
+    ).all()
+    return {
+        row.item_code: {
+            "purchase_count": int(row.purchase_count or 0),
+            "total_qty": round(float(row.total_qty or 0), 2),
+            "total_value": round(float(row.total_value or 0), 2),
+            "last_price": row.unit_price,
+            "last_date": row.date,
+            "last_supplier": row.supplier or "",
+        }
+        for row in rows
+    }
+
+
 @api.get("/items")
 async def list_items(
+    response: Response,
     main_category: Optional[str] = None,
     subcategory: Optional[str] = None,
     brand: Optional[str] = None,
     search: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
     current_user: User = Depends(require_erp_role()),
 ):
     items = [clean(d) for d in await db.items.find({}).sort("code", 1).to_list(10000)]
@@ -527,26 +621,32 @@ async def list_items(
             item for item in items
             if any(query in str(item.get(field, "")).casefold() for field in searchable_fields)
         ]
-    hist = await db.price_history.find({}, {"_id": 0}).to_list(100000)
-    for it in items:
-        rows = [h for h in hist if h.get("item_code") == it.get("code")]
-        it["purchase_count"] = len(rows)
-        it["total_qty"] = round(sum(h.get("quantity", 0) for h in rows), 2)
-        it["total_value"] = round(sum(h.get("final_price", 0) for h in rows), 2)
-        rows.sort(key=lambda h: h.get("date", ""))
-        it["last_price"] = rows[-1].get("unit_price") if rows else None
-        it["last_date"] = rows[-1].get("date") if rows else None
-        it["last_supplier"] = rows[-1].get("supplier", "") if rows else ""
 
-    # "Last formal price" is a distinct, explicitly-sourced figure: the
-    # latest *received* Supplier Quotation line for the item (see
-    # rfq._formal_quotation_rows). It never mixes with the legacy
-    # price_history above (direct-purchase imports, not formal quotations).
+    # Total after filtering, before pagination - callers that page (5.3
+    # will) read this to know how many pages exist. Omitting `limit`
+    # preserves the exact previous behavior (every filtered item, in one
+    # response) for every caller that doesn't ask to page.
+    response.headers["X-Total-Count"] = str(len(items))
+    if limit is not None:
+        items = items[offset:offset + limit]
+
     with SessionLocal() as session:
+        history_by_code = _price_history_summary_by_code(
+            session, {it["code"] for it in items if it.get("code")},
+        )
+        # "Last formal price" is a distinct, explicitly-sourced figure: the
+        # latest *received* Supplier Quotation line for the item (see
+        # rfq._formal_quotation_rows). It never mixes with the legacy
+        # price_history above (direct-purchase imports, not formal quotations).
         formal_prices = latest_formal_price_by_item(
             session, {it["id"] for it in items if it.get("id")},
         )
+    empty_history = {
+        "purchase_count": 0, "total_qty": 0, "total_value": 0,
+        "last_price": None, "last_date": None, "last_supplier": "",
+    }
     for it in items:
+        it.update(history_by_code.get(it.get("code"), empty_history))
         formal = formal_prices.get(it["id"])
         it["last_formal_price"] = formal["unit_price"] if formal else None
         it["last_formal_supplier"] = formal["supplier_name"] if formal else ""
@@ -838,6 +938,43 @@ for _name in (name for name in ENTITIES if name != "items"):
 
 
 # ---------------- Purchases ----------------
+# Relocated from the now-removed excel_io.py import/export surface - these
+# three are plain sequence/status helpers with no Excel dependency, used only
+# by the legacy direct-purchase/payment routes below.
+async def next_seq_id(coll, field: str, prefix: str, width: int):
+    docs = await coll.find({}, {field: 1}).to_list(100000)
+    mx = 0
+    for d in docs:
+        c = str(d.get(field, ""))
+        if c.startswith(prefix):
+            try:
+                mx = max(mx, int(c[len(prefix):]))
+            except ValueError:
+                pass
+    return f"{prefix}{mx + 1:0{width}d}"
+
+
+async def next_record_no(coll):
+    docs = await coll.find({}, {"record_no": 1}).to_list(100000)
+    return max((int(d.get("record_no", 0) or 0) for d in docs), default=0) + 1
+
+
+async def recompute_payment_status(db, purchase_id: str):
+    pur = await db.purchases.find_one({"purchase_id": purchase_id})
+    if not pur:
+        return
+    pays = await db.payments.find({"purchase_id": purchase_id}).to_list(10000)
+    paid = sum(p.get("amount_paid", 0) for p in pays)
+    total = pur.get("invoice_total", 0)
+    if paid <= 0:
+        status = "غير مدفوع"
+    elif paid >= total - 0.001:
+        status = "مدفوع"
+    else:
+        status = "مدفوع جزئي"
+    await db.purchases.update_one({"purchase_id": purchase_id}, {"$set": {"payment_status": status}})
+
+
 class PurchaseItemIn(BaseModel):
     item_id: str
     quantity: float
@@ -2714,6 +2851,12 @@ async def _dashboard_procurement_intelligence(
     })
 
     # ---- 14. Consolidated follow-up/attention center, priority ordered ----
+    # Every entry below carries entity_type/entity_id (plus a type-specific
+    # id such as purchase_order_id/rfq_id/request_id/approval_id) so the
+    # frontend follow-up deep-link helper (getFollowUpTarget, Dashboard.jsx)
+    # can route straight to the exact record/stage instead of a bare list
+    # page. "path" is kept unchanged for backward compatibility with any
+    # caller still using it directly.
     attention_items = []
     for row in delivery_attention:
         if row["status"] == "delivery_problem":
@@ -2721,6 +2864,8 @@ async def _dashboard_procurement_intelligence(
                 "type": "delivery_problem", "reference": row["po_number"], "project_name": row["project_name"],
                 "reason": "مشكلة في التوريد", "due_or_age": row["last_receipt_date"],
                 "path": f"/purchase-orders/{row['purchase_order_id']}",
+                "entity_type": "purchase_order", "entity_id": row["purchase_order_id"],
+                "purchase_order_id": row["purchase_order_id"], "stage": "receiving",
             })
     for row in payment_attention:
         if row["is_overdue"]:
@@ -2728,6 +2873,8 @@ async def _dashboard_procurement_intelligence(
             attention_items.append({
                 "type": "overdue_payment", "reference": row["po_number"], "project_name": row["project_name"],
                 "reason": reason, "due_or_age": row["due_date"], "path": f"/purchase-orders/{row['purchase_order_id']}",
+                "entity_type": "purchase_order", "entity_id": row["purchase_order_id"],
+                "purchase_order_id": row["purchase_order_id"], "stage": "payments",
             })
     for row in sourcing_attention:
         attention_items.append({
@@ -2735,6 +2882,7 @@ async def _dashboard_procurement_intelligence(
             "reference": row["rfq_number"], "project_name": row["project_name"],
             "reason": row["reason"], "due_or_age": row["deadline"],
             "path": f"/rfq/{row['rfq_id']}",
+            "entity_type": "rfq", "entity_id": row["rfq_id"], "rfq_id": row["rfq_id"],
         })
     for request_row in sorted(requests_ready_for_sourcing, key=lambda row: row.updated_at):
         attention_items.append({
@@ -2743,6 +2891,8 @@ async def _dashboard_procurement_intelligence(
             "reason": "أصناف معتمدة جاهزة لإنشاء طلب تسعير ومقارنة",
             "due_or_age": request_row.updated_at, "path": "/incoming-requests",
             "responsible_role": "procurement_responsible",
+            "entity_type": "incoming_request", "entity_id": request_row.id, "request_id": request_row.id,
+            "stage": "sourcing",
         })
     pending_approvals = [
         approval for approval in approvals
@@ -2756,6 +2906,8 @@ async def _dashboard_procurement_intelligence(
             "reason": "اعتماد معلق يحتاج قرارًا",
             "due_or_age": approval.created_at, "path": "/approvals",
             "responsible_role": approval.responsible_role,
+            "entity_type": "approval", "entity_id": approval.id, "approval_id": approval.id,
+            "stage": approval.approval_stage,
         })
     for order in active_orders:
         if order.get("status") == "sent":
@@ -2763,6 +2915,7 @@ async def _dashboard_procurement_intelligence(
                 "type": "awaiting_supplier_confirmation", "reference": order.get("po_number", ""),
                 "project_name": order.get("project_name", ""), "reason": "بانتظار تأكيد المورد",
                 "due_or_age": order.get("po_date"), "path": f"/purchase-orders/{order['id']}",
+                "entity_type": "purchase_order", "entity_id": order["id"], "purchase_order_id": order["id"],
             })
     for row in delivery_attention:
         if row["status"] == "partial_received":
@@ -2770,6 +2923,8 @@ async def _dashboard_procurement_intelligence(
                 "type": "partial_received", "reference": row["po_number"], "project_name": row["project_name"],
                 "reason": f"{row['received_lines']} من {row['total_lines']} بنود مستلمة",
                 "due_or_age": row["last_receipt_date"], "path": f"/purchase-orders/{row['purchase_order_id']}",
+                "entity_type": "purchase_order", "entity_id": row["purchase_order_id"],
+                "purchase_order_id": row["purchase_order_id"], "stage": "receiving",
             })
     for request_row in requests:
         if request_row.status == "need_clarification":
@@ -2780,6 +2935,8 @@ async def _dashboard_procurement_intelligence(
                 "reason": "بانتظار استكمال التوضيح المطلوب",
                 "due_or_age": request_row.updated_at,
                 "path": "/incoming-requests",
+                "entity_type": "incoming_request", "entity_id": request_row.id, "request_id": request_row.id,
+                "stage": "clarification",
             })
         elif request_row.status in {"new", "under_review"}:
             attention_items.append({
@@ -2789,9 +2946,12 @@ async def _dashboard_procurement_intelligence(
                 "reason": "طلب شراء يحتاج مراجعة فنية" if request_row.status == "new" else "مراجعة فنية قيد الإجراء",
                 "due_or_age": request_row.updated_at,
                 "path": "/incoming-requests",
+                "entity_type": "incoming_request", "entity_id": request_row.id, "request_id": request_row.id,
+                "stage": "technical-review",
             })
     for item in attention_items:
         item.setdefault("responsible_role", ATTENTION_TYPE_ROLE_OWNERS.get(item["type"], ""))
+        item.setdefault("action_type", item["type"])
 
     # Admin sees the full action center; every other role sees only the
     # items owned by their own workflow responsibility (existing RBAC roles
@@ -2802,8 +2962,13 @@ async def _dashboard_procurement_intelligence(
 
     attention_items = attention_items[:20]
 
+    request_pipeline = request_pipeline_summary(
+        requests, session.scalars(select(PurchaseOrder)).all(),
+    )
+    operational_request_count = sum(stage["count"] for stage in request_pipeline)
+    historical_draft_count = len(requests) - operational_request_count
     active_po_count = sum(1 for o in active_orders if o.get("status") != "completed")
-    active_requests_count = sum(1 for row in requests if row.status not in {"rejected", "cancelled", "completed"})
+    active_requests_count = sum(1 for row in requests if row.status not in {"rejected", "cancelled", "completed"}) - historical_draft_count
     summary = {
         "active_requests": active_requests_count,
         "requests_requiring_action": sum(
@@ -2819,9 +2984,9 @@ async def _dashboard_procurement_intelligence(
 
     return {
         "summary": summary,
-        "request_pipeline": request_pipeline_summary(requests),
+        "request_pipeline": request_pipeline,
         "procurement_funnel": {
-            "request_count": len(requests), "rfq_count": len(rfqs),
+            "request_count": operational_request_count, "rfq_count": len(rfqs),
             "comparison_count": len(comparisons), "approval_count": len(approvals),
             "formal_po_count": procurement_kpis["formal_po_count"],
             "formal_completed_po_count": procurement_kpis["formal_completed_po_count"],
@@ -2904,29 +3069,6 @@ async def dashboard(current_user: User = Depends(require_erp_role())):
         "payment_status": [{"status": k, "count": v["count"], "total": round(v["total"], 2)}
                            for k, v in status_dist.items()],
     }
-
-
-# ---------------- Excel import / export ----------------
-@api.get("/export/excel")
-async def export_excel(current_user: User = Depends(require_erp_role())):
-    data = await build_export_workbook(db)
-    filename = f"RE_DECOR_Procurement_ERP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-    return Response(content=data,
-                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f"attachment; filename={filename}"})
-
-
-@api.post("/import/excel")
-async def import_excel(file: UploadFile = File(...), current_user: User = Depends(require_erp_role())):
-    if not file.filename.lower().endswith((".xlsx", ".xlsm")):
-        raise HTTPException(422, "من فضلك ارفع ملف Excel بصيغة xlsx أو xlsm")
-    content = await file.read()
-    try:
-        parsed = parse_workbook(content)
-    except Exception:
-        raise HTTPException(422, "تعذر قراءة الملف، تأكد من أنه ملف Excel صحيح")
-    counts = await import_data(db, parsed)
-    return {"imported": counts}
 
 
 @api.get("/")
@@ -3088,6 +3230,40 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
         )
 
     @application.middleware("http")
+    async def perf_diagnostics(request, call_next):
+        """Structured per-request timing: never logs query strings, headers,
+        or bodies - only method/path/status/duration/db counters. See
+        docs/performance-reliability-audit.md."""
+        request_id = uuid.uuid4().hex[:12]
+        request.state.request_id = request_id
+        diagnostics.reset_request_metrics()
+        start = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = (time.perf_counter() - start) * 1000
+            metrics = diagnostics.snapshot()
+            logger.info(
+                "perf req_id=%s method=%s path=%s status=EXC duration_ms=%.1f "
+                "db_ms=%.1f db_queries=%d ext_ms=%.1f ext_calls=%d",
+                request_id, request.method, request.url.path, duration_ms,
+                metrics.db_time_ms, metrics.db_query_count,
+                metrics.external_time_ms, metrics.external_call_count,
+            )
+            raise
+        duration_ms = (time.perf_counter() - start) * 1000
+        metrics = diagnostics.snapshot()
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "perf req_id=%s method=%s path=%s status=%d duration_ms=%.1f "
+            "db_ms=%.1f db_queries=%d ext_ms=%.1f ext_calls=%d",
+            request_id, request.method, request.url.path, response.status_code, duration_ms,
+            metrics.db_time_ms, metrics.db_query_count,
+            metrics.external_time_ms, metrics.external_call_count,
+        )
+        return response
+
+    @application.middleware("http")
     async def security_headers(request, call_next):
         if is_public and request.method == "POST":
             content_length = request.headers.get("content-length", "")
@@ -3116,4 +3292,5 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
     return application
 
 
-app = create_app()
+# The desktop public launcher uses an existing database without running schema helpers.
+app = create_app(initialize_database=os.getenv("PROCUREX_SKIP_DATABASE_INIT") != "1")

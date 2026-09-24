@@ -71,8 +71,8 @@ export default function SitePortalRequest() {
   const [correctionDraft, setCorrectionDraft] = useState({
     product_name: "", unit: "", quantity: 1, note: "", required_delivery_date: today,
   });
-  const [correctionFiles, setCorrectionFiles] = useState([]);
   const [correcting, setCorrecting] = useState(false);
+  const [resubmittingGroupId, setResubmittingGroupId] = useState("");
 
   const loadPortalRequests = () => api.get("/portal/purchase-requests")
     .then(({ data }) => setPortalRequests(data || []))
@@ -176,41 +176,69 @@ export default function SitePortalRequest() {
   const openCorrection = (item) => {
     setCorrectionTarget(item);
     setCorrectionDraft({
-      product_name: item.product_name || "", unit: item.unit || "",
-      quantity: Number(item.quantity || 1), note: item.specifications || "",
-      required_delivery_date: today,
+      product_name: item.draft?.product_name || item.product_name || "",
+      unit: item.draft?.unit || item.unit || "",
+      quantity: Number(item.draft?.quantity || item.quantity || 1),
+      note: item.draft?.note ?? item.specifications ?? "",
+      required_delivery_date: item.draft?.required_delivery_date || "",
     });
-    setCorrectionFiles([]);
   };
 
+  // Saves the correction as a draft only - it never creates a REQ. Several
+  // items from the same original REQ are grouped and resubmitted together
+  // via resubmitGroup below, once the engineer picks which ready items to
+  // include.
   const submitCorrection = async () => {
     if (!correctionTarget) return;
     if (!(Number(correctionDraft.quantity) > 0)) {
       toast.error(tr("الكمية يجب أن تكون أكبر من صفر", "Quantity must be greater than zero"));
       return;
     }
-    const form = new FormData();
-    form.append("payload", JSON.stringify({
-      ...correctionDraft, quantity: Number(correctionDraft.quantity),
-    }));
-    correctionFiles.forEach((file) => form.append("attachments", file));
     setCorrecting(true);
     try {
-      const { data } = await api.post(
-        `/portal/returned-items/${correctionTarget.id}/correct`, form,
-        { headers: { "Content-Type": "multipart/form-data" } },
-      );
-      toast.success(data.already_exists
-        ? tr(`تم تقديم هذا الصنف بالفعل في ${data.request_number}`, `This item was already resubmitted in ${data.request_number}`)
-        : tr(`تم إنشاء الطلب المصحح ${data.request_number}`, `Corrected request ${data.request_number} was created`));
+      await api.post(`/portal/returned-items/${correctionTarget.id}/correct`, {
+        ...correctionDraft, quantity: Number(correctionDraft.quantity),
+      });
+      toast.success(tr("تم حفظ التصحيح", "Correction saved"));
       setCorrectionTarget(null);
-      await Promise.all([loadReturnedItems(), loadPortalRequests()]);
+      await loadReturnedItems();
     } catch (error) {
       toast.error(errMsg(error));
     } finally {
       setCorrecting(false);
     }
   };
+
+  const resubmitGroup = async (requestId, itemIds) => {
+    if (!itemIds.length) return;
+    setResubmittingGroupId(requestId);
+    try {
+      const { data } = await api.post(`/portal/purchase-requests/${requestId}/resubmit-corrections`, {
+        item_ids: itemIds,
+      });
+      toast.success(data.already_exists
+        ? tr(`تم تقديم هذه الأصناف بالفعل في ${data.request_number}`, `These items were already resubmitted in ${data.request_number}`)
+        : tr(`تم إنشاء الطلب المصحح ${data.request_number}`, `Corrected request ${data.request_number} was created`));
+      await Promise.all([loadReturnedItems(), loadPortalRequests()]);
+    } catch (error) {
+      toast.error(errMsg(error));
+    } finally {
+      setResubmittingGroupId("");
+    }
+  };
+
+  const returnedGroups = returnedItems.reduce((groups, item) => {
+    let group = groups.find((candidate) => candidate.request_id === item.request_id);
+    if (!group) {
+      group = {
+        request_id: item.request_id, request_number: item.request_number,
+        project_name: item.project_name, items: [],
+      };
+      groups.push(group);
+    }
+    group.items.push(item);
+    return groups;
+  }, []);
 
   const projects = context?.projects ?? [];
   const noProjectAssigned = context !== null && projects.length === 0;
@@ -298,14 +326,42 @@ export default function SitePortalRequest() {
 
       <main className="mx-auto max-w-4xl space-y-3 px-3 py-3 pb-24 sm:px-5 sm:py-5 sm:pb-6">
         {!!returnedItems.length && <details className="border border-amber-500/30 bg-card" data-testid="returned-items-section">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2"><div><h1 className="text-sm font-bold">{tr("أصناف تحتاج إجراء", "Items Needing Action")}</h1><p className="text-[10.5px] text-muted-foreground">{tr("صحح البنود المستبعدة وأعد تقديمها عند الحاجة.", "Correct excluded items and resubmit when needed.")}</p></div><span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-bold text-amber-700 dark:text-amber-300">{returnedItems.length}</span></summary>
-          <div className="space-y-2 border-t p-3">{returnedItems.map((item) => <article key={item.id} className="rounded-md border bg-muted/30 p-3" data-testid="returned-item">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0"><div className="flex items-center gap-2"><span className="font-mono text-xs font-bold" dir="ltr">{item.request_number}</span><span className="rounded-full bg-background px-2 py-0.5 text-[11px] ring-1 ring-border">{item.status === "rejected" ? tr("مرفوض", "Rejected") : tr("يحتاج استكمال", "Needs Completion")}</span></div><div className="mt-1 font-semibold">{item.product_name}</div><div className="text-xs text-muted-foreground">{item.quantity} {item.unit} · {item.project_name}</div></div>
-              {item.corrected_request ? <div className="text-end text-xs text-emerald-700 dark:text-emerald-300"><div>{tr("أُعيد تقديمه", "Resubmitted")}</div><div className="font-mono font-bold" dir="ltr">{item.corrected_request.request_number}</div></div> : <Button size="sm" variant="outline" onClick={() => openCorrection(item)} data-testid={`correct-returned-item-${item.id}`}><RotateCcw className="h-3.5 w-3.5" />{tr("تصحيح وإعادة الطلب", "Correct and Re-submit Item")}</Button>}
-            </div>
-            <dl className="mt-3 grid gap-2 rounded-md bg-background/70 p-3 text-xs sm:grid-cols-3"><div><dt className="text-muted-foreground">{tr("السبب", "Reason")}</dt><dd className="mt-1 font-semibold">{item.reason || "-"}</dd></div><div><dt className="text-muted-foreground">{tr("المراجع", "Reviewer")}</dt><dd className="mt-1 font-semibold">{item.reviewer || "-"}</dd></div><div><dt className="text-muted-foreground">{tr("التاريخ", "Date")}</dt><dd className="mt-1 font-semibold">{item.reviewed_at ? new Date(item.reviewed_at).toLocaleString(locale) : "-"}</dd></div></dl>
-          </article>)}</div>
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2"><div><h1 className="text-sm font-bold">{tr("أصناف تحتاج إجراء", "Items Needing Action")}</h1><p className="text-[10.5px] text-muted-foreground">{tr("صحح البنود المستبعدة، ثم أعد تقديم كل الأصناف الجاهزة من نفس الطلب دفعة واحدة.", "Correct excluded items, then resubmit every ready item from the same request together.")}</p></div><span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-bold text-amber-700 dark:text-amber-300">{returnedItems.length}</span></summary>
+          <div className="space-y-3 border-t p-3">{returnedGroups.map((group) => {
+            const readyItems = group.items.filter((item) => item.ready && !item.corrected_request);
+            const isResubmitting = resubmittingGroupId === group.request_id;
+            return (
+              <article key={group.request_id} className="rounded-md border bg-muted/30 p-3" data-testid="returned-request-group">
+                <div className="flex items-center gap-2"><span className="font-mono text-xs font-bold" dir="ltr">{group.request_number}</span><span className="text-xs text-muted-foreground">{group.project_name}</span></div>
+                <div className="mt-2 space-y-2">{group.items.map((item) => <div key={item.id} className="rounded-md border bg-background/70 p-2.5" data-testid="returned-item">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2"><span className="rounded-full bg-muted px-2 py-0.5 text-[11px] ring-1 ring-border">{item.status === "rejected" ? tr("مرفوض", "Rejected") : tr("يحتاج استكمال", "Needs Completion")}</span>{item.corrected_request ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300" data-testid="returned-item-state">{tr("أُعيد تقديمه", "Resubmitted")}</span> : item.ready ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300" data-testid="returned-item-state">{tr("جاهز لإعادة التقديم", "Ready to Resubmit")}</span> : <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300" data-testid="returned-item-state">{tr("يحتاج تعديل", "Needs Edit")}</span>}</div>
+                      <div className="mt-1 font-semibold">{item.product_name}</div>
+                      <div className="text-xs text-muted-foreground">{item.quantity} {item.unit}</div>
+                      <div className="mt-1 text-[10.5px] text-muted-foreground">{tr("السبب", "Reason")}: {item.reason || "-"}</div>
+                    </div>
+                    {item.corrected_request ? (
+                      <div className="text-end text-xs text-emerald-700 dark:text-emerald-300"><div className="font-mono font-bold" dir="ltr">{item.corrected_request.request_number}</div></div>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={() => openCorrection(item)} data-testid={`correct-returned-item-${item.id}`}><RotateCcw className="h-3.5 w-3.5" />{item.ready ? tr("تعديل التصحيح", "Edit Correction") : tr("تصحيح", "Correct")}</Button>
+                    )}
+                  </div>
+                </div>)}</div>
+                {!!readyItems.length && <div className="mt-3 flex justify-end border-t pt-3">
+                  <Button
+                    size="sm" data-testid="resubmit-corrected-group-button"
+                    disabled={isResubmitting}
+                    onClick={() => resubmitGroup(group.request_id, readyItems.map((item) => item.id))}
+                  >
+                    {isResubmitting
+                      ? tr("جارٍ إعادة التقديم...", "Resubmitting...")
+                      : tr(`إعادة تقديم الأصناف المعدلة (${readyItems.length})`, `Resubmit Corrected Items (${readyItems.length})`)}
+                  </Button>
+                </div>}
+              </article>
+            );
+          })}</div>
         </details>}
         {!!portalRequests.length && <details className="border bg-card" data-testid="portal-request-history">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2"><div><h1 className="text-sm font-bold">{tr("طلباتي الأخيرة", "My Recent Requests")}</h1><p className="text-[10.5px] text-muted-foreground">{tr("المتابعة والردود المطلوبة على الطلبات السابقة.", "Follow-up and required responses for previous requests.")}</p></div><span className="rounded-full bg-muted px-2 py-0.5 text-xs font-bold">{portalRequests.length}</span></summary>
@@ -392,8 +448,8 @@ export default function SitePortalRequest() {
         </section>
 
         {correctionTarget && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCorrectionTarget(null); }}>
-          <section className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-5 shadow-xl" role="dialog" aria-modal="true" aria-label={tr("تصحيح وإعادة طلب الصنف", "Correct and resubmit item")} data-testid="returned-item-correction-dialog">
-            <div><h2 className="font-bold">{tr("تصحيح وإعادة طلب الصنف", "Correct and Re-submit Item")}</h2><p className="mt-1 text-xs text-muted-foreground">{tr(`سيُنشأ طلب جديد مرتبط بـ ${correctionTarget.request_number}. لن يتغير الطلب الأصلي.`, `A new request linked to ${correctionTarget.request_number} will be created. The original request will not change.`)}</p></div>
+          <section className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-5 shadow-xl" role="dialog" aria-modal="true" aria-label={tr("تصحيح الصنف المرتجع", "Correct returned item")} data-testid="returned-item-correction-dialog">
+            <div><h2 className="font-bold">{tr("تصحيح الصنف المرتجع", "Correct Returned Item")}</h2><p className="mt-1 text-xs text-muted-foreground">{tr(`سيُحفظ هذا كتصحيح مبدئي على الطلب ${correctionTarget.request_number}. لن يُنشأ أي طلب جديد الآن — استخدم زر "إعادة تقديم الأصناف المعدلة" لاحقًا لتقديم كل الأصناف الجاهزة معًا.`, `This is saved as a draft correction on ${correctionTarget.request_number}. No new request is created yet — use "Resubmit Corrected Items" later to submit every ready item together.`)}</p></div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5"><Label>{tr("الصنف", "Item")}</Label><Input value={correctionDraft.product_name} disabled={Boolean(correctionTarget.item_id)} onChange={(event) => setCorrectionDraft((current) => ({ ...current, product_name: event.target.value }))} /></div>
               <div className="space-y-1.5"><Label>{tr("الوحدة", "Unit")}</Label><Input value={correctionDraft.unit} disabled={Boolean(correctionTarget.item_id)} onChange={(event) => setCorrectionDraft((current) => ({ ...current, unit: event.target.value }))} /></div>
@@ -401,8 +457,7 @@ export default function SitePortalRequest() {
               <div className="space-y-1.5"><Label>{tr("تاريخ التسليم المطلوب", "Required Delivery Date")}</Label><Input type="date" min={today} value={correctionDraft.required_delivery_date} onChange={(event) => setCorrectionDraft((current) => ({ ...current, required_delivery_date: event.target.value }))} /></div>
               <div className="space-y-1.5 sm:col-span-2"><Label>{tr("التصحيح / المواصفات", "Correction / Specifications")}</Label><Textarea rows={3} value={correctionDraft.note} onChange={(event) => setCorrectionDraft((current) => ({ ...current, note: event.target.value }))} /></div>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2"><label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-xs hover:bg-muted"><Paperclip className="h-4 w-4" />{tr("إضافة مرفقات", "Add Attachments")}<input type="file" multiple className="hidden" accept={ACCEPTED_ATTACHMENT_TYPES} onChange={(event) => setCorrectionFiles(Array.from(event.target.files || []))} /></label><div className="flex gap-2"><Button variant="outline" onClick={() => setCorrectionTarget(null)}>{tr("إلغاء", "Cancel")}</Button><Button onClick={submitCorrection} disabled={correcting} data-testid="submit-corrected-item">{correcting ? tr("جارٍ الإرسال...", "Submitting...") : tr("إنشاء الطلب المصحح", "Create Corrected Request")}</Button></div></div>
-            {!!correctionFiles.length && <div className="text-xs text-muted-foreground">{correctionFiles.map((file) => file.name).join(" · ")}</div>}
+            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setCorrectionTarget(null)}>{tr("إلغاء", "Cancel")}</Button><Button onClick={submitCorrection} disabled={correcting} data-testid="submit-corrected-item">{correcting ? tr("جارٍ الحفظ...", "Saving...") : tr("حفظ التصحيح", "Save Correction")}</Button></div>
           </section>
         </div>}
 
@@ -534,7 +589,13 @@ export default function SitePortalRequest() {
                     />
                   </div>
                   <div className="sm:col-span-1">
-                    <Button className="h-8 w-8" variant="ghost" size="icon" onClick={() => removeRow(row.key)} aria-label={tr("حذف الصنف", "Remove item")}>
+                    <Button
+                      className="relative h-8 w-8 after:absolute after:-inset-1.5 after:content-['']"
+                      variant="ghost" size="icon"
+                      data-testid="portal-row-delete"
+                      onClick={() => removeRow(row.key)}
+                      aria-label={tr("حذف الصنف", "Remove item")}
+                    >
                       <Trash2 className="h-4 w-4 text-red-500" />
                     </Button>
                   </div>
