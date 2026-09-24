@@ -501,6 +501,68 @@ def test_duplicate_webhook_message_and_repeated_confirmation_never_duplicate_the
     assert final_count == 1
 
 
+def test_message_claimed_by_another_worker_is_skipped_without_side_effects(client, fake_provider, monkeypatch):
+    """Worker B passed the "already processed?" check just before worker A
+    committed the same message id. B's claim must then fail on the primary
+    key and skip the message: no second REQ, no reply, no error. (The real
+    cross-worker race is exercised on PostgreSQL; SQLite serializes writers,
+    so this pins the loser path deterministically.)"""
+    suffix = uuid.uuid4().hex[:8]
+    phone = f"+2024{_phone_suffix()}"
+    with SessionLocal() as session:
+        project_id = _make_project(session, suffix)
+        _make_engineer(session, suffix, phone, project_ids=[project_id])
+    _post_webhook(
+        client, _wa_id(phone), f"wamid.{uuid.uuid4().hex}",
+        f"مشروع واتساب {suffix}\n20 شيكارة معجون\n\nمطلوب 2 سبتمبر",
+    )
+    confirm_id = f"wamid.{uuid.uuid4().hex}"
+    with SessionLocal() as session:  # worker A's committed claim
+        session.add(WhatsAppProcessedMessage(message_id=confirm_id, processed_at="2026-01-01T00:00:00+00:00"))
+        session.commit()
+
+    message = {"from": _wa_id(phone), "id": confirm_id, "type": "text", "text": {"body": "تأكيد"}}
+    with SessionLocal() as session:
+        real_get = session.get
+        monkeypatch.setattr(session, "get", lambda model, key, *a, **kw: (
+            None if model is WhatsAppProcessedMessage else real_get(model, key, *a, **kw)
+        ))
+        assert wa_router._handle_message(session, True, message) is None
+
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count()).select_from(IncomingPurchaseRequest)
+            .where(IncomingPurchaseRequest.project_id == project_id)
+        ) == 0
+        draft = session.scalar(select(WhatsAppDraft).where(WhatsAppDraft.phone_e164 == phone))
+        assert draft.status != "confirmed"
+
+
+def test_confirmation_landing_before_the_number_is_written_back_still_reports_it(client, fake_provider):
+    """A concurrent confirmation can read the draft after the REQ and the
+    confirmed status are committed but before confirmed_request_number is
+    written back; the reply must still carry the real REQ number."""
+    suffix = uuid.uuid4().hex[:8]
+    phone = f"+2025{_phone_suffix()}"
+    with SessionLocal() as session:
+        project_id = _make_project(session, suffix)
+        _make_engineer(session, suffix, phone, project_ids=[project_id])
+    _post_webhook(
+        client, _wa_id(phone), f"wamid.{uuid.uuid4().hex}",
+        f"مشروع واتساب {suffix}\n20 شيكارة معجون\n\nمطلوب 2 سبتمبر",
+    )
+    _post_webhook(client, _wa_id(phone), f"wamid.{uuid.uuid4().hex}", "تأكيد")
+    with SessionLocal() as session:
+        draft = session.scalar(select(WhatsAppDraft).where(WhatsAppDraft.phone_e164 == phone))
+        request_number = draft.confirmed_request_number
+        assert request_number.startswith("REQ-")
+        draft.confirmed_request_number = ""  # the in-between state
+        session.commit()
+
+    _post_webhook(client, _wa_id(phone), f"wamid.{uuid.uuid4().hex}", "تأكيد")
+    assert request_number in fake_provider[-1][1]
+
+
 # ---------- Cancellation (spec item 12) ----------
 
 def test_cancellation_invalidates_the_draft(client, fake_provider):

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
+from sqlalchemy.exc import IntegrityError
 
 try:
     from ..database import SessionLocal
@@ -77,6 +78,18 @@ def _handle_message(session, service_enabled: bool, message: dict) -> tuple[str,
         return None
     if session.get(WhatsAppProcessedMessage, message_id) is not None:
         return None  # Meta redelivered a message we already acted on.
+    # Claim the message id BEFORE any side effect. handle_inbound commits
+    # part-way (e.g. the new REQ), so recording the id afterwards let two
+    # concurrent deliveries of one message both create a REQ (measured on
+    # PostgreSQL: 8 concurrent deliveries -> 2-3 REQs). A second worker's
+    # insert now waits on the primary key until this transaction commits,
+    # then fails here and skips the message - no reply, no second REQ.
+    session.add(WhatsAppProcessedMessage(message_id=message_id, processed_at=_now()))
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        return None
 
     message_type = message.get("type", "")
     from_number = message.get("from", "")
@@ -94,7 +107,6 @@ def _handle_message(session, service_enabled: bool, message: dict) -> tuple[str,
             text = (message.get("text") or {}).get("body", "")
             reply = handle_inbound(session, user, phone, text)
 
-    session.add(WhatsAppProcessedMessage(message_id=message_id, processed_at=_now()))
     session.commit()
 
     return (phone, reply) if phone else None

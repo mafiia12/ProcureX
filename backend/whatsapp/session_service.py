@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 try:
     from ..database import Item, Project
+    from ..incoming_requests import IncomingPurchaseRequest
     from ..site_portal import _assigned_projects, create_incoming_request
     from . import parser
     from .matching import match_item_master, match_project
@@ -24,6 +25,7 @@ try:
     from .phone import mask_phone
 except ImportError:  # pragma: no cover - direct backend execution
     from database import Item, Project
+    from incoming_requests import IncomingPurchaseRequest
     from site_portal import _assigned_projects, create_incoming_request
     from whatsapp import parser
     from whatsapp.matching import match_item_master, match_project
@@ -128,10 +130,18 @@ def resolve_engineer(session, phone_e164: str):
 
 
 def _load_latest_draft(session, phone_e164: str) -> WhatsAppDraft | None:
+    # Row lock for the rest of this transaction: two different messages for
+    # the same conversation (e.g. "تأكيد" sent twice) processed by two
+    # workers both saw an unconfirmed draft and each created a REQ (measured:
+    # 8 concurrent confirmations -> 5 REQs). The second now waits, then reads
+    # the confirmed draft and gets the "already registered" reply. Ignored on
+    # SQLite, whose single writer already serializes.
     return session.scalar(
         select(WhatsAppDraft)
         .where(WhatsAppDraft.phone_e164 == phone_e164)
         .order_by(WhatsAppDraft.created_at.desc())
+        .limit(1)
+        .with_for_update()
     )
 
 
@@ -268,6 +278,12 @@ def _confirm_and_create(session, user, draft: WhatsAppDraft) -> str:
             "specifications": "", "quantity": item["quantity"], "unit": item["unit"],
         } for item in draft.items_json]
         engineer_name = user.display_name or user.username
+        # create_incoming_request commits, which releases this draft's row
+        # lock (see _load_latest_draft). Marking the draft confirmed first
+        # makes that same commit persist the REQ and the confirmed status
+        # together, so a concurrent confirmation waiting on the lock can
+        # never see an unconfirmed draft after the REQ exists.
+        draft.status = "confirmed"
         request_id, request_number = create_incoming_request(
             session, user=user, project=project, items=resolved_items,
             required_delivery_date=draft.required_delivery_date,
@@ -279,7 +295,6 @@ def _confirm_and_create(session, user, draft: WhatsAppDraft) -> str:
             ),
             source="whatsapp",
         )
-        draft.status = "confirmed"
         draft.confirmed_request_id = request_id
         draft.confirmed_request_number = request_number
         draft.updated_at = _now()
@@ -289,6 +304,22 @@ def _confirm_and_create(session, user, draft: WhatsAppDraft) -> str:
         session.rollback()
         logger.exception("WhatsApp draft %s failed to create a purchase request", draft.id)
         return FAILURE_TEXT
+
+
+def _confirmed_request_number(session, user, draft: WhatsAppDraft) -> str:
+    if draft.confirmed_request_number:
+        return draft.confirmed_request_number
+    # The confirming worker writes the number back right after the commit
+    # that created the REQ; a concurrent confirmation can land in between.
+    return session.scalar(
+        select(IncomingPurchaseRequest.request_number)
+        .where(
+            IncomingPurchaseRequest.requester_user_id == user.id,
+            IncomingPurchaseRequest.source == "whatsapp",
+        )
+        .order_by(IncomingPurchaseRequest.created_at.desc())
+        .limit(1)
+    ) or ""
 
 
 def handle_inbound(session, user, phone_e164: str, text: str) -> str:
@@ -310,14 +341,14 @@ def handle_inbound(session, user, phone_e164: str, text: str) -> str:
             return CANCEL_ACK_TEXT
         if draft is not None and draft.status == "confirmed":
             return (
-                f"تم بالفعل تسجيل هذا الطلب برقم {draft.confirmed_request_number}. "
+                f"تم بالفعل تسجيل هذا الطلب برقم {_confirmed_request_number(session, user, draft)}. "
                 "لإلغائه يرجى التواصل مع مسؤول المشتريات."
             )
         return NOTHING_TO_CANCEL_TEXT
 
     if parser.is_confirm(text):
         if draft is not None and draft.status == "confirmed":
-            return _success_text(draft.confirmed_request_number, draft.project_name)
+            return _success_text(_confirmed_request_number(session, user, draft), draft.project_name)
         if in_progress:
             if _is_ready(draft):
                 return _confirm_and_create(session, user, draft)
