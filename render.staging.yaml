@@ -8,7 +8,15 @@ services:
     buildCommand: pip install -r requirements-production.txt
     # Free staging instances do not support pre-deploy commands. Apply the
     # staging migration explicitly; startup remains read-only and fails on drift.
-    startCommand: python scripts/assert_schema_current.py && uvicorn server:app --host 0.0.0.0 --port $PORT --proxy-headers
+    # Uvicorn reads its worker count from WEB_CONCURRENCY (set per service
+    # below). --timeout-keep-alive 65: at uvicorn's default 5s, a keep-alive
+    # timer that fired late (event loop busy with synchronous DB work) killed
+    # connections carrying the next request - 8.7% failed requests at 50
+    # concurrent users, 0% at 65s. --timeout-graceful-shutdown 20 bounds how
+    # long a deploy/restart waits for in-flight requests; without it one
+    # stuck request kept the process alive until the platform hard-killed it.
+    # See docs/production-capacity-plan.md.
+    startCommand: python scripts/assert_schema_current.py && uvicorn server:app --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 65 --timeout-graceful-shutdown 20
     healthCheckPath: /api/public/purchase-requests/health
     envVars:
       - key: PYTHON_VERSION
@@ -17,6 +25,11 @@ services:
         value: staging
       - key: APP_SURFACE
         value: public
+      # One worker: the public intake rate limiter and the WhatsApp webhook's
+      # per-conversation handling are only correct within one process
+      # (docs/production-capacity-plan.md, horizontal-scaling blockers).
+      - key: WEB_CONCURRENCY
+        value: "1"
       - key: DATABASE_URL
         sync: false
       - key: ATTACHMENT_STORAGE_BACKEND
@@ -93,7 +106,15 @@ services:
     buildCommand: pip install -r requirements-production.txt
     # Free staging instances do not support pre-deploy commands. Apply the
     # staging migration explicitly; startup remains read-only and fails on drift.
-    startCommand: python scripts/assert_schema_current.py && uvicorn server:app --host 0.0.0.0 --port $PORT --proxy-headers
+    # Uvicorn reads its worker count from WEB_CONCURRENCY (set per service
+    # below). --timeout-keep-alive 65: at uvicorn's default 5s, a keep-alive
+    # timer that fired late (event loop busy with synchronous DB work) killed
+    # connections carrying the next request - 8.7% failed requests at 50
+    # concurrent users, 0% at 65s. --timeout-graceful-shutdown 20 bounds how
+    # long a deploy/restart waits for in-flight requests; without it one
+    # stuck request kept the process alive until the platform hard-killed it.
+    # See docs/production-capacity-plan.md.
+    startCommand: python scripts/assert_schema_current.py && uvicorn server:app --host 0.0.0.0 --port $PORT --proxy-headers --timeout-keep-alive 65 --timeout-graceful-shutdown 20
     healthCheckPath: /api/public/purchase-requests/health
     envVars:
       - key: PYTHON_VERSION
@@ -102,6 +123,15 @@ services:
         value: staging
       - key: APP_SURFACE
         value: full
+      # Two workers: measured ~2x throughput and slow-request isolation (one
+      # heavy dashboard/report no longer stalls every other user). Budget:
+      # 2 workers x (DB_POOL_SIZE 5 + DB_POOL_MAX_OVERFLOW 2) = 14 Postgres
+      # connections; with the public API's 7 that is 21 - check it against
+      # SHOW max_connections before raising either. Login throttling is
+      # per-process, so each username can try AUTH_LOGIN_RATE_LIMIT times per
+      # worker. See docs/production-capacity-plan.md.
+      - key: WEB_CONCURRENCY
+        value: "2"
       - key: AUTH_SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
