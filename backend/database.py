@@ -428,6 +428,21 @@ class BusinessCodeSequence(Base):
     next_value: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class RateLimitEvent(Base):
+    """One counted attempt for a rate-limited action (see rate_limit.py).
+    Shared by every worker/instance; key_hash never stores a raw username
+    or IP address."""
+
+    __tablename__ = "rate_limit_events"
+    __table_args__ = (
+        Index("ix_rate_limit_events_scope_key_time", "scope", "key_hash", "created_at"),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    scope: Mapped[str] = mapped_column(String, nullable=False)
+    key_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
 MODELS = {
     "suppliers": Supplier, "customers": Customer, "projects": Project,
     "items": Item, "purchases": Purchase, "purchase_items": PurchaseItem,
@@ -540,6 +555,7 @@ def init_db() -> Optional[Path]:
             "users", "user_project_access",
             "daily_reports",
             "whatsapp_drafts", "whatsapp_processed_messages", "whatsapp_settings",
+            "rate_limit_events",
         }
         existing = set(inspect(engine).get_table_names())
         if not required.issubset(existing):

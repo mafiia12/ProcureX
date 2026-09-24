@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from sqlalchemy import inspect
 
 
-HEAD_REVISION = "0023_price_comparison_selection"
+HEAD_REVISION = "0024_rate_limit_events"
 
 # SQL expressions as they must appear in the database schema.  These defaults
 # already describe the values used by the application and legacy SQLite

@@ -22,7 +22,7 @@ from scripts.schema_fingerprint import release_semantic_schema, semantic_schema
 
 
 EXPECTED_SEMANTIC_SHA256 = (
-    "a6592d200824de1ba1d348683bd1b583d356ab5ba7a3cc3d27c83c7d63019288"
+    "495dd2a8f74bb7e06a1735e31a4e9e9baab4c13a3f3090f15e06ce6f2f9ac91b"
 )
 CORRECTED_ANCESTRY_LEGACY_SEMANTIC_SHA256 = {
     # Certified 0016 schema and the unversioned local ProcureX database shape

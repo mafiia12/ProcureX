@@ -34,11 +34,11 @@ AUTH_LOGIN_RATE_LIMIT = int(os.getenv("AUTH_LOGIN_RATE_LIMIT", "10"))
 AUTH_LOGIN_RATE_WINDOW_SECONDS = int(os.getenv("AUTH_LOGIN_RATE_WINDOW_SECONDS", "900"))
 LOGIN_THROTTLE_MESSAGE = "تم تجاوز الحد المسموح لمحاولات الدخول. يرجى المحاولة لاحقاً"
 
-# Two independent limiters, per-process/in-memory (see rate_limit.py).
+# Two independent limiters, shared across workers via the database (see rate_limit.py).
 # Username-keyed always runs. IP-keyed only runs when TRUST_PROXY_HEADERS is
 # exactly "true" - see _ip_throttle_is_trustworthy for why.
-_ip_limiter = RateLimiter(AUTH_LOGIN_RATE_LIMIT, AUTH_LOGIN_RATE_WINDOW_SECONDS)
-_username_limiter = RateLimiter(AUTH_LOGIN_RATE_LIMIT, AUTH_LOGIN_RATE_WINDOW_SECONDS)
+_ip_limiter = RateLimiter("login_ip", AUTH_LOGIN_RATE_LIMIT, AUTH_LOGIN_RATE_WINDOW_SECONDS)
+_username_limiter = RateLimiter("login_username", AUTH_LOGIN_RATE_LIMIT, AUTH_LOGIN_RATE_WINDOW_SECONDS)
 
 
 def _ip_throttle_is_trustworthy() -> bool:

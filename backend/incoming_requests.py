@@ -419,7 +419,7 @@ internal_router = APIRouter(
     tags=["internal-incoming-purchase-requests"],
 )
 
-_rate_limiter = RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECONDS)
+_rate_limiter = RateLimiter("public_request", RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECONDS)
 
 
 @public_router.get("/health", include_in_schema=False)
