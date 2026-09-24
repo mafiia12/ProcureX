@@ -17,7 +17,6 @@ from fastapi import (
     APIRouter, Depends, File, Form, Header, HTTPException, Request, Response,
     UploadFile,
 )
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import (
@@ -37,14 +36,14 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 try:
-    from .attachment_storage import get_attachment_storage
+    from .attachment_storage import get_attachment_storage, run_storage_io
     from .auth.models import User
     from .auth.service import require_erp_role
     from .business_codes import next_business_code
     from .database import Base, Customer, Item, SessionLocal
     from .rate_limit import RateLimiter
 except ImportError:
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import get_attachment_storage, run_storage_io
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import next_business_code
@@ -705,7 +704,7 @@ async def submit_public_request(
                 # Blocking network/disk call, offloaded off the event loop
                 # thread - see docs/performance-reliability-audit.md,
                 # "S3/R2 Attachment Storage".
-                await run_in_threadpool(
+                await run_storage_io(
                     storage.put, attachment["stored_filename"], attachment["content"],
                     attachment["media_type"], attachment["sha256"],
                 )
@@ -776,7 +775,7 @@ async def submit_public_request(
             session.commit()
     except Exception:
         for key in written_keys:
-            await run_in_threadpool(storage.delete, key)
+            await run_storage_io(storage.delete, key)
         raise
     return {"ok": True, "duplicate": False, "request_number": request_number}
 
@@ -1240,7 +1239,7 @@ async def get_request_attachment(
     # Fetched after the DB session closes and off the event loop thread -
     # see docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
     try:
-        stored = await run_in_threadpool(get_attachment_storage().get, stored_filename)
+        stored = await run_storage_io(get_attachment_storage().get, stored_filename)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "ملف المرفق غير موجود")
     return StreamingResponse(
@@ -1273,7 +1272,7 @@ async def get_request_general_attachment(
         original_filename = attachment.original_filename
 
     try:
-        stored = await run_in_threadpool(get_attachment_storage().get, stored_filename)
+        stored = await run_storage_io(get_attachment_storage().get, stored_filename)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "ملف المرفق غير موجود")
     return StreamingResponse(

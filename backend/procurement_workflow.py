@@ -18,14 +18,13 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 try:
-    from .attachment_storage import get_attachment_storage
+    from .attachment_storage import get_attachment_storage, run_storage_io
     from .auth.models import User
     from .auth.service import has_role_or_higher, require_erp_role
     from .business_codes import next_business_code, reserve_code
@@ -49,7 +48,7 @@ try:
         SupplierQuotationAttachment, SupplierQuotationLine,
     )
 except ImportError:
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import get_attachment_storage, run_storage_io
     from auth.models import User
     from auth.service import has_role_or_higher, require_erp_role
     from business_codes import next_business_code, reserve_code
@@ -1760,7 +1759,7 @@ async def upload_payment_proof(
             # keeps this one request's own DB connection checked out for
             # the upload's duration, which is the accepted, documented
             # trade-off here.
-            await run_in_threadpool(storage.put, key, content, media_type, digest)
+            await run_storage_io(storage.put, key, content, media_type, digest)
             stored = True
             old_key = payment.proof_storage_key
             payment.proof_storage_key = key
@@ -1779,11 +1778,11 @@ async def upload_payment_proof(
                    message="تم رفع إثبات دفع وأصبح تحت المراجعة",
                    metadata={"payment_id": payment.id, "media_type": media_type, "size": len(content)})
         if old_key and old_key != key:
-            await run_in_threadpool(storage.delete, old_key)
+            await run_storage_io(storage.delete, old_key)
         return {"ok": True, "status": "under_review", "paid": False}
     except Exception:
         if stored:
-            await run_in_threadpool(storage.delete, key)
+            await run_storage_io(storage.delete, key)
         raise
 
 
@@ -1798,10 +1797,17 @@ def get_payment_proof(payment_id: str, current_user: User = Depends(require_erp_
         payment = session.get(ApprovalPayment, payment_id)
         if not payment or not payment.proof_storage_key:
             raise HTTPException(404, "صورة الإثبات غير موجودة")
-        stored = get_attachment_storage().get(payment.proof_storage_key)
-        return StreamingResponse(stored.body, media_type=payment.proof_media_type,
-                                 headers={"Content-Length": str(stored.content_length),
-                                          "Cache-Control": "private, no-store"})
+        proof_key, media_type = payment.proof_storage_key, payment.proof_media_type
+    # Read after the DB session closes (this sync route already runs in a
+    # worker thread), and a missing object is a 404 like every other
+    # attachment download, not a 500.
+    try:
+        stored = get_attachment_storage().get(proof_key)
+    except (FileNotFoundError, KeyError):
+        raise HTTPException(404, "صورة الإثبات غير موجودة")
+    return StreamingResponse(stored.body, media_type=media_type,
+                             headers={"Content-Length": str(stored.content_length),
+                                      "Cache-Control": "private, no-store"})
 
 
 @internal_workflow_router.post("/payments/{payment_id}/verify")

@@ -17,13 +17,12 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, select
 
 try:
-    from ..attachment_storage import get_attachment_storage
+    from ..attachment_storage import get_attachment_storage, run_storage_io
     from ..auth.models import User
     from ..auth.service import require_erp_role
     from ..database import Item, SessionLocal
@@ -38,7 +37,7 @@ try:
         require_internal_access,
     )
 except ImportError:  # pragma: no cover
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import get_attachment_storage, run_storage_io
     from auth.models import User
     from auth.service import require_erp_role
     from database import Item, SessionLocal
@@ -786,7 +785,7 @@ async def download_document_file(
 
     # Fetched after the DB session closes and off the event loop thread -
     # see docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
-    stored = await run_in_threadpool(get_attachment_storage().get, stored_filename)
+    stored = await run_storage_io(get_attachment_storage().get, stored_filename)
     return StreamingResponse(
         stored.body,
         media_type=media_type,

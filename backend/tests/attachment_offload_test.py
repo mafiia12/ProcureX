@@ -78,6 +78,17 @@ ADMIN_HEADERS = _admin_headers()
 AUTH_HEADERS = {**INTERNAL_HEADERS, **ADMIN_HEADERS}
 
 
+@pytest.fixture
+def shared_loop_client():
+    """One TestClient portal = one event loop for every request made through
+    it, from any thread - like a single uvicorn worker. The module-level
+    `client` (no `with`) starts a NEW event loop per request, so a blocked
+    loop can never delay another request made through it: the blocking tests
+    below must use this fixture or they pass even on unfixed code."""
+    with TestClient(app) as shared:
+        yield shared
+
+
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter():
     incoming_requests_module._rate_limiter.clear()
@@ -104,7 +115,7 @@ def _public_payload(unique: str) -> dict:
     }
 
 
-def _submit_with_attachment(unique: str | None = None):
+def _submit_with_attachment(unique: str | None = None, http=None):
     unique = unique or uuid.uuid4().hex
     payload = _public_payload(unique)
     files = {
@@ -112,7 +123,7 @@ def _submit_with_attachment(unique: str | None = None):
             "proof.jpg", b"\xff\xd8\xff\xe0" + unique.encode() + b"0" * 500, "image/jpeg",
         ),
     }
-    return client.post(
+    return (http or client).post(
         "/api/public/purchase-requests",
         data={"payload": json.dumps(payload)}, files=files,
     )
@@ -138,7 +149,7 @@ def _patch_slow_get(monkeypatch, delay: float):
     monkeypatch.setattr(attachment_storage.LocalAttachmentStorage, "get", _slow_get)
 
 
-def test_slow_upload_does_not_block_concurrent_unrelated_request(monkeypatch):
+def test_slow_upload_does_not_block_concurrent_unrelated_request(monkeypatch, shared_loop_client):
     """The core fix: storage.put() runs off the event loop thread, so a slow
     upload must not stall an unrelated concurrent request."""
     _patch_slow_put(monkeypatch, delay=1.5)
@@ -147,7 +158,7 @@ def test_slow_upload_does_not_block_concurrent_unrelated_request(monkeypatch):
 
     def _do_slow_upload():
         t0 = time.perf_counter()
-        resp = _submit_with_attachment()
+        resp = _submit_with_attachment(http=shared_loop_client)
         slow_result["status"] = resp.status_code
         slow_result["duration"] = time.perf_counter() - t0
 
@@ -156,7 +167,7 @@ def test_slow_upload_does_not_block_concurrent_unrelated_request(monkeypatch):
     time.sleep(0.3)  # let the slow upload's storage.put() start sleeping first
 
     t0 = time.perf_counter()
-    unrelated = client.get("/api/public/purchase-requests/health")
+    unrelated = shared_loop_client.get("/api/suppliers", headers=AUTH_HEADERS)
     unrelated_duration = time.perf_counter() - t0
     thread.join(timeout=10)
 
@@ -172,7 +183,7 @@ def test_slow_upload_does_not_block_concurrent_unrelated_request(monkeypatch):
     )
 
 
-def test_slow_download_does_not_block_concurrent_unrelated_request(monkeypatch):
+def test_slow_download_does_not_block_concurrent_unrelated_request(monkeypatch, shared_loop_client):
     """Same property for the download path (storage.get())."""
     upload = _submit_with_attachment()
     assert upload.status_code == 200
@@ -196,7 +207,7 @@ def test_slow_download_does_not_block_concurrent_unrelated_request(monkeypatch):
 
     def _do_slow_download():
         t0 = time.perf_counter()
-        resp = client.get(
+        resp = shared_loop_client.get(
             f"/api/internal/incoming-purchase-requests/{request_id}/attachments/{attachment_id}",
             headers=AUTH_HEADERS,
         )
@@ -208,7 +219,7 @@ def test_slow_download_does_not_block_concurrent_unrelated_request(monkeypatch):
     time.sleep(0.3)
 
     t0 = time.perf_counter()
-    unrelated = client.get("/api/public/purchase-requests/health")
+    unrelated = shared_loop_client.get("/api/suppliers", headers=AUTH_HEADERS)
     unrelated_duration = time.perf_counter() - t0
     thread.join(timeout=10)
 
@@ -299,10 +310,10 @@ def test_s3_client_has_bounded_timeouts_pool_and_retry_policy(monkeypatch):
     attachment_storage.S3AttachmentStorage()
 
     config = client_factory.call_args.kwargs["config"]
-    assert config.connect_timeout == 5
-    assert config.read_timeout == 30
-    assert config.max_pool_connections == 10
-    assert config.retries == {"mode": "standard", "max_attempts": 3}
+    assert config.connect_timeout == 3
+    assert config.read_timeout == 10
+    assert config.max_pool_connections == attachment_storage.STORAGE_MAX_CONCURRENCY
+    assert config.retries == {"mode": "standard", "total_max_attempts": 2}
 
 
 def test_local_backend_still_round_trips_content_unaffected_by_offload():
@@ -336,3 +347,47 @@ def test_local_backend_still_round_trips_content_unaffected_by_offload():
     )
     assert download.status_code == 200
     assert download.content == content
+
+
+def test_storage_calls_are_capped_on_their_own_limiter(monkeypatch):
+    """Storage I/O must never occupy more than STORAGE_MAX_CONCURRENCY
+    threads: measured, 45 downloads hung on R2 held the whole shared thread
+    pool and login (a sync route) took 62.7s."""
+    import asyncio
+
+    monkeypatch.setattr(attachment_storage, "STORAGE_MAX_CONCURRENCY", 3)
+    lock = threading.Lock()
+    state = {"now": 0, "peak": 0}
+
+    def blocking_call():
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+
+    async def main():
+        await asyncio.gather(*[attachment_storage.run_storage_io(blocking_call) for _ in range(12)])
+
+    asyncio.run(main())
+    assert state["peak"] == 3
+
+
+def test_r2_timeouts_and_attempts_follow_environment(monkeypatch):
+    from types import SimpleNamespace
+
+    client_factory = Mock(return_value=Mock())
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=client_factory))
+    for name, value in {
+        "R2_ENDPOINT_URL": "https://example.r2.cloudflarestorage.com", "R2_ACCESS_KEY_ID": "k",
+        "R2_SECRET_ACCESS_KEY": "s", "R2_BUCKET_NAME": "b", "R2_CONNECT_TIMEOUT_SECONDS": "2",
+        "R2_READ_TIMEOUT_SECONDS": "7", "R2_MAX_ATTEMPTS": "4",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    attachment_storage.S3AttachmentStorage()
+
+    config = client_factory.call_args.kwargs["config"]
+    assert (config.connect_timeout, config.read_timeout) == (2.0, 7.0)
+    assert config.retries == {"mode": "standard", "total_max_attempts": 4}

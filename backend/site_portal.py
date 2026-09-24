@@ -25,12 +25,11 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, or_, select
 
 try:
-    from .attachment_storage import get_attachment_storage
+    from .attachment_storage import get_attachment_storage, run_storage_io
     from .auth.models import User, UserProjectAccess
     from .auth.service import require_site_portal
     from .database import Item, Project, SessionLocal
@@ -41,7 +40,7 @@ try:
         _detect_file_type,
     )
 except ImportError:  # pragma: no cover - direct backend execution
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import get_attachment_storage, run_storage_io
     from auth.models import User, UserProjectAccess
     from auth.service import require_site_portal
     from database import Item, Project, SessionLocal
@@ -548,7 +547,7 @@ async def submit_clarification(
         for attachment in prepared:
             stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
             attachment["stored_filename"] = f"{request_id}/{stored_name}"
-            await run_in_threadpool(
+            await run_storage_io(
                 storage.put, attachment["stored_filename"], attachment["content"],
                 attachment["media_type"], attachment["sha256"],
             )
@@ -603,7 +602,7 @@ async def submit_clarification(
     except Exception:
         for key in written_keys:
             try:
-                await run_in_threadpool(storage.delete, key)
+                await run_storage_io(storage.delete, key)
             except Exception:
                 pass
         raise
@@ -930,7 +929,7 @@ async def submit_portal_request(
         for attachment in prepared:
             stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
             attachment["stored_filename"] = f"{request_id}/{stored_name}"
-            await run_in_threadpool(
+            await run_storage_io(
                 storage.put, attachment["stored_filename"], attachment["content"],
                 attachment["media_type"], attachment["sha256"],
             )
@@ -948,7 +947,7 @@ async def submit_portal_request(
     except Exception:
         for key in written_keys:
             try:
-                await run_in_threadpool(storage.delete, key)
+                await run_storage_io(storage.delete, key)
             except Exception:
                 pass
         raise

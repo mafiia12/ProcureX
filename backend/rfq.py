@@ -20,7 +20,6 @@ from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import (
@@ -40,7 +39,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from urllib.parse import quote
 
 try:
-    from .attachment_storage import get_attachment_storage
+    from .attachment_storage import get_attachment_storage, run_storage_io
     from .auth.models import User
     from .auth.service import require_erp_role
     from .business_codes import reserve_code
@@ -50,7 +49,7 @@ try:
     )
     from .site_portal import _detect_extended_file_type
 except ImportError:  # pragma: no cover - direct backend execution
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import get_attachment_storage, run_storage_io
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import reserve_code
@@ -933,7 +932,7 @@ async def upload_quotation_attachments(
         # this reordering does not weaken the existing validation.
         for item in prepared:
             stored_key = f"rfq-quotations/{quotation_id}/{uuid.uuid4().hex}{item['extension']}"
-            await run_in_threadpool(storage.put, stored_key, item["content"], item["media_type"], item["sha256"])
+            await run_storage_io(storage.put, stored_key, item["content"], item["media_type"], item["sha256"])
             written_keys.append(stored_key)
             item["stored_key"] = stored_key
 
@@ -955,7 +954,7 @@ async def upload_quotation_attachments(
     except Exception:
         for key in written_keys:
             try:
-                await run_in_threadpool(storage.delete, key)
+                await run_storage_io(storage.delete, key)
             except Exception:
                 pass
         raise
@@ -988,7 +987,7 @@ async def download_quotation_attachment(
     # Fetched after the DB session closes and off the event loop thread -
     # see upload_quotation_attachments above.
     try:
-        stored = await run_in_threadpool(get_attachment_storage().get, stored_filename)
+        stored = await run_storage_io(get_attachment_storage().get, stored_filename)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "الملف غير موجود على التخزين")
     return StreamingResponse(

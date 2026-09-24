@@ -2651,10 +2651,10 @@ def test_hosted_full_surface_allows_s3(monkeypatch, environment):
     # defaults (60s/60s/10/legacy). See
     # docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
     config = call.kwargs["config"]
-    assert config.connect_timeout == 5
-    assert config.read_timeout == 30
-    assert config.max_pool_connections == 10
-    assert config.retries == {"mode": "standard", "max_attempts": 3}
+    assert config.connect_timeout == 3
+    assert config.read_timeout == 10
+    assert config.max_pool_connections == 8
+    assert config.retries == {"mode": "standard", "total_max_attempts": 2}
 
 
 def test_development_local_attachment_storage_is_unaffected(monkeypatch, tmp_path):

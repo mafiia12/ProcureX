@@ -11,13 +11,37 @@ build_attachment_storage().
 
 from __future__ import annotations
 
+import asyncio
 import os
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO, Callable
+
+from anyio import CapacityLimiter, to_thread
 
 
 ROOT_DIR = Path(__file__).resolve().parent
+
+# Blocking storage calls (boto3/R2, local disk) run in worker threads, but
+# NOT on the thread pool that sync routes (login, approvals, RFQ, portal)
+# share: measured, 45 downloads hanging on R2 held all 40 default threads
+# and login took 62.7s. A separate cap keeps storage from ever taking more
+# than this many threads per process; extra calls wait asynchronously.
+STORAGE_MAX_CONCURRENCY = max(1, int(os.getenv("STORAGE_MAX_CONCURRENCY", "8")))
+_storage_limiters: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, CapacityLimiter]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+async def run_storage_io(func: Callable[..., Any], *args: Any) -> Any:
+    """Run one blocking storage call off the event loop, within the
+    storage-only concurrency cap (one limiter per event loop)."""
+    loop = asyncio.get_running_loop()
+    limiter = _storage_limiters.get(loop)
+    if limiter is None:
+        limiter = _storage_limiters[loop] = CapacityLimiter(STORAGE_MAX_CONCURRENCY)
+    return await to_thread.run_sync(func, *args, limiter=limiter)
 
 
 @dataclass
@@ -85,19 +109,16 @@ class S3AttachmentStorage(AttachmentStorage):
         if missing:
             raise RuntimeError(f"Missing S3/R2 settings: {', '.join(missing)}")
         self.bucket = required["R2_BUCKET_NAME"]
-        # botocore's bare defaults were never reviewed for this app (60s
-        # connect + 60s read, max_pool_connections=10, retries mode
-        # 'legacy'). Every attachment here is small (largest configured cap
-        # is 25-30MB - see MAX_TOTAL_FILE_BYTES/DOCUMENT_MAX_TOTAL_BYTES),
-        # so a single connect/read timeout pair covers both a HEAD-sized
-        # call and the largest realistic upload/download without needing
-        # per-operation clients. max_pool_connections is kept at the
-        # existing default (10) - this is a single-process app with no
-        # measured need for a larger pool; 'standard' retry mode replaces
-        # 'legacy' because it correctly excludes 4xx/auth failures from
-        # retry and adds jittered backoff for the transient errors that are
-        # safe to retry (connection resets, throttling, selected 5xx). See
-        # docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
+        # botocore's bare defaults (60s connect + 60s read, legacy retries)
+        # were never reviewed for this app. Measured against a fake
+        # endpoint: with 5s/30s and 3 attempts a hung R2 took ~124s to fail
+        # and an unreachable one ~25s - far past the frontend's 30s timeout.
+        # The read timeout is per socket read, not per transfer, so 10s
+        # still allows the largest configured attachments (25-30MB).
+        # 'standard' retries skip 4xx/auth failures and add jittered
+        # backoff for transient errors. Pool size matches the storage
+        # concurrency cap. All env-overridable; see
+        # docs/production-capacity-plan.md, "S3/R2 attachment storage".
         self.client = boto3.client(
             "s3",
             endpoint_url=required["R2_ENDPOINT_URL"],
@@ -105,10 +126,12 @@ class S3AttachmentStorage(AttachmentStorage):
             aws_secret_access_key=required["R2_SECRET_ACCESS_KEY"],
             region_name=os.getenv("R2_REGION", "auto"),
             config=Config(
-                connect_timeout=5,
-                read_timeout=30,
-                max_pool_connections=10,
-                retries={"mode": "standard", "max_attempts": 3},
+                connect_timeout=float(os.getenv("R2_CONNECT_TIMEOUT_SECONDS", "3")),
+                read_timeout=float(os.getenv("R2_READ_TIMEOUT_SECONDS", "10")),
+                max_pool_connections=STORAGE_MAX_CONCURRENCY,
+                # total_max_attempts counts the first try; botocore's "max_attempts"
+                # key counts retries only (3 meant 4 tries, measured).
+                retries={"mode": "standard", "total_max_attempts": int(os.getenv("R2_MAX_ATTEMPTS", "2"))},
             ),
         )
 

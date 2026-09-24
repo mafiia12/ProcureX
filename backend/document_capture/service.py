@@ -7,15 +7,14 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, select
 
 try:
-    from ..attachment_storage import get_attachment_storage
+    from ..attachment_storage import get_attachment_storage, run_storage_io
     from ..database import Item, SessionLocal
     from ..incoming_requests import IncomingPurchaseRequestItem
 except ImportError:  # pragma: no cover
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import get_attachment_storage, run_storage_io
     from database import Item, SessionLocal
     from incoming_requests import IncomingPurchaseRequestItem
 
@@ -98,7 +97,7 @@ async def create_document(
             # thread - see docs/performance-reliability-audit.md, "S3/R2
             # Attachment Storage". Safe here: only storage/key/content
             # cross into the worker thread, never the SQLAlchemy session.
-            await run_in_threadpool(storage.put, key, file.content, file.media_type, digest)
+            await run_storage_io(storage.put, key, file.content, file.media_type, digest)
             stored_keys.append(key)
             session.add(
                 DocumentFile(
@@ -146,7 +145,7 @@ async def create_document(
         session.flush()
     except Exception:
         for key in stored_keys:
-            await run_in_threadpool(storage.delete, key)
+            await run_storage_io(storage.delete, key)
         raise
     return row
 
