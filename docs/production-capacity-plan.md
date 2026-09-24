@@ -502,3 +502,49 @@ It runs inside `BEGIN TRANSACTION READ ONLY … ROLLBACK` with a 15 s statement 
 
 - **0 `external_engineer` rows:** no historical migration is required for launch; the boundary change is sufficient.
 - **Any `external_engineer` rows:** preserve them. They keep working through the retained read/decision/payment/revision paths. Then separately assess the payment index. If `blank_cash_reference_payments` is already 1, no further legacy non-cash payment can be recorded until the remediation above is applied.
+
+---
+
+## 18. Final release candidate (branch `fix/pre-golive-closure`)
+
+Contents: capacity review, pre-go-live closure (sections 13–15), attachment storage offload (section 16) and the legacy approval boundary (section 17). Migration head: **0024** (no schema change after it).
+
+**S3/R2 provenance.** Section 16 was implemented and reviewed in this branch directly from the closure tip. The separate, uncommitted S3/R2 diff in the other desktop worktree (the ~981-line diff mentioned in section 13) was **not** available to this session and was **not** applied. Do not apply it on top of this branch: both change the same call sites. Compare it against commit `f700865` and discard it, or keep the parts this branch lacks as a separate, reviewed change.
+
+Local regression, run on the final code:
+
+| Gate | Result |
+|---|---|
+| `pytest tests/` (SQLite) | 400 passed (378 baseline + 17 storage + 5 approval-boundary) |
+| `scripts/validate_migrations.py` | single head, upgrade chain ok, additive policy passed |
+| Fresh PostgreSQL 16, `alembic upgrade head` | 24 revisions, 0001 → 0024 |
+| `scripts/assert_schema_current.py` | current at `0024_rate_limit_events` |
+| `scripts/postgres_smoke_test.py` | passed |
+| SQLite integrity (`check_sqlite_integrity.py`) | ok, 0 FK violations |
+| RC regression on disposable PostgreSQL (real uvicorn: full surface 2 workers, public surface 1 worker) | **51/51 checks, 3 consecutive runs** |
+
+The RC regression covered:
+
+- **Smoke:** 13 ERP GET endpoints, public health, public surface hiding ERP routes and `/docs`.
+- **Workflow:** Site Portal REQ with attachment → item review with one line returned → corrected REQ → RFQ → 2 supplier quotations → CMP from RFQ rows → approval (type omitted → `comparison_workflow`) → technical + fund decisions → funds release → PO → PO payment → full receipt. Exactly one row each; the REQ ends `completed`.
+- **Races (10 concurrent requests over 2 workers):**
+
+| Race | Result |
+|---|---|
+| Duplicate REQ | 1 row |
+| Corrected-REQ resubmission | 1 child REQ |
+| Approval creation | 1 row, the losers get 409 |
+| PO creation | 1 row, the losers get 409 |
+| Payment | 1 row |
+| Receipt | 1 row |
+| WhatsApp, same message id ×8 | 1 REQ |
+| WhatsApp, 8 different confirmations | 1 REQ |
+| Document jobs, queued (2 processes × 4 threads) | 60/60 claimed, 0 doubles |
+| Document jobs, stale recovery (2 processes × 4 threads) | 60/60 claimed, 0 doubles |
+| Login limiter | exactly 10 of 40 allowed |
+
+- **Legacy boundary on PostgreSQL:** explicit legacy creation → 422, nothing written. The second non-cash legacy payment → 409 `legacy_payment_reference_conflict`, resolved by constraint name.
+- **Security:** no token → 401; forged JWT → 401; portal user on ERP → 403; non-admin on `/api/admin/users` → 403; another engineer's REQ → 404; diagnostics route absent unless enabled.
+- **Approval list:** `GET /api/workflow/approvals` with 256 approvals = **4 queries**.
+
+Pytest security subsets: RBAC 16, JWT/auth 31, Site Portal 40, admin 16, rate limit 5, proxy/client IP 11, attachments/storage 38, diagnostics incl. production refusal 5: all passed.
