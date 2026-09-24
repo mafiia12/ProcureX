@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import (
@@ -922,17 +923,28 @@ async def upload_quotation_attachments(
     written_keys: list[str] = []
     created = []
     try:
+        # Upload before opening the write transaction, and off the event
+        # loop thread - storage.put() is a blocking network call (S3/R2) or
+        # local disk write with no async/threadpool offload otherwise, and
+        # this app runs as a single Uvicorn process/event loop (see
+        # docs/performance-reliability-audit.md, "S3/R2 Attachment
+        # Storage"). The quotation is re-checked below (as it already was
+        # before this change) rather than trusted from the uploads above, so
+        # this reordering does not weaken the existing validation.
+        for item in prepared:
+            stored_key = f"rfq-quotations/{quotation_id}/{uuid.uuid4().hex}{item['extension']}"
+            await run_in_threadpool(storage.put, stored_key, item["content"], item["media_type"], item["sha256"])
+            written_keys.append(stored_key)
+            item["stored_key"] = stored_key
+
         with SessionLocal() as session:
             quotation = session.get(SupplierQuotation, quotation_id)
             if not quotation or quotation.rfq_id != rfq_id:
                 raise HTTPException(404, "عرض السعر غير موجود")
             for item in prepared:
-                stored_key = f"rfq-quotations/{quotation_id}/{uuid.uuid4().hex}{item['extension']}"
-                storage.put(stored_key, item["content"], item["media_type"], item["sha256"])
-                written_keys.append(stored_key)
                 row = SupplierQuotationAttachment(
                     id=str(uuid.uuid4()), quotation_id=quotation.id,
-                    original_filename=item["original_filename"], stored_filename=stored_key,
+                    original_filename=item["original_filename"], stored_filename=item["stored_key"],
                     media_type=item["media_type"], size_bytes=item["size_bytes"],
                     sha256=item["sha256"], created_at=_now(),
                 )
@@ -943,7 +955,7 @@ async def upload_quotation_attachments(
     except Exception:
         for key in written_keys:
             try:
-                storage.delete(key)
+                await run_in_threadpool(storage.delete, key)
             except Exception:
                 pass
         raise
@@ -969,19 +981,25 @@ async def download_quotation_attachment(
         quotation = session.get(SupplierQuotation, quotation_id)
         if not quotation or quotation.rfq_id != rfq_id:
             raise HTTPException(404, "المرفق غير موجود")
-        try:
-            stored = get_attachment_storage().get(attachment.stored_filename)
-        except (FileNotFoundError, KeyError):
-            raise HTTPException(404, "الملف غير موجود على التخزين")
-        return StreamingResponse(
-            stored.body, media_type=attachment.media_type,
-            headers={
-                "Content-Disposition": (
-                    "attachment; filename=attachment; filename*=UTF-8''"
-                    f"{quote(attachment.original_filename)}"
-                ),
-            },
-        )
+        stored_filename = attachment.stored_filename
+        media_type = attachment.media_type
+        original_filename = attachment.original_filename
+
+    # Fetched after the DB session closes and off the event loop thread -
+    # see upload_quotation_attachments above.
+    try:
+        stored = await run_in_threadpool(get_attachment_storage().get, stored_filename)
+    except (FileNotFoundError, KeyError):
+        raise HTTPException(404, "الملف غير موجود على التخزين")
+    return StreamingResponse(
+        stored.body, media_type=media_type,
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=attachment; filename*=UTF-8''"
+                f"{quote(original_filename)}"
+            ),
+        },
+    )
 
 
 @router.get("/{rfq_id}/comparison-rows")

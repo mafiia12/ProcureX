@@ -2640,11 +2640,21 @@ def test_hosted_full_surface_allows_s3(monkeypatch, environment):
     assert isinstance(storage, S3AttachmentStorage)
     assert storage.client is client
     assert storage.bucket == f"procurex-{environment}-attachments"
-    client_factory.assert_called_once_with(
-        "s3", endpoint_url="https://account.r2.cloudflarestorage.com",
-        aws_access_key_id="test-access-key", aws_secret_access_key="test-secret-key",
-        region_name=os.getenv("R2_REGION", "auto"),
-    )
+    client_factory.assert_called_once()
+    call = client_factory.call_args
+    assert call.args == ("s3",)
+    assert call.kwargs["endpoint_url"] == "https://account.r2.cloudflarestorage.com"
+    assert call.kwargs["aws_access_key_id"] == "test-access-key"
+    assert call.kwargs["aws_secret_access_key"] == "test-secret-key"
+    assert call.kwargs["region_name"] == os.getenv("R2_REGION", "auto")
+    # Explicit, bounded timeouts/pool/retry policy - not botocore's bare
+    # defaults (60s/60s/10/legacy). See
+    # docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
+    config = call.kwargs["config"]
+    assert config.connect_timeout == 5
+    assert config.read_timeout == 30
+    assert config.max_pool_connections == 10
+    assert config.retries == {"mode": "standard", "max_attempts": 3}
 
 
 def test_development_local_attachment_storage_is_unaffected(monkeypatch, tmp_path):

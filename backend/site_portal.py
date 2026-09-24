@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, or_, select
 
@@ -523,6 +524,11 @@ async def submit_clarification(
     prepared = await _prepare_portal_attachments(attachments)
     storage = get_attachment_storage()
     written_keys: list[str] = []
+
+    # Fail-fast validation in a short read session, before uploading -
+    # mirrors the re-check inside the write session below, so nothing here
+    # is trusted as the final word (a concurrent change between the two is
+    # still caught there, same as before this change).
     with SessionLocal() as session:
         row = _owned_request(session, request_id, user)
         if row.status != "need_clarification":
@@ -534,26 +540,43 @@ async def submit_clarification(
         ) or 0
         if existing_attachment_count + len(prepared) > MAX_ATTACHMENTS:
             raise HTTPException(422, f"الحد الأقصى الإجمالي لمرفقات الطلب هو {MAX_ATTACHMENTS}")
-        latest_clarification = session.scalar(
-            select(IncomingRequestStatusHistory)
-            .where(
-                IncomingRequestStatusHistory.request_id == row.id,
-                IncomingRequestStatusHistory.to_status == "need_clarification",
+
+    # Upload off the event loop thread and outside any open DB session/
+    # transaction - see docs/performance-reliability-audit.md, "S3/R2
+    # Attachment Storage".
+    try:
+        for attachment in prepared:
+            stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
+            attachment["stored_filename"] = f"{request_id}/{stored_name}"
+            await run_in_threadpool(
+                storage.put, attachment["stored_filename"], attachment["content"],
+                attachment["media_type"], attachment["sha256"],
             )
-            .order_by(IncomingRequestStatusHistory.created_at.desc())
-        )
-        if not latest_clarification:
-            raise HTTPException(409, "لم يتم العثور على طلب التوضيح")
-        timestamp = _now()
-        try:
-            for attachment in prepared:
-                stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
-                attachment["stored_filename"] = f"{request_id}/{stored_name}"
-                storage.put(
-                    attachment["stored_filename"], attachment["content"],
-                    attachment["media_type"], attachment["sha256"],
+            written_keys.append(attachment["stored_filename"])
+
+        with SessionLocal() as session:
+            row = _owned_request(session, request_id, user)
+            if row.status != "need_clarification":
+                raise HTTPException(409, "هذا الطلب لا ينتظر توضيحًا حاليًا")
+            existing_attachment_count = session.scalar(
+                select(func.count()).select_from(IncomingRequestGeneralAttachment).where(
+                    IncomingRequestGeneralAttachment.request_id == request_id,
                 )
-                written_keys.append(attachment["stored_filename"])
+            ) or 0
+            if existing_attachment_count + len(prepared) > MAX_ATTACHMENTS:
+                raise HTTPException(422, f"الحد الأقصى الإجمالي لمرفقات الطلب هو {MAX_ATTACHMENTS}")
+            latest_clarification = session.scalar(
+                select(IncomingRequestStatusHistory)
+                .where(
+                    IncomingRequestStatusHistory.request_id == row.id,
+                    IncomingRequestStatusHistory.to_status == "need_clarification",
+                )
+                .order_by(IncomingRequestStatusHistory.created_at.desc())
+            )
+            if not latest_clarification:
+                raise HTTPException(409, "لم يتم العثور على طلب التوضيح")
+            timestamp = _now()
+            for attachment in prepared:
                 session.add(IncomingRequestGeneralAttachment(
                     id=str(uuid.uuid4()), request_id=request_id,
                     original_filename=attachment["original_filename"],
@@ -577,14 +600,13 @@ async def submit_clarification(
             ))
             session.commit()
             request_number = row.request_number
-        except Exception:
-            session.rollback()
-            for key in written_keys:
-                try:
-                    storage.delete(key)
-                except Exception:
-                    pass
-            raise
+    except Exception:
+        for key in written_keys:
+            try:
+                await run_in_threadpool(storage.delete, key)
+            except Exception:
+                pass
+        raise
     return {"ok": True, "request_id": request_id, "request_number": request_number, "status": "under_review"}
 
 
@@ -715,7 +737,7 @@ def create_incoming_request(
     session, *, user: User, project: Project, items: list[dict],
     required_delivery_date: str, priority: str, delivery_destination: str,
     notes: str, prepared_attachments: list[dict], intake_note: str,
-    source: str = "",
+    source: str = "", request_id: str = "",
 ) -> tuple[str, str]:
     """Create one formal Incoming Purchase Request. This is the single place
     that constructs the IncomingPurchaseRequest/-Item/-Attachment/
@@ -726,11 +748,20 @@ def create_incoming_request(
     `items` entries are already fully resolved: {item_id ("" for manual),
     product_name, preferred_brand, main_category, subcategory,
     specifications, quantity, unit}. `prepared_attachments` entries must
-    already be validated/detected (see _prepare_portal_attachments) — this
-    function only writes their bytes to storage and rows to the DB.
+    already be validated/detected (see _prepare_portal_attachments).
+
+    This function stays synchronous and keeps doing its own storage.put()
+    when an attachment has no `stored_filename` yet - the WhatsApp caller
+    never has attachments (WhatsApp intake is text-only) and calls this
+    directly from synchronous code, so it cannot itself become async.
+    The Site Portal endpoint below (the only caller that can have real
+    attachments) instead uploads them off the event loop thread *before*
+    calling this, passing `request_id` and pre-populated
+    `stored_filename`s so this loop becomes a no-op for that caller - see
+    docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
     Returns (request_id, request_number).
     """
-    request_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
     request_number = f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
     created_at = _now()
     destination_label = DESTINATION_LABEL.get(delivery_destination, delivery_destination)
@@ -743,6 +774,8 @@ def create_incoming_request(
     written_keys: list[str] = []
     try:
         for attachment in prepared_attachments:
+            if attachment.get("stored_filename"):
+                continue  # already uploaded by the caller
             stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
             attachment["stored_filename"] = f"{request_id}/{stored_name}"
             storage.put(
@@ -862,8 +895,6 @@ async def submit_portal_request(
             if missing:
                 raise HTTPException(422, "أحد الأصناف المختارة غير موجود في قائمة الأصناف")
 
-        prepared = await _prepare_portal_attachments(attachments)
-
         resolved_items = []
         for entry in body.items:
             if entry.item_id:
@@ -887,13 +918,39 @@ async def submit_portal_request(
                     "quantity": entry.quantity, "unit": entry.unit.strip(),
                 })
 
-        request_id, request_number = create_incoming_request(
-            session, user=user, project=project, items=resolved_items,
-            required_delivery_date=body.required_delivery_date, priority=body.priority,
-            delivery_destination=body.delivery_destination, notes=body.notes,
-            prepared_attachments=prepared,
-            intake_note="تم استلام الطلب من بوابة طلبات الموقع",
-            source="site_portal",
-        )
+    # Upload off the event loop thread and outside any open DB session -
+    # create_incoming_request() below skips re-uploading attachments that
+    # already have a stored_filename. See
+    # docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
+    prepared = await _prepare_portal_attachments(attachments)
+    request_id = str(uuid.uuid4())
+    storage = get_attachment_storage()
+    written_keys: list[str] = []
+    try:
+        for attachment in prepared:
+            stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
+            attachment["stored_filename"] = f"{request_id}/{stored_name}"
+            await run_in_threadpool(
+                storage.put, attachment["stored_filename"], attachment["content"],
+                attachment["media_type"], attachment["sha256"],
+            )
+            written_keys.append(attachment["stored_filename"])
+
+        with SessionLocal() as session:
+            request_id, request_number = create_incoming_request(
+                session, user=user, project=project, items=resolved_items,
+                required_delivery_date=body.required_delivery_date, priority=body.priority,
+                delivery_destination=body.delivery_destination, notes=body.notes,
+                prepared_attachments=prepared,
+                intake_note="تم استلام الطلب من بوابة طلبات الموقع",
+                source="site_portal", request_id=request_id,
+            )
+    except Exception:
+        for key in written_keys:
+            try:
+                await run_in_threadpool(storage.delete, key)
+            except Exception:
+                pass
+        raise
 
     return {"ok": True, "request_number": request_number, "request_id": request_id}

@@ -71,6 +71,7 @@ class S3AttachmentStorage(AttachmentStorage):
     def __init__(self):
         try:
             import boto3
+            from botocore.config import Config
         except ImportError as exc:  # pragma: no cover - production dependency guard
             raise RuntimeError("boto3 is required when ATTACHMENT_STORAGE_BACKEND=s3") from exc
 
@@ -84,12 +85,31 @@ class S3AttachmentStorage(AttachmentStorage):
         if missing:
             raise RuntimeError(f"Missing S3/R2 settings: {', '.join(missing)}")
         self.bucket = required["R2_BUCKET_NAME"]
+        # botocore's bare defaults were never reviewed for this app (60s
+        # connect + 60s read, max_pool_connections=10, retries mode
+        # 'legacy'). Every attachment here is small (largest configured cap
+        # is 25-30MB - see MAX_TOTAL_FILE_BYTES/DOCUMENT_MAX_TOTAL_BYTES),
+        # so a single connect/read timeout pair covers both a HEAD-sized
+        # call and the largest realistic upload/download without needing
+        # per-operation clients. max_pool_connections is kept at the
+        # existing default (10) - this is a single-process app with no
+        # measured need for a larger pool; 'standard' retry mode replaces
+        # 'legacy' because it correctly excludes 4xx/auth failures from
+        # retry and adds jittered backoff for the transient errors that are
+        # safe to retry (connection resets, throttling, selected 5xx). See
+        # docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
         self.client = boto3.client(
             "s3",
             endpoint_url=required["R2_ENDPOINT_URL"],
             aws_access_key_id=required["R2_ACCESS_KEY_ID"],
             aws_secret_access_key=required["R2_SECRET_ACCESS_KEY"],
             region_name=os.getenv("R2_REGION", "auto"),
+            config=Config(
+                connect_timeout=5,
+                read_timeout=30,
+                max_pool_connections=10,
+                retries={"mode": "standard", "max_attempts": 3},
+            ),
         )
 
     def put(self, key: str, content: bytes, media_type: str, sha256: str) -> None:

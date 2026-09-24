@@ -17,6 +17,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, select
@@ -246,7 +247,7 @@ async def upload_purchase_request_document(
             )
         )
         session.flush()
-        document = create_document(
+        document = await create_document(
             session,
             request_id,
             body.document_type,
@@ -779,14 +780,19 @@ async def download_document_file(
         file = session.get(DocumentFile, file_id)
         if not file or file.document_id != document_id:
             raise HTTPException(404, "Document file not found")
-        stored = get_attachment_storage().get(file.stored_filename)
+        stored_filename = file.stored_filename
+        media_type = file.media_type
         safe_name = file.original_filename.replace('"', "_")
-        return StreamingResponse(
-            stored.body,
-            media_type=file.media_type,
-            headers={
-                "Content-Disposition": f'inline; filename="{safe_name}"',
-                "Cache-Control": "private, no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+
+    # Fetched after the DB session closes and off the event loop thread -
+    # see docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
+    stored = await run_in_threadpool(get_attachment_storage().get, stored_filename)
+    return StreamingResponse(
+        stored.body,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

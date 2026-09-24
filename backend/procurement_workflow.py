@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func, select
@@ -1749,7 +1750,17 @@ async def upload_payment_proof(
                 raise HTTPException(409, "الدفع النقدي لا يحتاج صورة إثبات")
             if payment.status in {"verified", "cancelled"}:
                 raise HTTPException(409, "لا يمكن رفع إثبات لهذه العملية")
-            storage.put(key, content, media_type, digest)
+            # Deliberately NOT reordered ahead of the transaction (unlike
+            # the other upload endpoints - see
+            # docs/performance-reliability-audit.md, "S3/R2 Attachment
+            # Storage"): the payment.status check above must stay inside
+            # the same transaction as the write below, or a concurrent
+            # verify/cancel could race between an upload-then-validate
+            # split. Still offloaded off the event loop thread - it just
+            # keeps this one request's own DB connection checked out for
+            # the upload's duration, which is the accepted, documented
+            # trade-off here.
+            await run_in_threadpool(storage.put, key, content, media_type, digest)
             stored = True
             old_key = payment.proof_storage_key
             payment.proof_storage_key = key
@@ -1768,11 +1779,11 @@ async def upload_payment_proof(
                    message="تم رفع إثبات دفع وأصبح تحت المراجعة",
                    metadata={"payment_id": payment.id, "media_type": media_type, "size": len(content)})
         if old_key and old_key != key:
-            storage.delete(old_key)
+            await run_in_threadpool(storage.delete, old_key)
         return {"ok": True, "status": "under_review", "paid": False}
     except Exception:
         if stored:
-            storage.delete(key)
+            await run_in_threadpool(storage.delete, key)
         raise
 
 
