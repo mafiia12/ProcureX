@@ -24,7 +24,9 @@ from sqlalchemy import Float, ForeignKey, Index, Integer, JSON, String, Text, Un
 from sqlalchemy.orm import Mapped, mapped_column
 
 try:
-    from .attachment_storage import get_attachment_storage
+    from .attachment_storage import (
+        delete_attachments_quietly_async, get_attachment_storage, put_attachment, stream_attachment,
+    )
     from .auth.models import User
     from .auth.service import has_role_or_higher, require_erp_role
     from .business_codes import next_business_code, reserve_code
@@ -48,7 +50,9 @@ try:
         SupplierQuotationAttachment, SupplierQuotationLine,
     )
 except ImportError:
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import (
+        delete_attachments_quietly_async, get_attachment_storage, put_attachment, stream_attachment,
+    )
     from auth.models import User
     from auth.service import has_role_or_higher, require_erp_role
     from business_codes import next_business_code, reserve_code
@@ -1749,20 +1753,14 @@ async def upload_payment_proof(
         raise HTTPException(422, "حجم صورة إثبات الدفع يجب ألا يتجاوز 5 ميجابايت")
     digest = hashlib.sha256(content).hexdigest()
     key = f"approval_payments/{payment_id}/{uuid.uuid4().hex}{PROOF_MEDIA[media_type]}"
-    storage = get_attachment_storage()
-    stored = False
+    with SessionLocal() as session:
+        _proof_target(session, token, payment_id)
+    # Written with no DB session/transaction open (a slow object store must
+    # not hold a pooled connection); the payment is re-checked below.
+    await put_attachment(key, content, media_type, digest)
     try:
         with SessionLocal.begin() as session:
-            approval = _public_approval(session, token)
-            payment = session.get(ApprovalPayment, payment_id)
-            if not payment or payment.approval_id != approval.id:
-                raise HTTPException(404, "عملية الدفع غير موجودة")
-            if payment.method == "cash":
-                raise HTTPException(409, "الدفع النقدي لا يحتاج صورة إثبات")
-            if payment.status in {"verified", "cancelled"}:
-                raise HTTPException(409, "لا يمكن رفع إثبات لهذه العملية")
-            storage.put(key, content, media_type, digest)
-            stored = True
+            approval, payment = _proof_target(session, token, payment_id)
             old_key = payment.proof_storage_key
             payment.proof_storage_key = key
             payment.proof_original_name = Path(proof.filename or "proof").name[:240]
@@ -1779,13 +1777,26 @@ async def upload_payment_proof(
                    actor_type="public", actor_name=approval.engineer_name,
                    message="تم رفع إثبات دفع وأصبح تحت المراجعة",
                    metadata={"payment_id": payment.id, "media_type": media_type, "size": len(content)})
-        if old_key and old_key != key:
-            storage.delete(old_key)
-        return {"ok": True, "status": "under_review", "paid": False}
     except Exception:
-        if stored:
-            storage.delete(key)
+        await delete_attachments_quietly_async([key])
         raise
+    # Committed: the new proof is authoritative. Replacing the previous
+    # object is best-effort and must never undo the committed upload.
+    if old_key and old_key != key:
+        await delete_attachments_quietly_async([old_key])
+    return {"ok": True, "status": "under_review", "paid": False}
+
+
+def _proof_target(session, token: str, payment_id: str) -> tuple[EngineerApproval, "ApprovalPayment"]:
+    approval = _public_approval(session, token)
+    payment = session.get(ApprovalPayment, payment_id)
+    if not payment or payment.approval_id != approval.id:
+        raise HTTPException(404, "عملية الدفع غير موجودة")
+    if payment.method == "cash":
+        raise HTTPException(409, "الدفع النقدي لا يحتاج صورة إثبات")
+    if payment.status in {"verified", "cancelled"}:
+        raise HTTPException(409, "لا يمكن رفع إثبات لهذه العملية")
+    return approval, payment
 
 
 class PaymentReviewIn(BaseModel):
@@ -1799,10 +1810,16 @@ def get_payment_proof(payment_id: str, current_user: User = Depends(require_erp_
         payment = session.get(ApprovalPayment, payment_id)
         if not payment or not payment.proof_storage_key:
             raise HTTPException(404, "صورة الإثبات غير موجودة")
-        stored = get_attachment_storage().get(payment.proof_storage_key)
-        return StreamingResponse(stored.body, media_type=payment.proof_media_type,
-                                 headers={"Content-Length": str(stored.content_length),
-                                          "Cache-Control": "private, no-store"})
+        storage_key, media_type = payment.proof_storage_key, payment.proof_media_type
+    # Sync route (Starlette runs it in a worker thread): the object is opened
+    # after the session closes, then streamed in chunks off the event loop.
+    try:
+        stored = get_attachment_storage().get(storage_key)
+    except FileNotFoundError:
+        raise HTTPException(404, "صورة الإثبات غير موجودة")
+    return StreamingResponse(stream_attachment(stored), media_type=media_type,
+                             headers={"Content-Length": str(stored.content_length),
+                                      "Cache-Control": "private, no-store"})
 
 
 @internal_workflow_router.post("/payments/{payment_id}/verify")

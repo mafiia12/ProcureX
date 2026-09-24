@@ -39,7 +39,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 from urllib.parse import quote
 
 try:
-    from .attachment_storage import get_attachment_storage
+    from .attachment_storage import (
+        delete_attachments_quietly_async, get_attachment, put_attachment, stream_attachment,
+    )
     from .auth.models import User
     from .auth.service import require_erp_role
     from .business_codes import reserve_code
@@ -49,7 +51,9 @@ try:
     )
     from .site_portal import _detect_extended_file_type
 except ImportError:  # pragma: no cover - direct backend execution
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import (
+        delete_attachments_quietly_async, get_attachment, put_attachment, stream_attachment,
+    )
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import reserve_code
@@ -918,21 +922,24 @@ async def upload_quotation_attachments(
             "size_bytes": len(content), "sha256": hashlib.sha256(content).hexdigest(),
         })
 
-    storage = get_attachment_storage()
     written_keys: list[str] = []
     created = []
     try:
+        # Write the objects first, with no DB session open: a slow object
+        # store must not hold a pooled connection. The quotation is checked
+        # again below before any metadata row is written.
+        for item in prepared:
+            item["stored_key"] = f"rfq-quotations/{quotation_id}/{uuid.uuid4().hex}{item['extension']}"
+            await put_attachment(item["stored_key"], item["content"], item["media_type"], item["sha256"])
+            written_keys.append(item["stored_key"])
         with SessionLocal() as session:
             quotation = session.get(SupplierQuotation, quotation_id)
             if not quotation or quotation.rfq_id != rfq_id:
                 raise HTTPException(404, "عرض السعر غير موجود")
             for item in prepared:
-                stored_key = f"rfq-quotations/{quotation_id}/{uuid.uuid4().hex}{item['extension']}"
-                storage.put(stored_key, item["content"], item["media_type"], item["sha256"])
-                written_keys.append(stored_key)
                 row = SupplierQuotationAttachment(
                     id=str(uuid.uuid4()), quotation_id=quotation.id,
-                    original_filename=item["original_filename"], stored_filename=stored_key,
+                    original_filename=item["original_filename"], stored_filename=item["stored_key"],
                     media_type=item["media_type"], size_bytes=item["size_bytes"],
                     sha256=item["sha256"], created_at=_now(),
                 )
@@ -941,11 +948,7 @@ async def upload_quotation_attachments(
             quotation.updated_at = _now()
             session.commit()
     except Exception:
-        for key in written_keys:
-            try:
-                storage.delete(key)
-            except Exception:
-                pass
+        await delete_attachments_quietly_async(written_keys)
         raise
 
     return {"attachments": [
@@ -969,19 +972,23 @@ async def download_quotation_attachment(
         quotation = session.get(SupplierQuotation, quotation_id)
         if not quotation or quotation.rfq_id != rfq_id:
             raise HTTPException(404, "المرفق غير موجود")
-        try:
-            stored = get_attachment_storage().get(attachment.stored_filename)
-        except (FileNotFoundError, KeyError):
-            raise HTTPException(404, "الملف غير موجود على التخزين")
-        return StreamingResponse(
-            stored.body, media_type=attachment.media_type,
-            headers={
-                "Content-Disposition": (
-                    "attachment; filename=attachment; filename*=UTF-8''"
-                    f"{quote(attachment.original_filename)}"
-                ),
-            },
-        )
+        stored_filename = attachment.stored_filename
+        media_type = attachment.media_type
+        original_filename = attachment.original_filename
+    # Opened after the session closes and streamed off the event loop.
+    try:
+        stored = await get_attachment(stored_filename)
+    except (FileNotFoundError, KeyError):
+        raise HTTPException(404, "الملف غير موجود على التخزين")
+    return StreamingResponse(
+        stream_attachment(stored), media_type=media_type,
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=attachment; filename*=UTF-8''"
+                f"{quote(original_filename)}"
+            ),
+        },
+    )
 
 
 @router.get("/{rfq_id}/comparison-rows")

@@ -10,11 +10,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select
 
 try:
-    from ..attachment_storage import get_attachment_storage
+    from ..attachment_storage import delete_attachments_quietly_async, get_attachment_storage, put_attachment
     from ..database import Item, SessionLocal
     from ..incoming_requests import IncomingPurchaseRequestItem
 except ImportError:  # pragma: no cover
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import delete_attachments_quietly_async, get_attachment_storage, put_attachment
     from database import Item, SessionLocal
     from incoming_requests import IncomingPurchaseRequestItem
 
@@ -57,17 +57,52 @@ def audit(
     )
 
 
+_DOCUMENT_EXTENSIONS = {
+    "application/pdf": ".pdf",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+
+
+async def store_document_files(
+    request_id: str, document_id: str, files: list[DocumentFileInput],
+) -> list[str]:
+    """Writes each file to attachment storage off the event loop, before any
+    DB session is opened, and returns their keys in `files` order. On a
+    failure it removes whatever it already wrote and re-raises."""
+    stored_keys: list[str] = []
+    try:
+        for file in files:
+            key = (
+                f"document-captures/{request_id}/{document_id}/"
+                f"{uuid.uuid4().hex}{_DOCUMENT_EXTENSIONS[file.media_type]}"
+            )
+            await put_attachment(key, file.content, file.media_type, hashlib.sha256(file.content).hexdigest())
+            stored_keys.append(key)
+    except Exception:
+        await delete_attachments_quietly_async(stored_keys)
+        raise
+    return stored_keys
+
+
 def create_document(
     session,
     request_id: str,
     document_type: str,
     files: list[DocumentFileInput],
     *,
+    document_id: str,
+    stored_keys: list[str],
     queue_processing: bool = True,
 ):
+    """Writes the document rows for files already stored by
+    store_document_files (same document_id, keys in `files` order). Never
+    calls the object store; the caller owns cleanup of `stored_keys`."""
+    if len(stored_keys) != len(files):
+        raise ValueError("every document file must be stored before create_document")
     created_at = now_iso()
     retention_days = max(1, min(int(os.getenv("DOCUMENT_RETENTION_DAYS", "90")), 3650))
-    document_id = str(uuid.uuid4())
     row = PurchaseRequestDocument(
         id=document_id,
         request_id=request_id,
@@ -81,68 +116,51 @@ def create_document(
     )
     session.add(row)
     session.flush()
-    storage = get_attachment_storage()
-    stored_keys: list[str] = []
-    try:
-        for position, file in enumerate(files, 1):
-            extension = {
-                "application/pdf": ".pdf",
-                "image/jpeg": ".jpg",
-                "image/png": ".png",
-                "image/webp": ".webp",
-            }[file.media_type]
-            key = f"document-captures/{request_id}/{document_id}/{uuid.uuid4().hex}{extension}"
-            digest = hashlib.sha256(file.content).hexdigest()
-            storage.put(key, file.content, file.media_type, digest)
-            stored_keys.append(key)
-            session.add(
-                DocumentFile(
-                    id=str(uuid.uuid4()),
-                    document_id=document_id,
-                    position=position,
-                    original_filename=file.filename,
-                    stored_filename=key,
-                    media_type=file.media_type,
-                    size_bytes=len(file.content),
-                    sha256=digest,
-                    created_at=created_at,
-                )
+    for position, (file, key) in enumerate(zip(files, stored_keys), 1):
+        session.add(
+            DocumentFile(
+                id=str(uuid.uuid4()),
+                document_id=document_id,
+                position=position,
+                original_filename=file.filename,
+                stored_filename=key,
+                media_type=file.media_type,
+                size_bytes=len(file.content),
+                sha256=hashlib.sha256(file.content).hexdigest(),
+                created_at=created_at,
             )
-        if queue_processing:
-            session.add(
-                DocumentProcessingJob(
-                    id=str(uuid.uuid4()),
-                    document_id=document_id,
-                    status="queued",
-                    attempts=0,
-                    max_attempts=max(
-                        1,
-                        min(
-                            int(os.getenv("DOCUMENT_PROCESSING_MAX_ATTEMPTS", "3")), 10
-                        ),
-                    ),
-                    available_at=created_at,
-                    created_at=created_at,
-                    updated_at=created_at,
-                )
-            )
-        audit(
-            session,
-            request_id,
-            "document_uploaded",
-            document_id=document_id,
-            actor="public",
-            details={
-                "type": document_type,
-                "files": len(files),
-                "processing_queued": queue_processing,
-            },
         )
-        session.flush()
-    except Exception:
-        for key in stored_keys:
-            storage.delete(key)
-        raise
+    if queue_processing:
+        session.add(
+            DocumentProcessingJob(
+                id=str(uuid.uuid4()),
+                document_id=document_id,
+                status="queued",
+                attempts=0,
+                max_attempts=max(
+                    1,
+                    min(
+                        int(os.getenv("DOCUMENT_PROCESSING_MAX_ATTEMPTS", "3")), 10
+                    ),
+                ),
+                available_at=created_at,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+    audit(
+        session,
+        request_id,
+        "document_uploaded",
+        document_id=document_id,
+        actor="public",
+        details={
+            "type": document_type,
+            "files": len(files),
+            "processing_queued": queue_processing,
+        },
+    )
+    session.flush()
     return row
 
 
@@ -158,37 +176,39 @@ def process_document(document_id: str) -> None:
         document.updated_at = now_iso()
         session.commit()
 
-    storage = get_attachment_storage()
-    inputs: list[DocumentFileInput] = []
     with SessionLocal() as session:
-        files = session.scalars(
-            select(DocumentFile)
-            .where(DocumentFile.document_id == document_id)
-            .order_by(DocumentFile.position)
-        ).all()
+        files = [
+            (file.stored_filename, file.size_bytes, file.sha256, file.original_filename, file.media_type)
+            for file in session.scalars(
+                select(DocumentFile)
+                .where(DocumentFile.document_id == document_id)
+                .order_by(DocumentFile.position)
+            ).all()
+        ]
         document = session.get(PurchaseRequestDocument, document_id)
         if not document or document.status == "cancelled":
             return
-        for file in files:
-            stored = storage.get(file.stored_filename)
-            try:
-                body = stored.body.read()
-            finally:
-                stored.body.close()
-            if (
-                len(body) != file.size_bytes
-                or hashlib.sha256(body).hexdigest() != file.sha256
-            ):
-                raise DocumentProcessingError("Stored document integrity check failed")
-            inputs.append(
-                DocumentFileInput(file.original_filename, file.media_type, body)
-            )
+        document_type = document.document_type
+    # This runs on the worker thread, so blocking storage reads are fine
+    # here - but not inside the session above: a slow object store must not
+    # hold a pooled DB connection.
+    storage = get_attachment_storage()
+    inputs: list[DocumentFileInput] = []
+    for stored_filename, size_bytes, sha256, original_filename, media_type in files:
+        stored = storage.get(stored_filename)
+        try:
+            body = stored.body.read()
+        finally:
+            stored.body.close()
+        if len(body) != size_bytes or hashlib.sha256(body).hexdigest() != sha256:
+            raise DocumentProcessingError("Stored document integrity check failed")
+        inputs.append(DocumentFileInput(original_filename, media_type, body))
 
     ocr = ocr_provider.extract(inputs)
     if not ocr.raw_text.strip():
         raise DocumentProcessingError("No readable text was found in the document")
     extracted, extraction_metadata = extraction_provider.extract_items(
-        ocr.raw_text, document.document_type
+        ocr.raw_text, document_type
     )
 
     with SessionLocal() as session:

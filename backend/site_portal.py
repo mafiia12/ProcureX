@@ -29,7 +29,9 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, or_, select
 
 try:
-    from .attachment_storage import get_attachment_storage
+    from .attachment_storage import (
+        delete_attachments_quietly_async, put_attachment,
+    )
     from .auth.models import User, UserProjectAccess
     from .auth.service import require_site_portal
     from .database import Item, Project, SessionLocal
@@ -40,7 +42,9 @@ try:
         _detect_file_type,
     )
 except ImportError:  # pragma: no cover - direct backend execution
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import (
+        delete_attachments_quietly_async, put_attachment,
+    )
     from auth.models import User, UserProjectAccess
     from auth.service import require_site_portal
     from database import Item, Project, SessionLocal
@@ -509,6 +513,51 @@ def resubmit_corrected_items(
     }
 
 
+def _clarification_target(
+    session, request_id: str, user: User, new_attachment_count: int,
+) -> IncomingPurchaseRequest:
+    """The caller's own REQ, still awaiting clarification, with room for
+    the new attachments - or the matching HTTP error."""
+    row = _owned_request(session, request_id, user)
+    if row.status != "need_clarification":
+        raise HTTPException(409, "هذا الطلب لا ينتظر توضيحًا حاليًا")
+    existing_attachment_count = session.scalar(
+        select(func.count()).select_from(IncomingRequestGeneralAttachment).where(
+            IncomingRequestGeneralAttachment.request_id == request_id,
+        )
+    ) or 0
+    if existing_attachment_count + new_attachment_count > MAX_ATTACHMENTS:
+        raise HTTPException(422, f"الحد الأقصى الإجمالي لمرفقات الطلب هو {MAX_ATTACHMENTS}")
+    latest_clarification = session.scalar(
+        select(IncomingRequestStatusHistory)
+        .where(
+            IncomingRequestStatusHistory.request_id == row.id,
+            IncomingRequestStatusHistory.to_status == "need_clarification",
+        )
+        .order_by(IncomingRequestStatusHistory.created_at.desc())
+    )
+    if not latest_clarification:
+        raise HTTPException(409, "لم يتم العثور على طلب التوضيح")
+    return row
+
+
+async def _store_portal_attachments(request_id: str, prepared: list[dict]) -> list[str]:
+    """Writes prepared attachments under `request_id/` off the event loop
+    and sets each one's stored_filename. Returns the written keys; on a
+    failure, removes whatever it already wrote and re-raises."""
+    written_keys: list[str] = []
+    try:
+        for attachment in prepared:
+            key = f"{request_id}/{uuid.uuid4().hex}{attachment['extension']}"
+            await put_attachment(key, attachment["content"], attachment["media_type"], attachment["sha256"])
+            attachment["stored_filename"] = key
+            written_keys.append(key)
+    except Exception:
+        await delete_attachments_quietly_async(written_keys)
+        raise
+    return written_keys
+
+
 @router.post("/purchase-requests/{request_id}/clarification")
 async def submit_clarification(
     request_id: str,
@@ -521,39 +570,20 @@ async def submit_clarification(
     if not response_text:
         raise HTTPException(422, "رد التوضيح مطلوب")
     prepared = await _prepare_portal_attachments(attachments)
-    storage = get_attachment_storage()
-    written_keys: list[str] = []
     with SessionLocal() as session:
-        row = _owned_request(session, request_id, user)
-        if row.status != "need_clarification":
-            raise HTTPException(409, "هذا الطلب لا ينتظر توضيحًا حاليًا")
-        existing_attachment_count = session.scalar(
-            select(func.count()).select_from(IncomingRequestGeneralAttachment).where(
-                IncomingRequestGeneralAttachment.request_id == request_id,
-            )
-        ) or 0
-        if existing_attachment_count + len(prepared) > MAX_ATTACHMENTS:
-            raise HTTPException(422, f"الحد الأقصى الإجمالي لمرفقات الطلب هو {MAX_ATTACHMENTS}")
-        latest_clarification = session.scalar(
-            select(IncomingRequestStatusHistory)
-            .where(
-                IncomingRequestStatusHistory.request_id == row.id,
-                IncomingRequestStatusHistory.to_status == "need_clarification",
-            )
-            .order_by(IncomingRequestStatusHistory.created_at.desc())
-        )
-        if not latest_clarification:
-            raise HTTPException(409, "لم يتم العثور على طلب التوضيح")
-        timestamp = _now()
-        try:
+        _clarification_target(session, request_id, user, len(prepared))
+    # Objects are written with no DB session open (a slow object store must
+    # not hold a pooled connection); the request is re-checked below before
+    # any metadata row is written, and the objects removed if that fails.
+    written_keys = await _store_portal_attachments(request_id, prepared)
+    try:
+        with SessionLocal() as session:
+            # Row lock (PostgreSQL): a concurrent second submission waits,
+            # then fails the status re-check instead of also applying.
+            session.get(IncomingPurchaseRequest, request_id, with_for_update=True)
+            row = _clarification_target(session, request_id, user, len(prepared))
+            timestamp = _now()
             for attachment in prepared:
-                stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
-                attachment["stored_filename"] = f"{request_id}/{stored_name}"
-                storage.put(
-                    attachment["stored_filename"], attachment["content"],
-                    attachment["media_type"], attachment["sha256"],
-                )
-                written_keys.append(attachment["stored_filename"])
                 session.add(IncomingRequestGeneralAttachment(
                     id=str(uuid.uuid4()), request_id=request_id,
                     original_filename=attachment["original_filename"],
@@ -577,14 +607,9 @@ async def submit_clarification(
             ))
             session.commit()
             request_number = row.request_number
-        except Exception:
-            session.rollback()
-            for key in written_keys:
-                try:
-                    storage.delete(key)
-                except Exception:
-                    pass
-            raise
+    except Exception:
+        await delete_attachments_quietly_async(written_keys)
+        raise
     return {"ok": True, "request_id": request_id, "request_number": request_number, "status": "under_review"}
 
 
@@ -715,7 +740,7 @@ def create_incoming_request(
     session, *, user: User, project: Project, items: list[dict],
     required_delivery_date: str, priority: str, delivery_destination: str,
     notes: str, prepared_attachments: list[dict], intake_note: str,
-    source: str = "",
+    source: str = "", request_id: str | None = None,
 ) -> tuple[str, str]:
     """Create one formal Incoming Purchase Request. This is the single place
     that constructs the IncomingPurchaseRequest/-Item/-Attachment/
@@ -726,11 +751,15 @@ def create_incoming_request(
     `items` entries are already fully resolved: {item_id ("" for manual),
     product_name, preferred_brand, main_category, subcategory,
     specifications, quantity, unit}. `prepared_attachments` entries must
-    already be validated/detected (see _prepare_portal_attachments) — this
-    function only writes their bytes to storage and rows to the DB.
-    Returns (request_id, request_number).
+    already be validated (see _prepare_portal_attachments) AND written to
+    storage under `request_id` (see _store_portal_attachments) - this
+    function never calls the object store, so it never blocks on it while
+    holding `session`; it only writes rows. The caller owns cleanup of the
+    stored objects if this raises. Returns (request_id, request_number).
     """
-    request_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
+    if any(not attachment.get("stored_filename") for attachment in prepared_attachments):
+        raise ValueError("prepared attachments must be stored before create_incoming_request")
     request_number = f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
     created_at = _now()
     destination_label = DESTINATION_LABEL.get(delivery_destination, delivery_destination)
@@ -739,72 +768,56 @@ def create_incoming_request(
         if delivery_destination == "site" else destination_label
     )
 
-    storage = get_attachment_storage()
-    written_keys: list[str] = []
-    try:
-        for attachment in prepared_attachments:
-            stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
-            attachment["stored_filename"] = f"{request_id}/{stored_name}"
-            storage.put(
-                attachment["stored_filename"], attachment["content"],
-                attachment["media_type"], attachment["sha256"],
-            )
-            written_keys.append(attachment["stored_filename"])
+    row = IncomingPurchaseRequest(
+        id=request_id, request_number=request_number,
+        requester_name=user.display_name or user.username,
+        company_name="", phone_number="", whatsapp_number="", email="",
+        project_name=project.name, project_id=project.id,
+        customer_id="", customer_name="",
+        project_location=project.address or "", delivery_location=delivery_location,
+        required_delivery_date=required_delivery_date, priority=priority,
+        notes=notes.strip(), status="new", assigned_employee="",
+        submission_token=str(uuid.uuid4()),
+        content_fingerprint=hashlib.sha256(f"portal:{request_id}".encode()).hexdigest(),
+        requester_user_id=user.id, delivery_destination=delivery_destination,
+        source=source, created_at=created_at, updated_at=created_at,
+    )
+    session.add(row)
 
-        row = IncomingPurchaseRequest(
-            id=request_id, request_number=request_number,
-            requester_name=user.display_name or user.username,
-            company_name="", phone_number="", whatsapp_number="", email="",
-            project_name=project.name, project_id=project.id,
-            customer_id="", customer_name="",
-            project_location=project.address or "", delivery_location=delivery_location,
-            required_delivery_date=required_delivery_date, priority=priority,
-            notes=notes.strip(), status="new", assigned_employee="",
-            submission_token=str(uuid.uuid4()),
-            content_fingerprint=hashlib.sha256(f"portal:{request_id}".encode()).hexdigest(),
-            requester_user_id=user.id, delivery_destination=delivery_destination,
-            source=source, created_at=created_at, updated_at=created_at,
-        )
-        session.add(row)
+    for position, entry in enumerate(items, 1):
+        session.add(IncomingPurchaseRequestItem(
+            id=str(uuid.uuid4()), request_id=request_id, position=position,
+            item_id=entry["item_id"], product_name=entry["product_name"],
+            preferred_brand=entry.get("preferred_brand", ""),
+            main_category=entry.get("main_category", ""),
+            subcategory=entry.get("subcategory", ""),
+            specifications=entry.get("specifications", ""),
+            quantity=entry["quantity"], unit=entry["unit"],
+        ))
 
-        for position, entry in enumerate(items, 1):
-            session.add(IncomingPurchaseRequestItem(
-                id=str(uuid.uuid4()), request_id=request_id, position=position,
-                item_id=entry["item_id"], product_name=entry["product_name"],
-                preferred_brand=entry.get("preferred_brand", ""),
-                main_category=entry.get("main_category", ""),
-                subcategory=entry.get("subcategory", ""),
-                specifications=entry.get("specifications", ""),
-                quantity=entry["quantity"], unit=entry["unit"],
-            ))
-
-        for attachment in prepared_attachments:
-            session.add(IncomingRequestGeneralAttachment(
-                id=str(uuid.uuid4()), request_id=request_id,
-                original_filename=attachment["original_filename"],
-                stored_filename=attachment["stored_filename"],
-                media_type=attachment["media_type"],
-                size_bytes=attachment["size_bytes"], sha256=attachment["sha256"],
-                created_at=created_at,
-            ))
-
-        session.add(IncomingRequestStatusHistory(
-            id=str(uuid.uuid4()), request_id=request_id, from_status="", to_status="new",
-            changed_by=user.username, note=intake_note,
+    for attachment in prepared_attachments:
+        session.add(IncomingRequestGeneralAttachment(
+            id=str(uuid.uuid4()), request_id=request_id,
+            original_filename=attachment["original_filename"],
+            stored_filename=attachment["stored_filename"],
+            media_type=attachment["media_type"],
+            size_bytes=attachment["size_bytes"], sha256=attachment["sha256"],
             created_at=created_at,
         ))
-        session.add(InternalNotification(
-            id=str(uuid.uuid4()), notification_type="new_purchase_request",
-            entity_type="incoming_purchase_request", entity_id=request_id,
-            title=f"طلب شراء وارد جديد {request_number}",
-            message=f"من {user.display_name or user.username} — مشروع {project.name}",
-            is_read=0, created_at=created_at,
-        ))
-        session.commit()
-    except Exception:
-        for key in written_keys:
-            storage.delete(key)
-        raise
+
+    session.add(IncomingRequestStatusHistory(
+        id=str(uuid.uuid4()), request_id=request_id, from_status="", to_status="new",
+        changed_by=user.username, note=intake_note,
+        created_at=created_at,
+    ))
+    session.add(InternalNotification(
+        id=str(uuid.uuid4()), notification_type="new_purchase_request",
+        entity_type="incoming_purchase_request", entity_id=request_id,
+        title=f"طلب شراء وارد جديد {request_number}",
+        message=f"من {user.display_name or user.username} — مشروع {project.name}",
+        is_read=0, created_at=created_at,
+    ))
+    session.commit()
     return request_id, request_number
 
 
@@ -887,13 +900,24 @@ async def submit_portal_request(
                     "quantity": entry.quantity, "unit": entry.unit.strip(),
                 })
 
-        request_id, request_number = create_incoming_request(
-            session, user=user, project=project, items=resolved_items,
-            required_delivery_date=body.required_delivery_date, priority=body.priority,
-            delivery_destination=body.delivery_destination, notes=body.notes,
-            prepared_attachments=prepared,
-            intake_note="تم استلام الطلب من بوابة طلبات الموقع",
-            source="site_portal",
-        )
+    # Objects are written with no DB session open (a slow object store must
+    # not hold a pooled connection); project access is re-checked in the
+    # session that writes the rows, and the objects removed if that fails.
+    request_id = str(uuid.uuid4())
+    written_keys = await _store_portal_attachments(request_id, prepared)
+    try:
+        with SessionLocal() as session:
+            project = _resolve_project(session, user, body.project_id)
+            request_id, request_number = create_incoming_request(
+                session, user=user, project=project, items=resolved_items,
+                required_delivery_date=body.required_delivery_date, priority=body.priority,
+                delivery_destination=body.delivery_destination, notes=body.notes,
+                prepared_attachments=prepared,
+                intake_note="تم استلام الطلب من بوابة طلبات الموقع",
+                source="site_portal", request_id=request_id,
+            )
+    except Exception:
+        await delete_attachments_quietly_async(written_keys)
+        raise
 
     return {"ok": True, "request_number": request_number, "request_id": request_id}

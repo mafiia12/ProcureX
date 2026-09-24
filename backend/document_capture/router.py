@@ -22,7 +22,9 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, select
 
 try:
-    from ..attachment_storage import get_attachment_storage
+    from ..attachment_storage import (
+        delete_attachments_quietly_async, get_attachment, stream_attachment,
+    )
     from ..auth.models import User
     from ..auth.service import require_erp_role
     from ..database import Item, SessionLocal
@@ -37,7 +39,9 @@ try:
         require_internal_access,
     )
 except ImportError:  # pragma: no cover
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import (
+        delete_attachments_quietly_async, get_attachment, stream_attachment,
+    )
     from auth.models import User
     from auth.service import require_erp_role
     from database import Item, SessionLocal
@@ -63,7 +67,7 @@ from .models import (
     PurchaseRequestDocument,
 )
 from .security import validate_document_uploads
-from .service import audit, confirm_document, create_document, now_iso
+from .service import audit, confirm_document, create_document, now_iso, store_document_files
 
 
 public_document_router = APIRouter(
@@ -173,94 +177,119 @@ async def upload_purchase_request_document(
         ).encode("utf-8")
     ).hexdigest()
     with SessionLocal() as session:
-        duplicate = session.scalars(
-            select(IncomingPurchaseRequest).where(
-                IncomingPurchaseRequest.submission_token == body.submission_token
+        duplicate = _duplicate_submission(session, body.submission_token)
+    if duplicate:
+        return duplicate
+    request_id = str(uuid.uuid4())
+    document_id = str(uuid.uuid4())
+    # Objects are written with no DB session open (a slow object store must
+    # not hold a pooled connection), then the rows; on any failure after
+    # this point, including losing a duplicate-submission race, the objects
+    # are removed again.
+    stored_keys = await store_document_files(request_id, document_id, files)
+    try:
+        with SessionLocal() as session:
+            duplicate = _duplicate_submission(session, body.submission_token)
+            if duplicate:
+                session.close()  # release the connection before the storage calls
+                await delete_attachments_quietly_async(stored_keys)
+                return duplicate
+            timestamp = _now()
+            request_number = (
+                f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
             )
-        ).first()
-        if duplicate:
-            document = session.scalars(
-                select(PurchaseRequestDocument)
-                .where(PurchaseRequestDocument.request_id == duplicate.id)
-                .order_by(PurchaseRequestDocument.created_at.desc())
-            ).first()
+            required_date = (
+                body.required_delivery_date or datetime.now(timezone.utc).date().isoformat()
+            )
+            row = IncomingPurchaseRequest(
+                id=request_id,
+                request_number=request_number,
+                requester_name=body.requester_name.strip(),
+                company_name=body.company_name.strip(),
+                phone_number=body.phone_number.strip(),
+                whatsapp_number="",
+                email="",
+                project_name=body.project_name.strip(),
+                project_location=body.project_location.strip(),
+                delivery_location=body.delivery_location.strip(),
+                required_delivery_date=required_date,
+                priority=body.priority,
+                notes=body.notes.strip(),
+                status="new",
+                assigned_employee="",
+                submission_token=body.submission_token,
+                content_fingerprint=fingerprint,
+                requester_ip_hash=ip_hash,
+                user_agent_hash=_hash_private(request.headers.get("user-agent", "")),
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            session.add(row)
+            session.add(
+                IncomingRequestStatusHistory(
+                    id=str(uuid.uuid4()),
+                    request_id=request_id,
+                    from_status="",
+                    to_status="new",
+                    changed_by="public",
+                    note="Document submitted for human review",
+                    created_at=timestamp,
+                )
+            )
+            session.add(
+                InternalNotification(
+                    id=str(uuid.uuid4()),
+                    notification_type="new_purchase_request_document",
+                    entity_type="incoming_purchase_request",
+                    entity_id=request_id,
+                    title=f"New document request {request_number}",
+                    message=f"From {body.requester_name.strip()}",
+                    is_read=0,
+                    created_at=timestamp,
+                )
+            )
+            session.flush()
+            document = create_document(
+                session,
+                request_id,
+                body.document_type,
+                files,
+                queue_processing=body.document_type in EXTRACTABLE_DOCUMENT_TYPES,
+                document_id=document_id,
+                stored_keys=stored_keys,
+            )
+            session.commit()
             return {
                 "ok": True,
-                "duplicate": True,
-                "request_number": duplicate.request_number,
-                "document_id": document.id if document else None,
+                "duplicate": False,
+                "request_number": request_number,
+                "document_id": document.id,
+                "status": document.status,
             }
-        timestamp = _now()
-        request_id = str(uuid.uuid4())
-        request_number = (
-            f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
+    except Exception:
+        await delete_attachments_quietly_async(stored_keys)
+        raise
+
+
+def _duplicate_submission(session, submission_token: str) -> dict | None:
+    duplicate = session.scalars(
+        select(IncomingPurchaseRequest).where(
+            IncomingPurchaseRequest.submission_token == submission_token
         )
-        required_date = (
-            body.required_delivery_date or datetime.now(timezone.utc).date().isoformat()
-        )
-        row = IncomingPurchaseRequest(
-            id=request_id,
-            request_number=request_number,
-            requester_name=body.requester_name.strip(),
-            company_name=body.company_name.strip(),
-            phone_number=body.phone_number.strip(),
-            whatsapp_number="",
-            email="",
-            project_name=body.project_name.strip(),
-            project_location=body.project_location.strip(),
-            delivery_location=body.delivery_location.strip(),
-            required_delivery_date=required_date,
-            priority=body.priority,
-            notes=body.notes.strip(),
-            status="new",
-            assigned_employee="",
-            submission_token=body.submission_token,
-            content_fingerprint=fingerprint,
-            requester_ip_hash=ip_hash,
-            user_agent_hash=_hash_private(request.headers.get("user-agent", "")),
-            created_at=timestamp,
-            updated_at=timestamp,
-        )
-        session.add(row)
-        session.add(
-            IncomingRequestStatusHistory(
-                id=str(uuid.uuid4()),
-                request_id=request_id,
-                from_status="",
-                to_status="new",
-                changed_by="public",
-                note="Document submitted for human review",
-                created_at=timestamp,
-            )
-        )
-        session.add(
-            InternalNotification(
-                id=str(uuid.uuid4()),
-                notification_type="new_purchase_request_document",
-                entity_type="incoming_purchase_request",
-                entity_id=request_id,
-                title=f"New document request {request_number}",
-                message=f"From {body.requester_name.strip()}",
-                is_read=0,
-                created_at=timestamp,
-            )
-        )
-        session.flush()
-        document = create_document(
-            session,
-            request_id,
-            body.document_type,
-            files,
-            queue_processing=body.document_type in EXTRACTABLE_DOCUMENT_TYPES,
-        )
-        session.commit()
-        return {
-            "ok": True,
-            "duplicate": False,
-            "request_number": request_number,
-            "document_id": document.id,
-            "status": document.status,
-        }
+    ).first()
+    if not duplicate:
+        return None
+    document = session.scalars(
+        select(PurchaseRequestDocument)
+        .where(PurchaseRequestDocument.request_id == duplicate.id)
+        .order_by(PurchaseRequestDocument.created_at.desc())
+    ).first()
+    return {
+        "ok": True,
+        "duplicate": True,
+        "request_number": duplicate.request_number,
+        "document_id": document.id if document else None,
+    }
 
 
 def _document_or_404(session, request_id: str, document_id: str):
@@ -779,14 +808,19 @@ async def download_document_file(
         file = session.get(DocumentFile, file_id)
         if not file or file.document_id != document_id:
             raise HTTPException(404, "Document file not found")
-        stored = get_attachment_storage().get(file.stored_filename)
+        stored_filename, media_type = file.stored_filename, file.media_type
         safe_name = file.original_filename.replace('"', "_")
-        return StreamingResponse(
-            stored.body,
-            media_type=file.media_type,
-            headers={
-                "Content-Disposition": f'inline; filename="{safe_name}"',
-                "Cache-Control": "private, no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+    # Opened after the session closes and streamed off the event loop.
+    try:
+        stored = await get_attachment(stored_filename)
+    except FileNotFoundError:
+        raise HTTPException(404, "Document file not found")
+    return StreamingResponse(
+        stream_attachment(stored),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

@@ -36,14 +36,18 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 try:
-    from .attachment_storage import get_attachment_storage
+    from .attachment_storage import (
+        delete_attachments_quietly_async, get_attachment, put_attachment, stream_attachment,
+    )
     from .auth.models import User
     from .auth.service import require_erp_role
     from .business_codes import next_business_code
     from .database import Base, Customer, Item, SessionLocal
     from .rate_limit import RateLimiter
 except ImportError:
-    from attachment_storage import get_attachment_storage
+    from attachment_storage import (
+        delete_attachments_quietly_async, get_attachment, put_attachment, stream_attachment,
+    )
     from auth.models import User
     from auth.service import require_erp_role
     from business_codes import next_business_code
@@ -708,14 +712,15 @@ async def submit_public_request(
     request_id = str(uuid.uuid4())
     request_number = f"REQ-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:10].upper()}"
     created_at = _now()
-    storage = get_attachment_storage()
     written_keys: list[str] = []
     try:
+        # Objects are written before the DB session opens, off the event
+        # loop, so a slow object store never holds a pooled connection.
         if prepared:
             for index, attachment in prepared.items():
                 stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
                 attachment["stored_filename"] = f"{request_id}/{stored_name}"
-                storage.put(
+                await put_attachment(
                     attachment["stored_filename"], attachment["content"],
                     attachment["media_type"], attachment["sha256"],
                 )
@@ -785,8 +790,7 @@ async def submit_public_request(
             ))
             session.commit()
     except Exception:
-        for key in written_keys:
-            storage.delete(key)
+        await delete_attachments_quietly_async(written_keys)
         raise
     return {"ok": True, "duplicate": False, "request_number": request_number}
 
@@ -1243,22 +1247,31 @@ async def get_request_attachment(
         item = session.get(IncomingPurchaseRequestItem, attachment.request_item_id)
         if not item or item.request_id != request_id:
             raise HTTPException(404, "المرفق غير موجود")
-        try:
-            stored = get_attachment_storage().get(attachment.stored_filename)
-        except (FileNotFoundError, KeyError):
-            raise HTTPException(404, "ملف المرفق غير موجود")
-        return StreamingResponse(
-            stored.body,
-            media_type=attachment.media_type,
-            headers={
-                "Cache-Control": "private, no-store",
-                "Content-Length": str(stored.content_length),
-                "Content-Disposition": (
-                    "attachment; filename=attachment; filename*=UTF-8''"
-                    f"{quote(attachment.original_filename)}"
-                ),
-            },
-        )
+        stored_filename = attachment.stored_filename
+        media_type = attachment.media_type
+        original_filename = attachment.original_filename
+    return await _attachment_response(stored_filename, media_type, original_filename)
+
+
+async def _attachment_response(stored_filename: str, media_type: str, original_filename: str):
+    """Opens the object after the DB session is closed and streams it off
+    the event loop (see attachment_storage.py)."""
+    try:
+        stored = await get_attachment(stored_filename)
+    except (FileNotFoundError, KeyError):
+        raise HTTPException(404, "ملف المرفق غير موجود")
+    return StreamingResponse(
+        stream_attachment(stored),
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Length": str(stored.content_length),
+            "Content-Disposition": (
+                "attachment; filename=attachment; filename*=UTF-8''"
+                f"{quote(original_filename)}"
+            ),
+        },
+    )
 
 
 @internal_router.get(
@@ -1272,22 +1285,10 @@ async def get_request_general_attachment(
         attachment = session.get(IncomingRequestGeneralAttachment, attachment_id)
         if not attachment or attachment.request_id != request_id:
             raise HTTPException(404, "المرفق غير موجود")
-        try:
-            stored = get_attachment_storage().get(attachment.stored_filename)
-        except (FileNotFoundError, KeyError):
-            raise HTTPException(404, "ملف المرفق غير موجود")
-        return StreamingResponse(
-            stored.body,
-            media_type=attachment.media_type,
-            headers={
-                "Cache-Control": "private, no-store",
-                "Content-Length": str(stored.content_length),
-                "Content-Disposition": (
-                    "attachment; filename=attachment; filename*=UTF-8''"
-                    f"{quote(attachment.original_filename)}"
-                ),
-            },
-        )
+        stored_filename = attachment.stored_filename
+        media_type = attachment.media_type
+        original_filename = attachment.original_filename
+    return await _attachment_response(stored_filename, media_type, original_filename)
 
 
 @internal_router.post("/{request_id}/convert-customer", dependencies=[Depends(require_internal_access)])

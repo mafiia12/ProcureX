@@ -2640,11 +2640,20 @@ def test_hosted_full_surface_allows_s3(monkeypatch, environment):
     assert isinstance(storage, S3AttachmentStorage)
     assert storage.client is client
     assert storage.bucket == f"procurex-{environment}-attachments"
-    client_factory.assert_called_once_with(
-        "s3", endpoint_url="https://account.r2.cloudflarestorage.com",
+    client_factory.assert_called_once()
+    args, kwargs = client_factory.call_args
+    config = kwargs.pop("config")
+    assert args == ("s3",)
+    assert kwargs == dict(
+        endpoint_url="https://account.r2.cloudflarestorage.com",
         aws_access_key_id="test-access-key", aws_secret_access_key="test-secret-key",
         region_name=os.getenv("R2_REGION", "auto"),
     )
+    # Bounded, not boto3's 60s/60s defaults - see attachment_storage.py.
+    assert config.connect_timeout == 3.0
+    assert config.read_timeout == 10.0
+    assert config.retries == {"mode": "standard", "total_max_attempts": 3}
+    assert config.max_pool_connections == 10
 
 
 def test_development_local_attachment_storage_is_unaffected(monkeypatch, tmp_path):

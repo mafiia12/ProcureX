@@ -26,6 +26,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError, OperationalError, TimeoutError as PoolTimeoutError
 
 try:
+    from .attachment_storage import AttachmentStorageUnavailable
     from .auth.admin_router import router as admin_users_router
     from .auth.router import router as auth_router
     from .auth.models import User
@@ -65,6 +66,7 @@ try:
     from .whatsapp.router import router as whatsapp_router
     from .whatsapp.admin_router import router as whatsapp_admin_router
 except ImportError:
+    from attachment_storage import AttachmentStorageUnavailable
     from auth.admin_router import router as admin_users_router
     from auth.router import router as auth_router
     from auth.models import User
@@ -3285,6 +3287,26 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
                 headers={"Cache-Control": "no-store"},
             )
         return await safe_unhandled_error(request, error)
+
+    @application.exception_handler(AttachmentStorageUnavailable)
+    async def attachment_storage_unavailable(request: Request, error: AttachmentStorageUnavailable):
+        # R2/S3 refused, errored or timed out after the bounded retries in
+        # attachment_storage.py. The message carries only the operation and
+        # provider error code - never credentials - and is not sent to the client.
+        logger.warning(
+            "Attachment storage unavailable: method=%s path=%s error=%s",
+            request.method, request.url.path, error,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": {
+                    "code": "storage_unavailable",
+                    "message": "تعذر الوصول إلى خدمة تخزين المرفقات حالياً. يرجى إعادة المحاولة بعد لحظات.",
+                }
+            },
+            headers={"Cache-Control": "no-store", "Retry-After": "5"},
+        )
 
     @application.exception_handler(Exception)
     async def safe_unhandled_error(request: Request, error: Exception):
