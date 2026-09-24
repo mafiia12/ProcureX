@@ -434,3 +434,23 @@ See git log on `fix/pre-golive-hardening` for the focused, root-cause-grouped co
 ---
 
 ## PROCUREX_PERFORMANCE_REVIEW = PASS_WITH_RECOMMENDATIONS
+
+---
+
+## Production Concurrency & Scaling
+
+*Added 2026-09-24. Full measurements, method and deployment profiles: `docs/production-capacity-plan.md`.* This follow-up had a disposable PostgreSQL 16 instance (seeded through the real API), so it **supersedes** the configuration-only statements in §10 and §34–36 above ("do not change pool sizes / do not add `--workers` until…").
+
+**What was measured:** 1/2/4 uvicorn workers at 1–75 concurrent users with a weighted ERP mix; memory per worker; slow-request isolation; pool size, overflow and exhaustion (including a stuck table lock); PostgreSQL statement profile; overload and recovery; graceful shutdown; cross-process races on business codes, seven write paths and the document-job queue.
+
+**Findings that changed the plan**
+- Throughput is **CPU-bound per worker** (sync DB on the event loop; see §1), not DB-bound: ≤4 active Postgres connections in every run. 2 workers ≈ 2× throughput and pass slow-request isolation (light-page p95 beside heavy users 471 ms → 81 ms).
+- Uvicorn's default 5 s keep-alive dropped **8.7%** of requests at 50 users (late timer on a busy loop). `--timeout-keep-alive 65` → 0%.
+- A stuck DB lock froze a whole worker for the full lock duration, and a deploy could not shut the process down. There was no statement or lock timeout.
+- **Live bug (single worker):** corrected-REQ resubmission created duplicate child REQs under concurrent clicks (4 from 10). **Scaling bugs:** duplicate POs from one comparison across 2 processes; document-extraction jobs processed twice (57/60); closed daily-report cache stale across workers; concurrent duplicates returned 500.
+
+**Fixed (each measured before and after):** Postgres `statement_timeout` 10 s / `lock_timeout` 3 s; pool defaults 5 / overflow 2 / timeout 5 s; pool, statement and lock timeouts → 503 + `Retry-After`, unique-constraint races → 409; row locks for PO-from-comparison and corrected-REQ resubmission; `FOR UPDATE SKIP LOCKED` job claim; `closed_at`-keyed report cache; `render.yaml` ERP `WEB_CONCURRENCY=2`, public 1, `--timeout-keep-alive 65 --timeout-graceful-shutdown 20`.
+
+**Still open:** HORIZONTAL_SCALING_READY = NO (WhatsApp webhook commit order and draft locking; per-process rate limiters; Linux multi-worker validation on staging). Render plan CPU/RAM, Postgres `max_connections` and proxy timeouts are UNKNOWN from the repo (capacity plan §11). The N+1 in `GET /api/workflow/approvals` (203 queries per call) is the top query-level follow-up.
+
+## PRODUCTION_CONCURRENCY_REVIEW = PASS_WITH_EXTERNAL_VALIDATION
