@@ -18,8 +18,9 @@ import api, { errMsg, fmtEGP } from "@/lib/api";
 import { REQUEST_STATUSES } from "@/pages/IncomingPurchaseRequests";
 import { ATTENTION_META, ATTENTION_REASONS } from "@/pages/Dashboard";
 import { PRIORITY_OPTIONS } from "@/lib/requestValidation";
+import { roleAtLeast } from "@/lib/roles";
 import {
-  PO_ACTUAL_PAYMENT_STATUS_LABEL, PO_PAYMENT_METHOD_LABEL, PO_STATUS_LABEL,
+  PO_PAYMENT_METHOD_LABEL, PO_STATUS_LABEL,
 } from "@/lib/purchaseOrderStatus";
 
 const REQUEST_STATUS_LABEL = Object.fromEntries(
@@ -80,7 +81,7 @@ export default function DailyProcurementReport() {
   const navigate = useNavigate();
   const { tr, locale, direction } = usePreferences();
   const { user } = useAuth();
-  const canManage = user?.role === "procurement_responsible" || user?.role === "admin";
+  const canManage = roleAtLeast(user?.role, "procurement_responsible");
 
   const [selectedDate, setSelectedDate] = useState(todayStr());
   const [report, setReport] = useState(null);
@@ -150,7 +151,6 @@ export default function DailyProcurementReport() {
     || notesDraft.follow_up_notes !== (report.notes?.follow_up_notes || "")
   );
 
-  const summary = report?.summary || {};
   const kpis = useMemo(() => {
     const s = report?.summary || {};
     return [

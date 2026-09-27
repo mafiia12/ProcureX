@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FilePlus2,
-  FolderOpen, MoreHorizontal, PackagePlus, Pencil, Plus, Printer, Save, Trash2, UserPlus,
+  AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FilePlus2,
+  FolderOpen, Minus, MoreHorizontal, PackagePlus, Pencil, Plus, Printer, Save, Trash2, UserPlus,
   Send, Paperclip, ExternalLink, SlidersHorizontal, Upload,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -23,14 +23,16 @@ import {
 import api, { errMsg, fmt } from "@/lib/api";
 import useUnsavedChanges from "@/hooks/useUnsavedChanges";
 import {
-  calculateComparison, calculateSupplierTotal, emptyComparisonRow, manualEntryKey,
-  supplierOffersFromRows,
+  calculateComparison, calculateSupplierTotal, decisionReasonKey, emptyComparisonRow,
+  formalPriceChange, formatPriceChangePercent, manualEntryKey, NON_CHEAPEST_REASON_OPTIONS,
+  nonCheapestSelections, supplierOffersFromRows,
 } from "@/lib/priceComparison";
 import {
   EmptyState, StatusBadge,
 } from "@/components/procurement-ui";
 import { useOptionalAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
+import { roleAtLeast } from "@/lib/roles";
 
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -215,18 +217,49 @@ function ComparisonMatrix({
                     </div>
                     {row.item_id && row.supplier_id && (() => {
                       const lastPrice = lastSupplierPrices[`${row.item_id}|${row.supplier_id}`];
+                      if (!lastPrice) {
+                        return (
+                          <div className="truncate text-[9.5px] text-muted-foreground/70" data-testid={`last-supplier-price-${row.key}`}>
+                            {tr("لا يوجد سعر رسمي سابق", "No previous formal price")}
+                          </div>
+                        );
+                      }
+                      const change = formalPriceChange(row.unit_price, lastPrice.unit_price);
+                      const percentLabel = change ? formatPriceChangePercent(change.percent) : null;
+                      const toneClass = change?.direction === "up"
+                        ? "text-amber-700 dark:text-amber-400"
+                        : change?.direction === "down"
+                          ? "text-emerald-700 dark:text-emerald-300"
+                          : "text-muted-foreground";
+                      const DirectionIcon = change?.direction === "up" ? ArrowUp : change?.direction === "down" ? ArrowDown : Minus;
+                      const tooltip = tr(
+                        `آخر سعر رسمي من عرض مورد مستلم${lastPrice.date ? ` — ${lastPrice.date}` : ""}`,
+                        `Last formal price from a received supplier quotation${lastPrice.date ? ` — ${lastPrice.date}` : ""}`,
+                      );
                       return (
-                        <div className="truncate text-[9.5px] text-muted-foreground" data-testid={`last-supplier-price-${row.key}`}>
-                          {lastPrice
-                            ? tr(`آخر سعر: ${formatMoney(lastPrice.unit_price)} — ${lastPrice.date}`, `Last price: ${formatMoney(lastPrice.unit_price)} — ${lastPrice.date}`)
-                            : tr("لا يوجد سعر سابق", "No previous price")}
+                        <div className="flex min-w-0 items-center gap-1 truncate text-[9.5px]" data-testid={`last-supplier-price-${row.key}`} title={tooltip}>
+                          {change?.direction === "same" ? (
+                            <span className={cn("truncate", toneClass)}>{tr("نفس السعر السابق", "Same as last price")}</span>
+                          ) : (
+                            <>
+                              <span className="truncate text-muted-foreground">{tr("آخر سعر", "Last")} {formatMoney(lastPrice.unit_price)}</span>
+                              <span className={cn("flex shrink-0 items-center gap-0.5 font-semibold", toneClass)} data-testid={`price-change-indicator-${row.key}`}>
+                                <DirectionIcon className="h-2.5 w-2.5" />{percentLabel}
+                              </span>
+                            </>
+                          )}
                         </div>
                       );
                     })()}
                     <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground">
                       <span className="shrink-0">{row.availability === "available" ? tr("متاح", "Available") : tr("غير متاح", "Unavailable")} · {row.delivery_days || 0}{tr("ي", "d")}</span>
-                      {(row.is_lowest_final_total || row.is_unavailable || row.is_incomplete) && <span className="flex min-w-0 items-center gap-1 overflow-hidden">
+                      {(row.is_lowest_final_total || row.is_unavailable || row.is_incomplete || (row.selected_for_purchase && row.eligible && !row.is_lowest_final_total)) && <span className="flex min-w-0 items-center gap-1 overflow-hidden">
                         {row.is_lowest_final_total && <span data-testid="lowest-price-badge"><StatusBadge tone="success" className="border font-bold">{tr("أقل سعر", "Lowest")}</StatusBadge></span>}
+                        {!!row.selected_for_purchase && row.eligible && !row.is_lowest_final_total && (
+                          <span data-testid={`non-cheapest-badge-${row.key}`} title={tr("مورد غير الأرخص — يتطلب سببًا", "Non-cheapest supplier — requires a reason")}>
+                            <StatusBadge tone="warning" className="border font-bold"><AlertTriangle className="h-3 w-3" />{tr("غير الأرخص", "Not cheapest")}</StatusBadge>
+                          </span>
+                        )}
                         {row.is_unavailable && <StatusBadge tone="danger" className="border font-bold">{tr("غير متاح", "Unavailable")}</StatusBadge>}
                         {row.is_incomplete && <StatusBadge tone="warning" className="border font-bold">{tr("ناقص", "Incomplete")}</StatusBadge>}
                       </span>}
@@ -368,7 +401,7 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   );
   const [sourceRfqItems, setSourceRfqItems] = useState([]);
   const [supplierPage, setSupplierPage] = useState(0);
-  const canUploadQuotation = ["admin", "procurement_responsible"].includes(user?.role);
+  const canUploadQuotation = roleAtLeast(user?.role, "procurement_responsible");
   useEffect(() => {
   if (!sourceRequest) return;
 
@@ -443,6 +476,10 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
   const [confirmation, setConfirmation] = useState("");
   const [savingMaster, setSavingMaster] = useState(false);
   const [lastSupplierPrices, setLastSupplierPrices] = useState({});
+  const [decisionReasons, setDecisionReasons] = useState({});
+  const [reasonDialogOpen, setReasonDialogOpen] = useState(false);
+  const [reasonDraft, setReasonDraft] = useState({});
+  const [submittingApproval, setSubmittingApproval] = useState(false);
   const [catalogTarget, setCatalogTarget] = useState(null);
   const [catalogForm, setCatalogForm] = useState({ name: "", unit: "", main_category: "", subcategory: "" });
   const [savingCatalog, setSavingCatalog] = useState(false);
@@ -498,13 +535,40 @@ export default function SupplierPriceComparison({ initialComparison = null }) {
     [rows, items, suppliers, comparisonDate, supplierOffers],
   );
 
+  // Selections whose supplier is NOT the authoritative cheapest eligible
+  // offer for that item - re-derived on every render from calculations.rows
+  // so a price/selection change is reflected immediately (see task's
+  // recalculation rule: a stale non-cheapest verdict is never kept).
+  const flaggedSelections = useMemo(
+    () => nonCheapestSelections(calculations.rows),
+    [calculations.rows],
+  );
+
+  // A received quotation that seeded a row in THIS comparison must never
+  // come back as its own "previous formal price" - see the backend's
+  // last-formal-prices exclusion. Only a received quotation is ever
+  // returned as a formal price in the first place, so draft/withdrawn ones
+  // need no exclusion.
+  const currentQuotationIdBySupplier = useMemo(() => {
+    const map = {};
+    supplierQuotations.forEach((quotation) => {
+      if (quotation.status === "received" && quotation.supplier_id) {
+        map[quotation.supplier_id] = quotation.id;
+      }
+    });
+    return map;
+  }, [supplierQuotations]);
+
   const lastSupplierPricePairsKey = useMemo(() => {
     const pairs = new Set();
     calculations.rows.forEach((row) => {
-      if (row.item_id && row.supplier_id) pairs.add(`${row.item_id}:${row.supplier_id}`);
+      if (row.item_id && row.supplier_id) {
+        const currentQuotationId = currentQuotationIdBySupplier[row.supplier_id] || "";
+        pairs.add(`${row.item_id}:${row.supplier_id}:${currentQuotationId}`);
+      }
     });
     return [...pairs].sort().join(",");
-  }, [calculations.rows]);
+  }, [calculations.rows, currentQuotationIdBySupplier]);
 
   useEffect(() => {
     if (!lastSupplierPricePairsKey) { setLastSupplierPrices({}); return; }
@@ -1525,21 +1589,62 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
       return map;
     }, new Map()).entries()]
   : [];
+  const reasonIsComplete = (answer) => (
+    !!answer?.reason_code && (answer.reason_code !== "other" || !!answer.reason_text?.trim())
+  );
+
+  const submitApproval = async (reasonsMap) => {
+    setSubmittingApproval(true);
+    try {
+      const decision_reasons = flaggedSelections.map((item) => {
+        const answer = reasonsMap[decisionReasonKey(item)] || {};
+        return {
+          item_id: item.item_id, item_code: item.item_code,
+          reason_code: answer.reason_code || "", reason_text: answer.reason_text || "",
+        };
+      });
+      const { data } = await api.post("/workflow/approvals/from-comparison", {
+        comparison_id: comparisonId,
+        created_by: "",
+        approval_type: "comparison_workflow",
+        decision_reasons,
+      });
+      toast.success(tr(`أُرسلت المقارنة للمراجعة والاعتماد — ${data.approval.approval_number}`, `Sent for review and approval — ${data.approval.approval_number}`));
+      navigate("/approvals", { state: { approval_id: data.approval.id } });
+    } catch (error) { toast.error(errMsg(error)); } finally { setSubmittingApproval(false); }
+  };
+
   const sendForApproval = async () => {
     if (!comparisonId) return toast.error(tr("احفظ المقارنة أولاً", "Save the comparison first"));
     if (hasUnsavedChanges) return toast.error(tr("احفظ الاختيارات الحالية أولاً", "Save the current selections first"));
     if (!selectedPurchaseRows.length) return toast.error(tr("اختر عرضًا صالحًا واحدًا على الأقل", "Select at least one valid offer"));
     if (supplierOfferGroups.some((group) => !group.supplierId)) return toast.error(tr("اختر موردًا فعليًا لكل عمود", "Select a Supplier Master record for every column"));
     if (selectedPurchaseItemCount !== allComparisonItemsCount) return toast.error(tr("اختر عرضًا صالحًا لكل صنف قبل الإرسال", "Select one valid offer for every item before sending"));
-    try {
-      const { data } = await api.post("/workflow/approvals/from-comparison", {
-        comparison_id: comparisonId,
-        created_by: "",
-        approval_type: "comparison_workflow",
-      });
-      toast.success(tr(`أُرسلت المقارنة للمراجعة والاعتماد — ${data.approval.approval_number}`, `Sent for review and approval — ${data.approval.approval_number}`));
-      navigate("/approvals", { state: { approval_id: data.approval.id } });
-    } catch (error) { toast.error(errMsg(error)); }
+
+    if (flaggedSelections.length) {
+      const stillMissing = flaggedSelections.some((item) => !reasonIsComplete(decisionReasons[decisionReasonKey(item)]));
+      if (stillMissing) {
+        setReasonDraft(Object.fromEntries(flaggedSelections.map((item) => {
+          const key = decisionReasonKey(item);
+          return [key, decisionReasons[key] || { reason_code: "", reason_text: "" }];
+        })));
+        setReasonDialogOpen(true);
+        return;
+      }
+    }
+    await submitApproval(decisionReasons);
+  };
+
+  const confirmDecisionReasons = async () => {
+    const incomplete = flaggedSelections.some((item) => !reasonIsComplete(reasonDraft[decisionReasonKey(item)]));
+    if (incomplete) {
+      toast.error(tr("اختر سببًا لكل صنف، واكتب توضيحًا عند اختيار \"أخرى\"", "Choose a reason for every item, and add a note when \"Other\" is selected"));
+      return;
+    }
+    const merged = { ...decisionReasons, ...reasonDraft };
+    setDecisionReasons(merged);
+    setReasonDialogOpen(false);
+    await submitApproval(merged);
   };
   return (
     <div className="relative isolate space-y-1.5 supplier-comparison-page" data-testid="supplier-price-comparison-page">
@@ -1778,6 +1883,16 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
               <span><span className="text-muted-foreground">{tr("إجمالي الشراء المتوقع", "Expected purchase total")}</span> <b className="font-mono text-primary" dir="ltr">{formatMoney(selectedPurchaseTotal)}</b></span>
               {selectedSupplierName && <span className="text-muted-foreground">{tr("المورد", "Supplier")}: <b className="text-foreground">{selectedSupplierName}</b></span>}
               {selectedPurchaseSupplierCount > 1 && <span className="text-muted-foreground" title={mixedSelectionBreakdown.map(([name, count]) => `${name}: ${count}`).join(" · ")}>{tr(`اختيار مختلط من ${selectedPurchaseSupplierCount} موردين`, `Mixed selection from ${selectedPurchaseSupplierCount} suppliers`)}</span>}
+              {!!flaggedSelections.length && (
+                <span
+                  className="flex shrink-0 items-center gap-1 font-semibold text-amber-700 dark:text-amber-400"
+                  data-testid="non-cheapest-summary-indicator"
+                  title={flaggedSelections.map((item) => `${item.product_name}: +${formatMoney(item.difference)}`).join(" · ")}
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  {tr(`${flaggedSelections.length} اختيار غير الأرخص يحتاج سببًا`, `${flaggedSelections.length} non-cheapest selection(s) need a reason`)}
+                </span>
+              )}
             </div>
           </div>
           <Button type="button" size="sm" className="h-7 shrink-0 px-2 text-xs" onClick={sendForApproval} data-testid="comparison-summary-send"><Send className="h-3.5 w-3.5" />{tr("إرسال للاعتماد", "Send for approval")}</Button>
@@ -1928,6 +2043,70 @@ const mixedSelectionBreakdown = selectedPurchaseSupplierCount > 1
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setCatalogTarget(null)}>{tr("إلغاء", "Cancel")}</Button>
             <Button onClick={submitAddToCatalog} disabled={savingCatalog} data-testid="catalog-form-submit">{savingCatalog ? tr("جارٍ الإضافة...", "Adding...") : tr("إضافة إلى الأصناف", "Add to Item Master")}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={reasonDialogOpen} onOpenChange={setReasonDialogOpen}>
+        <DialogContent className="max-w-lg" dir={direction} data-testid="non-cheapest-reason-dialog">
+          <DialogHeader>
+            <DialogTitle className="text-start">{tr("سبب اختيار مورد غير الأرخص", "Reason for selecting a non-cheapest supplier")}</DialogTitle>
+            <DialogDescription className="text-start">{tr("اختيار مورد غير الأرخص لصنف يتطلب سببًا قبل الإرسال للاعتماد.", "Selecting a supplier other than the cheapest for an item requires a reason before sending for approval.")}</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[50vh] space-y-3 overflow-y-auto">
+            {flaggedSelections.map((item) => {
+              const key = decisionReasonKey(item);
+              const answer = reasonDraft[key] || { reason_code: "", reason_text: "" };
+              const setAnswer = (patch) => setReasonDraft((current) => ({ ...current, [key]: { ...answer, ...patch } }));
+              return (
+                <div key={key} className="space-y-2 border bg-muted/30 p-2.5" data-testid={`non-cheapest-reason-row-${key}`}>
+                  <div className="text-xs font-bold text-foreground">{item.product_name}</div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="rounded-md bg-card px-2 py-1.5">
+                      <div className="text-muted-foreground">{tr("المختار", "Selected")}</div>
+                      <div className="font-bold">{item.selected_supplier_name} — <span dir="ltr">{formatMoney(item.selected_total)}</span></div>
+                    </div>
+                    <div className="rounded-md bg-card px-2 py-1.5">
+                      <div className="text-muted-foreground">{tr("الأرخص الصالح", "Cheapest valid")}</div>
+                      <div className="font-bold">{item.cheapest_supplier_name} — <span dir="ltr">{formatMoney(item.cheapest_total)}</span></div>
+                    </div>
+                  </div>
+                  <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-400" dir="ltr">
+                    +{formatMoney(item.difference)} ({formatPriceChangePercent(item.difference_pct) || "-"})
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <FormField label={tr("السبب", "Reason")}>
+                      <select
+                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                        data-testid={`non-cheapest-reason-select-${key}`}
+                        value={answer.reason_code}
+                        onChange={(event) => setAnswer({ reason_code: event.target.value })}
+                      >
+                        <option value="">{tr("اختر سببًا", "Choose a reason")}</option>
+                        {NON_CHEAPEST_REASON_OPTIONS.map((option) => (
+                          <option key={option.code} value={option.code}>{tr(option.ar, option.en)}</option>
+                        ))}
+                      </select>
+                    </FormField>
+                    <FormField label={tr("ملاحظة", "Note") + (answer.reason_code === "other" ? " *" : ` (${tr("اختياري", "optional")})`)}>
+                      <Input
+                        className="h-8 text-xs"
+                        data-testid={`non-cheapest-reason-text-${key}`}
+                        value={answer.reason_text}
+                        onChange={(event) => setAnswer({ reason_text: event.target.value })}
+                        placeholder={answer.reason_code === "other" ? tr("مطلوب", "Required") : ""}
+                      />
+                    </FormField>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setReasonDialogOpen(false)}>{tr("إلغاء", "Cancel")}</Button>
+            <Button onClick={confirmDecisionReasons} disabled={submittingApproval} data-testid="confirm-non-cheapest-reasons">
+              {submittingApproval ? tr("جارٍ الإرسال...", "Sending...") : tr("تأكيد وإرسال للاعتماد", "Confirm and send for approval")}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

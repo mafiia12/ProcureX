@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle, ArrowLeft, ArrowRight, Ban, CheckCircle2, FileText, History,
   PackageCheck, Printer, ShieldCheck, Truck, Wallet, XCircle,
@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import PurchaseOrderPaymentDrawer from "@/components/PurchaseOrderPaymentDrawer";
 import ProcurementProgress from "@/components/ProcurementProgress";
 import {
-  ActionBar, Callout, EmptyState, KpiStrip, PageHeader, Panel, StatusBadge, Timeline,
+  ActionBar, Callout, EmptyState, KpiStrip, LoadRetryButton, PageHeader, Panel, StatusBadge, Timeline,
 } from "@/components/procurement-ui";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import api, { errMsg, fmtEGP } from "@/lib/api";
+import { roleAtLeast } from "@/lib/roles";
 import {
   PO_CANCELLABLE_STATUSES, PO_NEXT_STATUS, PO_NEXT_STATUS_ACTION_LABEL,
   PO_PAYMENT_METHOD_LABEL, PO_STATUS_LABEL, PO_STATUS_STYLE,
@@ -43,15 +44,23 @@ const paymentMethodEnglish = {
 };
 const makeKey = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
+const DEEP_LINK_TABS = new Set(["payments", "receiving"]);
+
 export default function PurchaseOrderDetails() {
   const { purchaseOrderId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const { tr, direction, locale } = usePreferences();
   const role = user?.role || "";
-  const canOperatePO = role === "admin" || role === "procurement_responsible";
-  const canManagePayments = role === "admin" || role === "commercial_manager";
+  const canOperatePO = roleAtLeast(role, "procurement_responsible");
+  const canManagePayments = roleAtLeast(role, "commercial_manager");
+  const requestedSection = searchParams.get("section");
+  const [activeTab, setActiveTab] = useState(
+    DEEP_LINK_TABS.has(requestedSection) ? requestedSection : "overview",
+  );
   const [order, setOrder] = useState(null);
+  const [loadError, setLoadError] = useState(false);
   const [actor, setActor] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -69,10 +78,17 @@ export default function PurchaseOrderDetails() {
   const submitting = useRef(false);
 
   const load = async () => {
+    setLoadError(false);
     try {
       const { data } = await api.get(`/purchase-orders/${purchaseOrderId}`);
       setOrder(data);
     } catch (error) {
+      if (error?.response?.status === 404) {
+        toast.error(tr("تعذر فتح السجل المطلوب أو تغيرت حالته", "Couldn't open that record, or its status has changed"));
+        navigate("/purchase-orders", { replace: true });
+        return;
+      }
+      setLoadError(true);
       toast.error(errMsg(error));
     }
   };
@@ -85,6 +101,9 @@ export default function PurchaseOrderDetails() {
     }
   };
   useEffect(() => { load(); loadLedger(); }, [purchaseOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (DEEP_LINK_TABS.has(requestedSection)) setActiveTab(requestedSection);
+  }, [purchaseOrderId, requestedSection]);
 
   const finalize = async () => {
     setBusy(true);
@@ -179,7 +198,21 @@ export default function PurchaseOrderDetails() {
     finally { setBusy(false); }
   };
 
-  if (!order) return <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">{tr("جارٍ تحميل أمر الشراء...", "Loading purchase order...")}</div>;
+  if (!order) {
+    return (
+      <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
+        {loadError ? (
+          <LoadRetryButton
+            onRetry={load}
+            testId="po-load-retry-button"
+            label={tr("تعذر تحميل أمر الشراء — إعادة المحاولة", "Could not load the purchase order — retry")}
+          />
+        ) : (
+          <span role="status">{tr("جارٍ تحميل أمر الشراء...", "Loading purchase order...")}</span>
+        )}
+      </div>
+    );
+  }
 
   const receivingOpen = ["in_delivery", "partial_received", "delivery_problem"].includes(order.status);
   const completed = order.status === "completed";
@@ -260,7 +293,7 @@ export default function PurchaseOrderDetails() {
       </> : <div className="text-sm text-amber-800 dark:text-amber-300">{tr("الإجراء متاح لمسؤول المشتريات فقط؛ باقي الأدوار يمكنها العرض.", "Only the procurement lead can perform this action; other roles have read access.")}</div>}
     </ActionBar>}
 
-    <Tabs defaultValue="overview" dir={direction}>
+    <Tabs value={activeTab} onValueChange={setActiveTab} dir={direction}>
       <TabsList className="flex h-auto w-full justify-start overflow-x-auto">
         {[
           ["overview", tr("نظرة عامة", "Overview")],

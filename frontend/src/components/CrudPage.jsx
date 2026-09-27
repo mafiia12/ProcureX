@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, ChevronDown, Eye, X } from "lucide-react";
+import { Plus, Pencil, Trash2, ChevronDown, ChevronLeft, ChevronRight, Eye, X } from "lucide-react";
 import api, { errMsg } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,14 +47,20 @@ export default function CrudPage({
   emptyTitle = "لا توجد سجلات حتى الآن",
   emptyDescription = "ابدأ بإضافة أول سجل؛ ستظهر البيانات هنا تلقائيًا.",
   compactManagement = false,
+  paginated = false,
+  pageSize = 50,
 }) {
   const preferences = usePreferences();
   const language = preferences.language || "ar";
   const tr = preferences.tr || ((ar, en) => (language === "en" ? en : ar));
   const direction = preferences.direction || (language === "en" ? "ltr" : "rtl");
   const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState("");
   const [filterValues, setFilterValues] = useState({});
+  const [page, setPage] = useState(1);
+  const [serverTotal, setServerTotal] = useState(0);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
@@ -66,18 +72,70 @@ export default function CrudPage({
   const fieldRefs = useRef({});
   const allFields = useMemo(() => [...fields, ...advancedFields], [fields, advancedFields]);
   const advancedKeys = useMemo(() => new Set(advancedFields.map((f) => f.key)), [advancedFields]);
+  const hasActiveFilters = Boolean(search.trim()) || Object.values(filterValues).some(Boolean);
 
+  // Paginated mode (Items/Suppliers today) fetches one page at a time from
+  // the server while nothing is searched/filtered - the common case, and
+  // the one the backend's limit/offset was actually added for. The moment
+  // a search or filter is active, it falls back to fetching everything (as
+  // every CrudPage instance always has) so search still finds matches
+  // anywhere in the dataset, not just the currently-loaded page - the
+  // already-existing client-side `filtered` below is then paginated for
+  // display only, not refetched per page. Non-paginated instances
+  // (Customers/Projects today) are entirely unaffected: `paginated` is a
+  // constant false for them, so only the load-once-on-mount effect below
+  // ever runs, exactly as before this feature existed.
   const load = async () => {
+    setLoading(true);
+    setLoadError(false);
     try {
-      const { data } = listParams
-        ? await api.get(`/${endpoint}`, { params: listParams })
+      const usePaging = paginated && !hasActiveFilters;
+      const params = usePaging
+        ? { ...listParams, limit: pageSize, offset: (page - 1) * pageSize }
+        : listParams;
+      const { data, headers } = params
+        ? await api.get(`/${endpoint}`, { params })
         : await api.get(`/${endpoint}`);
       setRows(data);
+      if (usePaging) {
+        setServerTotal(Number(headers?.["x-total-count"]) || data.length);
+      }
     } catch (e) {
+      setLoadError(true);
       toast.error(errMsg(e));
+    } finally {
+      setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line
+  useEffect(() => {
+    if (paginated) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!paginated) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paginated, page, hasActiveFilters]);
+
+  // In paginated mode `rows` only ever holds the current page (or, while
+  // searching, the full matched set), so a filter dropdown built from
+  // `rows` alone would only ever offer whatever values happen to be on the
+  // page currently in view. Filters without explicit `options` need the
+  // full dataset for their choices regardless of which page is loaded -
+  // fetched once, independently of the paginated `rows`/`load()` above.
+  const needsFilterSource = paginated && filters.some((f) => !f.options);
+  const [filterSourceRows, setFilterSourceRows] = useState([]);
+  useEffect(() => {
+    if (!needsFilterSource) return;
+    let cancelled = false;
+    api.get(`/${endpoint}`, listParams ? { params: listParams } : undefined)
+      .then(({ data }) => { if (!cancelled) setFilterSourceRows(data); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsFilterSource]);
+  const filterOptionRows = needsFilterSource ? filterSourceRows : rows;
 
   const filterOptions = useMemo(() => {
     const map = {};
@@ -87,12 +145,12 @@ export default function CrudPage({
         return;
       }
       const unique = Array.from(
-        new Set(rows.map((r) => String(r[filter.key] ?? "").trim()).filter(Boolean)),
+        new Set(filterOptionRows.map((r) => String(r[filter.key] ?? "").trim()).filter(Boolean)),
       ).sort();
       map[filter.key] = unique.map((v) => ({ value: v, label: v }));
     });
     return map;
-  }, [filters, rows]);
+  }, [filters, filterOptionRows]);
 
   const filtered = useMemo(() => {
     let result = rows;
@@ -110,10 +168,22 @@ export default function CrudPage({
     }
     return result;
   }, [rows, search, columns, filters, filterValues]);
-  const hasActiveFilters = Boolean(search.trim()) || Object.values(filterValues).some(Boolean);
+
+  // Total pages: the server's count while browsing unfiltered, otherwise
+  // the client-filtered count (search/filter always fetch everything, so
+  // `filtered.length` is already the true total in that mode).
+  const pagerTotal = paginated ? (hasActiveFilters ? filtered.length : serverTotal) : 0;
+  const totalPages = paginated ? Math.max(1, Math.ceil(pagerTotal / pageSize)) : 1;
+  const pageRows = useMemo(() => {
+    if (!paginated) return filtered;
+    if (!hasActiveFilters) return filtered; // rows is already just this page
+    return filtered.slice((page - 1) * pageSize, page * pageSize);
+  }, [paginated, hasActiveFilters, filtered, page, pageSize]);
+
   const clearFilters = () => {
     setSearch("");
     setFilterValues({});
+    setPage(1);
   };
 
   const openNew = () => {
@@ -299,7 +369,7 @@ export default function CrudPage({
       {compactManagement ? <div className="flex min-h-8 flex-wrap items-center justify-between gap-2 border-b pb-1" data-testid={`${testPrefix}-management-header`}>
         <div className="flex min-w-0 items-center gap-2">
           <h1 className="truncate text-[15px] font-bold tracking-tight text-foreground">{heading || title}</h1>
-          <span className="shrink-0 border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"><b className="text-foreground tabular-nums">{rows.length}</b> {language === "en" ? String(heading || title).toLowerCase() : title}</span>
+          <span className="shrink-0 border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"><b className="text-foreground tabular-nums">{paginated && !hasActiveFilters ? serverTotal : rows.length}</b> {language === "en" ? String(heading || title).toLowerCase() : title}</span>
           {description && <p className="sr-only">{description}</p>}
         </div>
         <Button size="sm" className="h-8 gap-1.5 px-2.5 text-xs" data-testid={`${testPrefix}-add-button`} onClick={openNew}><Plus className="h-3.5 w-3.5" /> {tr("إضافة", "Add")} {title}</Button>
@@ -309,14 +379,14 @@ export default function CrudPage({
         actions={<Button data-testid={`${testPrefix}-add-button`} onClick={openNew} className="gap-2"><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>}
       />}
       <div className={cn("flex flex-wrap items-center gap-2", compactManagement && "gap-1.5 border-b pb-1.5")} data-testid={`${testPrefix}-management-toolbar`}>
-        <SearchInput data-testid={`${testPrefix}-search-input`} className={cn("w-full sm:w-80", compactManagement && "h-8 text-[13px] sm:min-w-80 sm:flex-1")} placeholder={searchPlaceholder} value={search} onChange={(e) => setSearch(e.target.value)} />
+        <SearchInput data-testid={`${testPrefix}-search-input`} className={cn("w-full sm:w-80", compactManagement && "h-8 text-[13px] sm:min-w-80 sm:flex-1")} placeholder={searchPlaceholder} value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
         {filters.map((filter) => (
           <select
             key={filter.key}
             data-testid={`${testPrefix}-filter-${filter.key}`}
             className={cn("h-8 rounded-md border border-input bg-background px-2.5 text-sm text-foreground", compactManagement && "text-[13px]")}
             value={filterValues[filter.key] || ""}
-            onChange={(e) => setFilterValues((current) => ({ ...current, [filter.key]: e.target.value }))}
+            onChange={(e) => { setFilterValues((current) => ({ ...current, [filter.key]: e.target.value })); setPage(1); }}
           >
             <option value="">{filter.allLabel || tr("الكل", "All")}</option>
             {(filterOptions[filter.key] || []).map((opt) => (
@@ -325,7 +395,11 @@ export default function CrudPage({
           </select>
         ))}
         {compactManagement && hasActiveFilters && <Button type="button" size="sm" variant="ghost" className="h-8 gap-1 px-2 text-xs" onClick={clearFilters} data-testid={`${testPrefix}-clear-filters`}><X className="h-3.5 w-3.5" />{tr("مسح", "Clear")}</Button>}
-        {compactManagement && <span className="ms-auto text-[11px] text-muted-foreground">{tr("ظاهر", "Showing")} <b className="text-foreground tabular-nums">{filtered.length}</b> / {rows.length}</span>}
+        {compactManagement && (
+          <span className="ms-auto text-[11px] text-muted-foreground">
+            {tr("ظاهر", "Showing")} <b className="text-foreground tabular-nums">{pageRows.length}</b> / {paginated ? pagerTotal : rows.length}
+          </span>
+        )}
       </div>
 
       <div className={cn("overflow-auto border bg-card", compactManagement ? "max-h-[calc(100dvh-149px)]" : "max-h-[calc(100vh-240px)] rounded-lg")} data-testid={`${testPrefix}-table-viewport`}>
@@ -344,12 +418,18 @@ export default function CrudPage({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.length === 0 ? (
+            {loading || loadError ? (
               <TableRow>
-                <TableCell colSpan={columns.length + 1} className="p-0"><EmptyState compact={compactManagement} title={emptyTitle} description={emptyDescription} action={<Button size="sm" onClick={openNew}><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>} /></TableCell>
+                <TableCell colSpan={columns.length + 1} className="py-6 text-center text-sm text-muted-foreground">
+                  {loading ? <span role="status">{tr("جارٍ التحميل...", "Loading...")}</span> : <Button size="sm" variant="outline" onClick={load}>{tr("تعذر تحميل البيانات — إعادة المحاولة", "Could not load records — retry")}</Button>}
+                </TableCell>
+              </TableRow>
+            ) : pageRows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={columns.length + 1} className="p-0"><EmptyState compact={compactManagement} title={hasActiveFilters ? tr("لا توجد نتائج مطابقة", "No matching records") : emptyTitle} description={hasActiveFilters ? tr("جرّب بحثًا آخر أو امسح عوامل التصفية.", "Try another search or clear the filters.") : emptyDescription} action={hasActiveFilters ? <Button size="sm" variant="outline" onClick={clearFilters}>{tr("مسح التصفية", "Clear filters")}</Button> : <Button size="sm" onClick={openNew}><Plus className="h-4 w-4" /> {tr("إضافة", "Add")} {title}</Button>} /></TableCell>
               </TableRow>
             ) : (
-              filtered.map((row) => (
+              pageRows.map((row) => (
                 <TableRow
                   key={row.id}
                   className={cn(compactManagement ? "h-[34px] hover:bg-muted/40" : "h-9 hover:bg-muted/50", renderDrawer && "cursor-pointer")}
@@ -392,7 +472,43 @@ export default function CrudPage({
           </TableBody>
         </Table>
       </div>
-      {!compactManagement && <div className="text-xs text-muted-foreground">{tr("إجمالي السجلات", "Total records")}: {filtered.length}</div>}
+      {paginated && (
+        <div
+          className={cn(
+            "flex items-center justify-between gap-2 text-[11px] text-muted-foreground",
+            compactManagement && "px-0.5",
+          )}
+          data-testid={`${testPrefix}-pager`}
+        >
+          <span>
+            {tr("إجمالي", "Total")} <b className="text-foreground tabular-nums">{pagerTotal}</b>
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button" size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              data-testid={`${testPrefix}-pager-prev`}
+            >
+              {direction === "rtl" ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
+              {tr("السابق", "Prev")}
+            </Button>
+            <span className="tabular-nums">
+              {tr("صفحة", "Page")} {page} / {totalPages}
+            </span>
+            <Button
+              type="button" size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              data-testid={`${testPrefix}-pager-next`}
+            >
+              {tr("التالي", "Next")}
+              {direction === "rtl" ? <ChevronLeft className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            </Button>
+          </div>
+        </div>
+      )}
+      {!compactManagement && !paginated && <div className="text-xs text-muted-foreground">{tr("إجمالي السجلات", "Total records")}: {filtered.length}</div>}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent

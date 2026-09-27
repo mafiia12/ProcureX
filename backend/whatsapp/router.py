@@ -15,6 +15,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
 
 try:
@@ -62,12 +63,20 @@ def verify_webhook(request: Request):
     return PlainTextResponse(challenge)
 
 
-def _handle_message(session, provider, service_enabled: bool, message: dict) -> None:
+def _handle_message(session, service_enabled: bool, message: dict) -> tuple[str, str] | None:
+    """DB-only: decides the reply and records the message as processed, but
+    does not send it. The actual outbound Graph API call is a blocking
+    httpx.post (see providers/meta.py) with up to a 15s timeout; running it
+    here, inline in this async route, would stall the whole single-worker
+    event loop - and therefore every other concurrent ProcureX request -
+    for up to 15s per inbound WhatsApp message (see performance audit,
+    docs/performance-reliability-audit.md). The caller sends it via
+    run_in_threadpool instead."""
     message_id = message.get("id", "")
     if not message_id:
-        return
+        return None
     if session.get(WhatsAppProcessedMessage, message_id) is not None:
-        return  # Meta redelivered a message we already acted on.
+        return None  # Meta redelivered a message we already acted on.
 
     message_type = message.get("type", "")
     from_number = message.get("from", "")
@@ -88,12 +97,7 @@ def _handle_message(session, provider, service_enabled: bool, message: dict) -> 
     session.add(WhatsAppProcessedMessage(message_id=message_id, processed_at=_now()))
     session.commit()
 
-    if not phone:
-        return
-    try:
-        provider.send_text(phone, reply)
-    except Exception:
-        logger.exception("Failed to send WhatsApp reply")
+    return (phone, reply) if phone else None
 
 
 @router.post("/webhook")
@@ -123,7 +127,18 @@ async def receive_webhook(request: Request):
         with SessionLocal() as session:
             settings_service.touch_webhook_event(session)
             service_enabled = settings_service.is_enabled(session)
-            for message in messages:
-                _handle_message(session, provider, service_enabled, message)
+            replies = [
+                result
+                for message in messages
+                if (result := _handle_message(session, service_enabled, message)) is not None
+            ]
+        # Sent after the DB session closes, off the event loop thread - a
+        # slow/hanging Meta API call must not hold this SQLAlchemy session
+        # open, and must not block other requests (see _handle_message).
+        for phone, reply in replies:
+            try:
+                await run_in_threadpool(provider.send_text, phone, reply)
+            except Exception:
+                logger.exception("Failed to send WhatsApp reply")
 
     return {"status": "received"}

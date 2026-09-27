@@ -181,9 +181,3 @@ def get_attachment_storage() -> AttachmentStorage:
     if _storage is None:
         _storage = build_attachment_storage()
     return _storage
-
-
-def reset_attachment_storage() -> None:
-    """Reset the cached adapter after test environment changes."""
-    global _storage
-    _storage = None

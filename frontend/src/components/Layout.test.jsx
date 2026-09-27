@@ -249,7 +249,7 @@ test("formal operations, master data, and admin navigation remain present", asyn
   });
 
   for (const path of [
-    "/", "/incoming-requests", "/supplier-price-comparison", "/approvals",
+    "/", "/incoming-requests", "/rfqs", "/supplier-price-comparison", "/approvals",
     "/purchase-orders", "/payments", "/suppliers", "/items", "/projects",
   ]) {
     expect(container.querySelector(`[href="${path}"]`)).not.toBeNull();

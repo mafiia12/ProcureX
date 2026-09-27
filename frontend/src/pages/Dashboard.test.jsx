@@ -11,16 +11,9 @@ jest.mock("react-router-dom", () => ({ useNavigate: () => mockNavigate }), { vir
 jest.mock("@/lib/api", () => ({
   __esModule: true,
   fmtEGP: (value) => `${value || 0} ج.م`,
+  errMsg: (error) => error?.response?.data?.detail || "خطأ",
   default: { get: (...args) => mockGet(...args) },
 }));
-jest.mock("recharts", () => {
-  const Wrapper = ({ children }) => <div>{children}</div>;
-  return {
-    ResponsiveContainer: Wrapper, BarChart: Wrapper, Bar: Wrapper,
-    XAxis: Wrapper, YAxis: Wrapper, Tooltip: Wrapper, CartesianGrid: Wrapper,
-  };
-});
-
 const dashboard = {
   summary: {
     requests_requiring_action: 2, active_purchase_orders: 3,
@@ -87,6 +80,80 @@ test("centers actual actionable records with one direct action", async () => {
     center.querySelector('[data-testid="attention-item-delivery_problem"] button').click();
   });
   expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders/po-problem-1");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("clicking anywhere on the row opens the exact record, not just the button", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      { type: "delivery_problem", reference: "PO-000010", project_name: "مشروع ب", reason: "مشكلة في التوريد", path: "/purchase-orders/po-problem-1", purchase_order_id: "po-problem-1" },
+    ],
+  });
+  const row = container.querySelector('[data-testid="attention-item-delivery_problem"]');
+  await act(async () => { row.click(); });
+  expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders/po-problem-1?section=receiving");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("Enter/Space keyboard activation opens the exact record", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      { type: "pending_approval", reference: "APR-1", project_name: "مشروع ب", reason: "اعتماد معلق", path: "/approvals", approval_id: "approval-1" },
+    ],
+  });
+  const row = container.querySelector('[data-testid="attention-item-pending_approval"]');
+  await act(async () => {
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  });
+  expect(mockNavigate).toHaveBeenCalledWith("/approvals", { state: { approval_id: "approval-1" } });
+  await act(async () => {
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+  });
+  expect(mockNavigate).toHaveBeenCalledTimes(2);
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("RFQ/sourcing/PO/payment/receiving follow-ups deep-link into the exact record and stage", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      { type: "overdue_payment", reference: "PO-2", project_name: "م", reason: "متأخر", path: "/purchase-orders/po-2", purchase_order_id: "po-2" },
+      { type: "partial_received", reference: "PO-3", project_name: "م", reason: "جزئي", path: "/purchase-orders/po-3", purchase_order_id: "po-3" },
+      { type: "rfq_past_deadline", reference: "RFQ-1", project_name: "م", reason: "متأخر", path: "/rfq/rfq-1", rfq_id: "rfq-1" },
+      { type: "sourcing_required", reference: "REQ-9", project_name: "م", reason: "جاهز", path: "/incoming-requests", request_id: "req-9" },
+    ],
+  });
+  const clickRow = async (type) => {
+    await act(async () => { container.querySelector(`[data-testid="attention-item-${type}"]`).click(); });
+  };
+  await clickRow("overdue_payment");
+  expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders/po-2?section=payments");
+  await clickRow("partial_received");
+  expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders/po-3?section=receiving");
+  await clickRow("rfq_past_deadline");
+  expect(mockNavigate).toHaveBeenCalledWith("/rfq/rfq-1");
+  await clickRow("sourcing_required");
+  expect(mockNavigate).toHaveBeenCalledWith("/incoming-requests", { state: { request_id: "req-9" } });
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("a follow-up item with no usable target shows a fallback toast instead of navigating or crashing", async () => {
+  const { container, root } = await renderDashboard({
+    ...dashboard,
+    attention_items: [
+      { type: "some_future_type", reference: "X-1", project_name: "م", reason: "غير معروف" },
+    ],
+  });
+  const row = container.querySelector('[data-testid="attention-item-some_future_type"]');
+  expect(row).not.toBeNull();
+  await act(async () => { row.click(); });
+  expect(mockNavigate).not.toHaveBeenCalled();
   await act(async () => root.unmount());
   container.remove();
 });
@@ -169,6 +236,32 @@ test("never renders the legacy direct-purchase KPI summary, even collapsed", asy
   expect(container.querySelector('[data-testid="kpi-total-purchases"]')).toBeFalsy();
   expect(container.textContent).not.toContain("بيانات الشراء المباشر القديمة");
   expect(container.textContent).not.toContain("250 ج.م");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("shows an error state with a retry button when the dashboard fails to load, and retry re-fetches", async () => {
+  mockGet.mockRejectedValueOnce(new Error("network down"));
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<Dashboard />);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const retryButton = container.querySelector('[data-testid="dashboard-retry-button"]');
+  expect(retryButton).toBeTruthy();
+  expect(container.querySelector('[data-testid="dashboard-command-header"]')).toBeFalsy();
+
+  mockGet.mockResolvedValueOnce({ data: dashboard });
+  await act(async () => {
+    retryButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  expect(mockGet).toHaveBeenCalledTimes(2);
+  expect(container.querySelector('[data-testid="dashboard-command-header"]')).toBeTruthy();
   await act(async () => root.unmount());
   container.remove();
 });

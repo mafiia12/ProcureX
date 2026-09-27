@@ -28,6 +28,7 @@ SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION = 18
 DAILY_REPORT_SCHEMA_VERSION = 19
 WHATSAPP_INTAKE_SCHEMA_VERSION = 20
 WHATSAPP_SETTINGS_SCHEMA_VERSION = 21
+RETURNED_ITEM_CORRECTIONS_SCHEMA_VERSION = 22
 
 
 INCOMING_REQUEST_TABLES = {
@@ -1338,6 +1339,46 @@ def migrate_whatsapp_settings_and_source(engine) -> Path | None:
     with engine.begin() as connection:
         connection.exec_driver_sql(
             f"PRAGMA user_version = {WHATSAPP_SETTINGS_SCHEMA_VERSION}"
+        )
+    return backup_path
+
+
+def migrate_returned_item_corrections(engine) -> Path | None:
+    """Add the item-level ancestry/draft columns behind grouped Site Portal
+    correction resubmission: incoming_purchase_request_items.source_item_id
+    (which original returned item a corrected child line came from — the
+    item-level counterpart of incoming_purchase_requests.source_item_id,
+    needed because one grouped corrected REQ can carry several corrected
+    lines) and .correction_draft (the pending correction an engineer has
+    saved but not yet resubmitted)."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "incoming_purchase_request_items" not in tables:
+        return None
+    columns = {column["name"] for column in inspector.get_columns("incoming_purchase_request_items")}
+    definitions = {
+        "source_item_id": "VARCHAR NOT NULL DEFAULT ''",
+        "correction_draft": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    missing = set(definitions) - columns
+    if not missing:
+        return None
+    database_path = _database_path(engine)
+    if database_path is None:
+        raise RuntimeError("A file-backed SQLite database is required for safe migration")
+    backup_path = create_verified_backup(database_path, label="returned-item-corrections")
+    with engine.begin() as connection:
+        for name in sorted(missing):
+            connection.exec_driver_sql(
+                f"ALTER TABLE incoming_purchase_request_items ADD COLUMN {name} {definitions[name]}"
+            )
+        if "source_item_id" in missing:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_incoming_purchase_request_items_source_item_id "
+                "ON incoming_purchase_request_items(source_item_id)"
+            )
+        connection.exec_driver_sql(
+            f"PRAGMA user_version = {RETURNED_ITEM_CORRECTIONS_SCHEMA_VERSION}"
         )
     return backup_path
 

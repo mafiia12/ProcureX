@@ -1013,16 +1013,26 @@ def last_formal_prices(
     (received supplier quotation) price per (item, supplier) pair, one
     query for the whole screen instead of one per row.
 
-    `pairs` is a comma-separated list of "item_id:supplier_id" tokens
-    (both are plain uuid4 strings, so ":" / "," are safe delimiters).
+    `pairs` is a comma-separated list of "item_id:supplier_id" or
+    "item_id:supplier_id:current_quotation_id" tokens (all plain uuid4
+    strings, so ":" / "," are safe delimiters). The optional third segment
+    names the quotation the comparison screen is currently showing for that
+    supplier - when a received quotation seeded the very row being compared,
+    it must never be returned as its own "previous" price, so any quotation
+    id supplied this way is excluded from the lookup entirely.
     """
     parsed_pairs = set()
+    exclude_quotation_ids = set()
     for token in pairs.split(",")[:500]:
-        item_id, _, supplier_id = token.partition(":")
+        item_id, supplier_id, current_quotation_id = (token.split(":", 2) + ["", ""])[:3]
         if item_id and supplier_id:
             parsed_pairs.add((item_id, supplier_id))
+            if current_quotation_id:
+                exclude_quotation_ids.add(current_quotation_id)
     with SessionLocal() as session:
-        formal_prices = latest_formal_price_by_item_supplier(session, parsed_pairs)
+        formal_prices = latest_formal_price_by_item_supplier(
+            session, parsed_pairs, exclude_quotation_ids or None,
+        )
     return {
         "prices": {
             f"{item_id}|{supplier_id}": {

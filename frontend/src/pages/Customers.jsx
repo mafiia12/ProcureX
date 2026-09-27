@@ -6,6 +6,7 @@ export default function Customers() {
       title="عميل"
       endpoint="customers"
       testPrefix="customers"
+      paginated
       columns={[
         { key: "code", label: "الكود" },
         { key: "name", label: "اسم العميل" },

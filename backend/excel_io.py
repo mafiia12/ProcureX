@@ -1,3 +1,16 @@
+"""Legacy workbook.xlsm import/export - test-fixture infrastructure only.
+
+Not reachable from the live application: server.py has no route that calls
+parse_workbook, import_data, or build_export_workbook (the former
+POST /api/import/excel and GET /api/export/excel were removed). The only
+remaining callers are tests/backend_test.py's module-level seed-data
+bootstrap and the standalone backend/migrate.py script (itself only
+referenced, commented-out, from start_backend.bat). Suppliers, customers,
+projects, and items are added through the app's own UI now - this module
+predates that and is kept solely so the existing test suite's seed data
+keeps working; it is not an active data-entry path.
+"""
+
 import uuid
 import warnings
 from io import BytesIO
@@ -230,19 +243,6 @@ def parse_workbook(content: bytes) -> dict:
             if 0 not in vr:
                 vr.insert(0, 0)
     return out
-
-
-async def next_code(coll, prefix: str, width: int):
-    docs = await coll.find({}, {"code": 1}).to_list(10000)
-    mx = 0
-    for d in docs:
-        c = str(d.get("code", ""))
-        if c.startswith(prefix):
-            try:
-                mx = max(mx, int(c[len(prefix):]))
-            except ValueError:
-                pass
-    return f"{prefix}{mx + 1:0{width}d}"
 
 
 async def next_seq_id(coll, field: str, prefix: str, width: int):

@@ -111,6 +111,16 @@ test("a WhatsApp-sourced request shows a subtle WhatsApp badge in the list row; 
   await act(async () => plainRoot.unmount());
 });
 
+test("current request actions exclude obsolete customer and purchase draft conversions", async () => {
+  const { container, root } = await renderWithDetail(detail);
+  expect(container.querySelector('[data-testid="create-rfq-button"]')).not.toBeNull();
+  for (const label of ["تحويل إلى عميل", "طلب شراء داخلي", "مسودة شراء"]) {
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent.includes(label))).toBe(false);
+  }
+  await act(async () => root.unmount());
+  container.remove();
+});
+
 test("convert action appears only on the manual line, not the Master-linked line", async () => {
   const { container, root } = await renderWithDetail(mixedDetail);
 
@@ -165,13 +175,13 @@ test("existing Master-linked lines never render the convert button", async () =>
   container.remove();
 });
 
-test("a commercial manager sees neither the technical review actions nor the convert button", async () => {
+test("a commercial manager sees both the technical review actions and the convert button (inherited from engineer/responsible)", async () => {
   mockUseAuth.mockReturnValue({ user: { username: "manager1", role: "commercial_manager", account_type: "erp" } });
   const underReview = { ...mixedDetail, status: "under_review" };
   const { container, root } = await renderWithDetail(underReview);
 
-  expect(container.querySelector('[data-testid="technical-review-actions"]')).toBeNull();
-  expect(container.querySelector('[data-testid="convert-manual-item-button"]')).toBeNull();
+  expect(container.querySelector('[data-testid="technical-review-actions"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="convert-manual-item-button"]')).not.toBeNull();
   expect(container.textContent).toContain("صنف يدوي");
 
   await act(async () => root.unmount());

@@ -3,7 +3,6 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   ShoppingCart,
-  BookOpenText,
   LineChart,
   Wallet,
   Truck,
@@ -14,6 +13,7 @@ import {
   Settings,
   Building2,
   Inbox,
+  FileText,
   Scale,
   FileCheck2,
   CalendarDays,
@@ -44,6 +44,7 @@ const NAV_GROUPS = [
   { to: "/", key: "dashboard", icon: LayoutDashboard },
   { to: "/daily-report", key: "dailyReport", icon: CalendarDays },
   { to: "/incoming-requests", key: "incoming", icon: Inbox },
+  { to: "/rfqs", key: "rfqs", icon: FileText },
   { to: "/supplier-price-comparison", key: "comparison", icon: Scale },
   { to: "/approvals", key: "approvals", icon: FileCheck2 },
   { to: "/purchase-orders", key: "purchaseOrders", icon: ShoppingCart },
@@ -61,11 +62,8 @@ const NAV_GROUPS = [
 ];
 
 const LEGACY_NAV = [
-  { to: "/purchases", key: "purchases", icon: ShoppingCart, hidden: true },
-  { to: "/register", key: "register", icon: BookOpenText, hidden: true },
   { to: "/price-history", key: "history", icon: LineChart, hidden: true },
   { to: "/customers", key: "customers", icon: Users, hidden: true },
-  { to: "/approved-items-draft", key: "approvedDraft", icon: BookOpenText, hidden: true },
 ];
 
 const NAV = [...NAV_GROUPS.flatMap((group) => group.items), ...LEGACY_NAV];
@@ -121,10 +119,13 @@ export default function Layout() {
   const current =
     NAV.find((n) => n.to === location.pathname) ||
     (location.pathname.startsWith("/purchases/")
-      ? NAV.find((n) => n.key === "purchases")
+      ? NAV.find((n) => n.key === "projects")
       : null) ||
     (location.pathname.startsWith("/purchase-orders/")
       ? NAV.find((n) => n.key === "purchaseOrders")
+      : null) ||
+    (location.pathname.startsWith("/rfq/")
+      ? NAV.find((n) => n.key === "rfqs")
       : null) ||
     (location.pathname.startsWith("/projects/")
       ? NAV.find((n) => n.key === "projects")

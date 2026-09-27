@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Plus, KeyRound, X } from "lucide-react";
 import api, { errMsg } from "@/lib/api";
@@ -57,11 +57,6 @@ export default function AdminUsers() {
     load();
     api.get("/projects").then(({ data }) => setProjects(data)).catch(() => setProjects([]));
   }, []);
-
-  const projectName = useMemo(() => {
-    const byId = Object.fromEntries(projects.map((p) => [p.id, p]));
-    return (id) => byId[id]?.name || id;
-  }, [projects]);
 
   const openCreate = () => {
     setCreateForm(emptyCreateForm);

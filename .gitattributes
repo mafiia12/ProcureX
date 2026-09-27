@@ -1,0 +1,2 @@
+# Preserve the exact historical bytes pinned by validate_migrations.py.
+backend/alembic/versions/0007_purchase_request_item_review.py -text -diff

@@ -6,6 +6,11 @@ import logging
 
 import httpx
 
+try:
+    from ...diagnostics import timed_external
+except ImportError:  # pragma: no cover - direct backend execution
+    from diagnostics import timed_external
+
 logger = logging.getLogger("whatsapp.provider.meta")
 
 GRAPH_API_VERSION = "v20.0"
@@ -28,12 +33,13 @@ class MetaWhatsAppProvider:
             "text": {"body": body, "preview_url": False},
         }
         # Never log the access token; only the recipient/id on failure.
-        response = httpx.post(
-            url,
-            json=payload,
-            headers={"Authorization": f"Bearer {self._access_token}"},
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
+        with timed_external():
+            response = httpx.post(
+                url,
+                json=payload,
+                headers={"Authorization": f"Bearer {self._access_token}"},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
         if response.status_code >= 400:
             logger.error("WhatsApp send failed (status=%s) to=%s", response.status_code, to_e164)
             response.raise_for_status()
@@ -46,12 +52,13 @@ class MetaWhatsAppProvider:
         phone number's own metadata. Used only for "Test Connection" — never
         sends a message, never touches a conversation."""
         url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{self._phone_number_id}"
-        response = httpx.get(
-            url,
-            params={"fields": "display_phone_number,verified_name"},
-            headers={"Authorization": f"Bearer {self._access_token}"},
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
+        with timed_external():
+            response = httpx.get(
+                url,
+                params={"fields": "display_phone_number,verified_name"},
+                headers={"Authorization": f"Bearer {self._access_token}"},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
         response.raise_for_status()
         data = response.json()
         return {

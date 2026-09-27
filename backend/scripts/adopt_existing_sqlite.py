@@ -22,9 +22,9 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 try:
-    from .schema_fingerprint import semantic_schema
+    from .schema_fingerprint import release_semantic_schema
 except ImportError:  # Direct script execution.
-    from schema_fingerprint import semantic_schema
+    from schema_fingerprint import release_semantic_schema
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -144,7 +144,7 @@ def inspect_database(path: Path) -> dict[str, Any]:
             totals["outstanding_total"] = (
                 totals["purchase_invoice_total"] - totals["payments_total"]
             )
-        semantic = semantic_schema(connection)
+        semantic = release_semantic_schema(connection)
     finally:
         connection.close()
     return {
@@ -260,7 +260,7 @@ def adopt_database(
         try:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("BEGIN IMMEDIATE")
-            current_semantic = _sha256_json(semantic_schema(connection))
+            current_semantic = _sha256_json(release_semantic_schema(connection))
             if current_semantic != before["semantic_sha256"]:
                 raise RuntimeError("Candidate schema changed during adoption")
             table_exists = connection.execute(

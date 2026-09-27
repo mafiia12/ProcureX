@@ -58,6 +58,7 @@ jest.mock("react-router-dom", () => {
       const outer = React.Children.toArray(children)[0];
       const routes = React.Children.toArray(outer.props.children);
       const selected = routes.find((route) => route.props.path === globalThis.location.pathname);
+      if (!selected) return React.Children.toArray(children).find((route) => route.props.path === "*")?.props.element;
       return React.cloneElement(outer.props.element, { __outlet: selected?.props.element });
     },
   };
@@ -91,25 +92,6 @@ jest.mock("@/components/RequireAdmin", () => ({
   default: ({ children }) => children,
 }));
 
-jest.mock("recharts", () => {
-  const Stub = ({ children }) => <div>{children}</div>;
-  return {
-    ResponsiveContainer: Stub,
-    BarChart: Stub,
-    Bar: Stub,
-    XAxis: Stub,
-    YAxis: Stub,
-    Tooltip: Stub,
-    CartesianGrid: Stub,
-    PieChart: Stub,
-    Pie: Stub,
-    Cell: Stub,
-    Legend: Stub,
-    AreaChart: Stub,
-    Area: Stub,
-  };
-});
-
 import App from "@/App";
 
 beforeEach(() => {
@@ -122,8 +104,6 @@ beforeEach(() => {
 
 const routes = [
   ["/", "dashboard-page"],
-  ["/purchases", "purchases-page"],
-  ["/register", "register-page"],
   ["/price-history", "price-history-page"],
   ["/payments", "payments-page"],
   ["/suppliers", "suppliers-page"],
@@ -152,8 +132,8 @@ describe.each(routes)("route %s", (path, testId) => {
   });
 });
 
-test("legacy construction calculator route redirects to the dashboard", async () => {
-  window.history.pushState({}, "", "/construction-calculator");
+test.each(["/construction-calculator", "/purchases", "/register", "/approved-items-draft"])("retired route %s redirects to the dashboard", async (path) => {
+  window.history.pushState({}, "", path);
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);

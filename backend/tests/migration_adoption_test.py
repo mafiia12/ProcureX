@@ -7,7 +7,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.adopt_existing_sqlite import adopt_database, alembic_head, create_fresh_reference
-from scripts.schema_fingerprint import semantic_schema
+from scripts.adopt_existing_sqlite import inspect_database
+from scripts.schema_fingerprint import release_semantic_schema, semantic_schema
+from runtime_schema import EXPECTED_SEMANTIC_SHA256
+from schema_contract import HEAD_REVISION
 
 
 def _make_unversioned(database):
@@ -71,3 +74,66 @@ def test_semantic_schema_ignores_non_key_column_declaration_order(tmp_path):
     finally:
         first.close()
         second.close()
+
+
+def test_release_contract_matches_fresh_alembic_head(tmp_path):
+    database = tmp_path / "fresh-head.db"
+    create_fresh_reference(database)
+
+    state = inspect_database(database)
+
+    assert state["alembic_revisions"] == [HEAD_REVISION]
+    assert HEAD_REVISION == alembic_head()
+    assert state["semantic_sha256"] == EXPECTED_SEMANTIC_SHA256
+    assert "selected_for_purchase" in {
+        column["name"]
+        for column in state["semantic"]["tables"]["price_comparison_rows"]["columns"]
+    }
+
+
+def test_semantic_schema_accepts_only_the_proven_legacy_json_representations(tmp_path):
+    current = sqlite3.connect(tmp_path / "current.db")
+    legacy = sqlite3.connect(tmp_path / "legacy.db")
+    unrelated = sqlite3.connect(tmp_path / "unrelated.db")
+    try:
+        current.executescript("""
+            CREATE TABLE daily_reports (
+                id TEXT PRIMARY KEY,
+                snapshot_data JSON NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE incoming_purchase_request_items (
+                id TEXT PRIMARY KEY,
+                correction_draft JSON NOT NULL DEFAULT '{}'
+            );
+        """)
+        legacy.executescript("""
+            CREATE TABLE daily_reports (
+                id TEXT PRIMARY KEY,
+                snapshot_data JSON NOT NULL
+            );
+            CREATE TABLE incoming_purchase_request_items (
+                id TEXT PRIMARY KEY,
+                correction_draft TEXT NOT NULL DEFAULT '{}'
+            );
+        """)
+        unrelated.executescript("""
+            CREATE TABLE daily_reports (
+                id TEXT PRIMARY KEY,
+                snapshot_data JSON NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE incoming_purchase_request_items (
+                id TEXT PRIMARY KEY,
+                correction_draft JSON NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE unrelated (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL
+            );
+        """)
+
+        assert release_semantic_schema(legacy) == release_semantic_schema(current)
+        assert release_semantic_schema(unrelated) != release_semantic_schema(current)
+    finally:
+        current.close()
+        legacy.close()
+        unrelated.close()

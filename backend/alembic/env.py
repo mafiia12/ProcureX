@@ -5,6 +5,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+from alembic_version_table import widen_existing_version_table
 
 config = context.config
 
@@ -63,6 +64,7 @@ def run_migrations_online() -> None:
             connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
         with context.begin_transaction():
+            widen_existing_version_table(context.get_context())
             context.run_migrations()
 
 

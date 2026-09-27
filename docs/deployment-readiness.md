@@ -9,13 +9,23 @@ creates a cloud resource, or migrates the populated local database automatically
 |---|---|---|---|---|
 | Local development | `full` | Local SQLite | Local filesystem | Loopback/private network only |
 | Staging | `public` | Separate PostgreSQL | Separate private R2 bucket | Public request form and `/api/public/*` only |
+| Staging | `full` (`procurex-erp-api`/`procurex-erp-app`) | Same staging PostgreSQL as the `public` service | Same staging private R2 bucket | Internal ERP only, behind JWT auth - never the public intake form |
 | Production | `public` | Production PostgreSQL | Production private R2 bucket | Public request form and `/api/public/*` only |
+| Production | `full` (`procurex-erp-api`/`procurex-erp-app`) | Same production PostgreSQL as the `public` service | Same production private R2 bucket | Internal ERP only, behind JWT auth - never the public intake form |
 
-`APP_ENV=staging` and `APP_ENV=production` both fail startup if the full ERP
-surface is requested. They also require PostgreSQL, HTTPS-only CORS origins,
-explicit trusted hosts, `FORCE_HTTPS=true`, S3-compatible attachment storage,
-R2 credentials, and a privacy salt. The full dashboard and all internal APIs
-remain local until authentication, authorization, and audit logging are complete.
+`APP_ENV=staging` and `APP_ENV=production` accept either `APP_SURFACE=full`
+(the internal ERP) or `APP_SURFACE=public` (the anonymous request form);
+`_validate_hosted_configuration` in `server.py` enforces baseline hardening
+on both - HTTPS-only CORS origins, explicit trusted hosts, `FORCE_HTTPS=true`,
+and a strong `AUTH_SECRET_KEY` - plus surface-specific requirements: `public`
+additionally requires PostgreSQL, S3-compatible attachment storage, R2
+credentials, and a privacy salt; `full` additionally requires
+`INTERNAL_REQUEST_TOKEN` whenever `TRUST_PROXY_HEADERS=true` (see
+`render.yaml`'s `procurex-erp-api` service). The internal ERP is protected by
+JWT authentication and per-role authorization (`backend/auth/`, since
+revision 0012) and workflow actions are recorded to `workflow_audit_events`
+(`procurement_workflow.py`'s `_audit`) - see "Remaining blockers" below for
+what audit coverage does not yet include.
 
 Templates:
 
@@ -47,6 +57,15 @@ The tested commit SHA must be the same SHA passed to the migration runner.
 
 - [ ] The CI `release-gate` passes for the exact candidate commit.
 - [ ] Create a staging-only PostgreSQL database and private R2 bucket.
+- [ ] `render.staging.yaml` has no `databases:` block - both
+      `procurex-staging-public-api` and `procurex-staging-erp-api` set
+      `DATABASE_URL` as `sync: false` (dashboard-managed) independently.
+      Confirm both are configured with the **exact same** `DATABASE_URL`
+      before staging acceptance: they share `whatsapp_settings`,
+      `users.phone_e164`, `incoming_purchase_requests`, `whatsapp_drafts`,
+      and `whatsapp_processed_messages`, and nothing in the config
+      mechanically prevents them from silently pointing at two different
+      databases.
 - [ ] Use distinct staging credentials, privacy salt, hostnames, and CORS origins.
 - [ ] Review `render.staging.yaml`; creating its resources requires approval.
 - [ ] Apply Alembic to staging and run `assert_schema_current.py`.
@@ -102,9 +121,22 @@ The tested commit SHA must be the same SHA passed to the migration runner.
 
 ## Remaining blockers before go-live
 
-- Internal ERP authentication, role authorization, and audit logs are not yet
-  implemented; therefore the internal ERP must remain private/local.
-- No staging or production resources, secrets, DNS, TLS, WAF rules, monitoring,
-  retention policy, or restore drill have been created or verified.
+- Audit coverage is partial: workflow actions (requests, RFQ/quotations,
+  comparisons, approvals, conversions) are recorded to
+  `workflow_audit_events`, but login attempts and admin user-management
+  actions are not yet audited. Decide whether that gap must close before
+  go-live or can follow it.
+- `render.yaml`/`render.staging.yaml` now define the ERP services
+  (`procurex-erp-api`, `procurex-erp-app`) alongside the public ones, but
+  nothing has actually been provisioned yet: no staging or production
+  secrets, DNS, TLS, WAF rules, monitoring, retention policy, or restore
+  drill have been created or verified for either surface.
+- CI's `release-gate` now requires a PostgreSQL smoke test
+  (`backend-tests-postgres-smoke`) in addition to the SQLite-based checks,
+  but the full pytest suite still only ever runs against SQLite -
+  `backend/tests/backend_test.py` hardcodes its own `DATABASE_URL` at import
+  time. Making the full suite honour PostgreSQL is a separate, scoped
+  change (every test's fixtures/cleanup would need auditing for
+  SQLite-specific assumptions), not yet done.
 - Branch protection must require the CI `release-gate`.
 - Provider pricing and capacity must be rechecked immediately before purchase.

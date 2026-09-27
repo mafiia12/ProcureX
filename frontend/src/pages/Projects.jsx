@@ -19,6 +19,7 @@ export default function Projects() {
       endpoint="projects"
       listParams={{ include_procurement: true }}
       testPrefix="projects"
+      paginated
       rowAction={{
   label: tr("تفاصيل المشتريات", "Procurement Details"),
   onClick: (project) =>

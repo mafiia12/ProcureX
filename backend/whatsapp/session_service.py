@@ -16,14 +16,14 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 try:
-    from ..database import Item, Project, SessionLocal
+    from ..database import Item, Project
     from ..site_portal import _assigned_projects, create_incoming_request
     from . import parser
     from .matching import match_item_master, match_project
     from .models import WhatsAppDraft
     from .phone import mask_phone
 except ImportError:  # pragma: no cover - direct backend execution
-    from database import Item, Project, SessionLocal
+    from database import Item, Project
     from site_portal import _assigned_projects, create_incoming_request
     from whatsapp import parser
     from whatsapp.matching import match_item_master, match_project

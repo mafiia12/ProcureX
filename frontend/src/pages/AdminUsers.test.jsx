@@ -78,12 +78,14 @@ async function click(element) {
   });
 }
 
-function setInputValue(input, value) {
+async function setInputValue(input, value) {
   const setter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype, "value",
   ).set;
-  setter.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await act(async () => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 }
 
 beforeEach(() => {
@@ -111,9 +113,9 @@ test("create ERP user submits with the selected role and no project payload", as
   const { container, root } = await renderPage([]);
 
   await click(container.querySelector('[data-testid="admin-users-add-button"]'));
-  setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مستخدم جديد");
-  setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.user");
-  setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "StrongPass123!");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مستخدم جديد");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.user");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "StrongPass123!");
 
   // Default account type is already "erp"; the role selector must be visible.
   const roleSelect = document.querySelector('[data-testid="admin-users-form-role"]');
@@ -168,9 +170,9 @@ test("create site portal user submits selected project ids and no role", async (
   const { container, root } = await renderPage([]);
 
   await click(container.querySelector('[data-testid="admin-users-add-button"]'));
-  setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مهندس جديد");
-  setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.engineer");
-  setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "StrongPass123!");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مهندس جديد");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.engineer");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "StrongPass123!");
 
   const accountTypeSelect = document.querySelector(
     '[data-testid="admin-users-form-account-type"]',
@@ -201,9 +203,9 @@ test("create site portal user includes the WhatsApp phone number when provided",
   const { container, root } = await renderPage([]);
 
   await click(container.querySelector('[data-testid="admin-users-add-button"]'));
-  setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مهندس جديد");
-  setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.engineer");
-  setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "StrongPass123!");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مهندس جديد");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.engineer");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "StrongPass123!");
 
   const accountTypeSelect = document.querySelector('[data-testid="admin-users-form-account-type"]');
   await act(async () => {
@@ -211,7 +213,7 @@ test("create site portal user includes the WhatsApp phone number when provided",
     accountTypeSelect.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
-  setInputValue(document.querySelector('[data-testid="admin-users-form-phone"]'), "+201012345678");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-phone"]'), "+201012345678");
   await click(document.querySelector('[data-testid="admin-users-save-button"]'));
 
   expect(mockPost).toHaveBeenCalledWith("/admin/users", expect.objectContaining({
@@ -227,9 +229,9 @@ test("the initial password never appears anywhere in the rendered page after sub
   const { container, root } = await renderPage([]);
 
   await click(container.querySelector('[data-testid="admin-users-add-button"]'));
-  setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مستخدم جديد");
-  setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.user");
-  setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "SuperSecretValue1!");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-display-name"]'), "مستخدم جديد");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-username"]'), "new.user");
+  await setInputValue(document.querySelector('[data-testid="admin-users-form-password"]'), "SuperSecretValue1!");
   await click(document.querySelector('[data-testid="admin-users-save-button"]'));
 
   expect(document.body.textContent).not.toContain("SuperSecretValue1!");
@@ -246,7 +248,7 @@ test("reset password dialog never renders the previous password and clears its o
   await click(resetButtons[0]);
   const input = document.querySelector('[data-testid="admin-users-reset-password-input"]');
   expect(input.value).toBe("");
-  setInputValue(input, "BrandNewSecret1!");
+  await setInputValue(input, "BrandNewSecret1!");
 
   await click(document.querySelector('[data-testid="admin-users-reset-password-submit"]'));
 

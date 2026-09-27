@@ -1,10 +1,25 @@
 import axios from "axios";
 
-export const BACKEND_URL = (
-  process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000"
-).replace(/\/+$/, "");
+// REACT_APP_BACKEND_URL is inlined at build time (Create React App), so a
+// value baked in here is shared by every device that loads this bundle - a
+// loopback or LAN-IP default breaks any device other than the one it names.
+// Leaving it unset makes every request same-origin (a relative "/api" path,
+// resolved by the browser against whatever origin served the page) instead:
+// the dev server proxies "/api" to the local backend (see src/setupProxy.js),
+// so the same build works unmodified from localhost, a LAN IP, or a single
+// Cloudflare tunnel URL pointed at the frontend, with the backend's address
+// never exposed to the browser. Set REACT_APP_BACKEND_URL only for the rare
+// case where the frontend and backend are deliberately served from different
+// origins.
+const resolveBackendUrl = () => process.env.REACT_APP_BACKEND_URL || "";
 
-const api = axios.create({ baseURL: `${BACKEND_URL}/api` });
+export const BACKEND_URL = resolveBackendUrl().replace(/\/+$/, "");
+
+// Without a timeout, axios waits forever on a stuck/hung backend request -
+// the UI just spins with no error and no way for the user to know
+// something is wrong (see docs/performance-reliability-audit.md). 30s
+// matches publicRequestApi's existing timeout.
+const api = axios.create({ baseURL: `${BACKEND_URL}/api`, timeout: 30_000 });
 
 api.interceptors.request.use((config) => {
   const token = typeof window !== "undefined"

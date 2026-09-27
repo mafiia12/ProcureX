@@ -1,5 +1,6 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { toast } from "sonner";
 import PurchaseOrderDetails from "@/pages/PurchaseOrderDetails";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -8,10 +9,12 @@ const mockNavigate = jest.fn();
 const mockGet = jest.fn();
 const mockPost = jest.fn();
 const mockPatch = jest.fn();
+const mockSearchParams = jest.fn(() => [new URLSearchParams(), jest.fn()]);
 
 jest.mock("react-router-dom", () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({ purchaseOrderId: "po-1" }),
+  useSearchParams: (...args) => mockSearchParams(...args),
   Link: ({ children, to, ...props }) => <a href={typeof to === "string" ? to : "#"} {...props}>{children}</a>,
 }), { virtual: true });
 jest.mock("@/lib/api", () => ({
@@ -73,6 +76,8 @@ beforeEach(() => {
   });
   mockPatch.mockResolvedValue({ data: { ...order, status: "approved" } });
   mockNavigate.mockClear();
+  mockSearchParams.mockReturnValue([new URLSearchParams(), jest.fn()]);
+  toast.error.mockClear();
   mockUseAuth.mockReturnValue({ user: { username: "admin1", role: "admin", account_type: "erp" } });
 });
 
@@ -116,7 +121,7 @@ test("reviews the complete PO and lets the procurement officer execute it", asyn
   container.remove();
 });
 
-test("hides the finalize action from a commercial manager", async () => {
+test("shows the finalize action to a commercial manager (inherited from procurement_responsible)", async () => {
   mockUseAuth.mockReturnValue({ user: { username: "manager1", role: "commercial_manager", account_type: "erp" } });
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -126,10 +131,30 @@ test("hides the finalize action from a commercial manager", async () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
   });
 
-  expect(container.querySelector('[data-testid="po-finalize-button"]')).toBeNull();
-  expect(container.querySelector('[data-testid="po-advance-status-button"]')).toBeNull();
-  expect(container.querySelector('[data-testid="po-cancel-button"]')).toBeNull();
-  expect(container.textContent).toContain("الإجراء متاح لمسؤول المشتريات فقط");
+  expect(container.querySelector('[data-testid="po-finalize-button"]')).not.toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("shows a retry button (not a stuck loading state) when the PO fails to load, and retry re-fetches", async () => {
+  mockGet.mockImplementationOnce(() => Promise.reject(new Error("network down")));
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<PurchaseOrderDetails />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
+  expect(toast.error).toHaveBeenCalled();
+  const retryButton = container.querySelector('[data-testid="po-load-retry-button"]');
+  expect(retryButton).not.toBeNull();
+  expect(container.textContent).not.toContain("جارٍ تحميل أمر الشراء");
+
+  await click(retryButton);
+  expect(mockGet).toHaveBeenCalledWith("/purchase-orders/po-1");
+  expect(container.querySelector('[data-testid="po-detail-item"]')).not.toBeNull();
 
   await act(async () => root.unmount());
   container.remove();
@@ -313,12 +338,12 @@ test("procurement_engineer is read-only for receiving", async () => {
   container.remove();
 });
 
-test("commercial_manager is read-only for receiving", async () => {
+test("commercial_manager can receive (inherited from procurement_responsible)", async () => {
   mockUseAuth.mockReturnValue({ user: { username: "mgr1", role: "commercial_manager", account_type: "erp" } });
   mockGet.mockResolvedValue({ data: deliveryOrderFixture() });
   const { container, root } = await renderDetails();
 
-  expect(container.querySelector('[data-testid="receive-full"]')).toBeNull();
+  expect(container.querySelector('[data-testid="receive-full"]')).not.toBeNull();
 
   await act(async () => root.unmount());
   container.remove();
@@ -581,6 +606,43 @@ test("paid status renders", async () => {
 
   await act(async () => root.unmount());
   container.remove();
+});
+
+// ---------------- Dashboard follow-up deep links ----------------
+
+test("?section=payments opens the PO directly on the payments tab", async () => {
+  mockSearchParams.mockReturnValue([new URLSearchParams("section=payments"), jest.fn()]);
+  const { container, root } = await renderDetails();
+
+  const paymentsPanel = container.querySelector('[data-testid="po-payment-summary"]');
+  expect(paymentsPanel.closest('[data-state="active"]')).not.toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("?section=receiving opens the PO directly on the receiving tab", async () => {
+  mockSearchParams.mockReturnValue([new URLSearchParams("section=receiving"), jest.fn()]);
+  mockGet.mockImplementation((path) => Promise.resolve({
+    data: path.endsWith("/payments") ? ledgerFixture : deliveryOrderFixture(),
+  }));
+  const { container, root } = await renderDetails();
+
+  const receivingSection = container.querySelector('[data-testid="site-receiving-section"]');
+  expect(receivingSection.closest('[data-state="active"]')).not.toBeNull();
+
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("an unknown/deleted PO id from a follow-up link falls back to the register with a toast, no crash", async () => {
+  mockGet.mockImplementation(() => Promise.reject({ response: { status: 404 } }));
+  const { root } = await renderDetails();
+
+  expect(mockNavigate).toHaveBeenCalledWith("/purchase-orders", { replace: true });
+  expect(toast.error).toHaveBeenCalled();
+
+  await act(async () => root.unmount());
 });
 
 test("overdue status renders", async () => {

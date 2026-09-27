@@ -32,6 +32,17 @@ ERP_ROLES = (
 SITE_PORTAL_ROLE = "site_engineer"
 ACCOUNT_TYPES = ("erp", "site_portal")
 
+# Hierarchical ERP role inheritance: a higher role automatically carries
+# every permission of the roles below it (see auth/service.py:role_at_least).
+# Deliberately NOT keyed by site_engineer/site_portal - that surface stays
+# fully outside this ladder regardless of any role string it presents.
+ERP_ROLE_LEVELS = {
+    "procurement_engineer": 10,
+    "procurement_responsible": 20,
+    "commercial_manager": 30,
+    "admin": 100,
+}
+
 
 class User(Base):
     __tablename__ = "users"

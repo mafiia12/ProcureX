@@ -17,8 +17,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import Response
 from fastapi.testclient import TestClient
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 from sqlalchemy import create_engine, func, select
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -43,12 +44,10 @@ import business_codes  # noqa: E402
 from business_codes import next_business_code  # noqa: E402
 from db_migrations import (  # noqa: E402
     BUSINESS_CODE_SCHEMA_VERSION,
-    CONSTRUCTION_CALCULATOR_SCHEMA_VERSION,
     DOCUMENT_CAPTURE_SCHEMA_VERSION,
     SUPPLIER_PRICE_COMPARISON_SCHEMA_VERSION,
     SUPPLIER_OFFER_ADJUSTMENTS_SCHEMA_VERSION,
     migrate_business_code_sequences,
-    migrate_construction_calculator,
     migrate_document_capture,
     migrate_incoming_requests,
     migrate_item_classification,
@@ -58,7 +57,7 @@ from db_migrations import (  # noqa: E402
 )
 from excel_io import import_data, parse_workbook  # noqa: E402
 from price_comparisons import (  # noqa: E402
-    PriceComparison, PriceComparisonSupplierOffer, calculate_comparison,
+    PriceComparison, PriceComparisonRow, calculate_comparison,
 )
 from procurement_workflow import (  # noqa: E402
     EngineerApproval, calculate_procurement_kpis,
@@ -76,9 +75,7 @@ from document_capture.domain import ExtractedLineItem, OCRResult  # noqa: E402
 from document_capture.jobs import run_once  # noqa: E402
 from document_capture.security import MAX_FILE_BYTES  # noqa: E402
 from document_capture.models import (  # noqa: E402
-    DocumentProcessingJob,
     ItemMasterCreationRequest,
-    PurchaseRequestDocument,
     RequestAuditEvent,
 )
 import document_capture.service as document_service  # noqa: E402
@@ -88,9 +85,16 @@ from incoming_requests import (
     IncomingRequestGeneralAttachment,
     IncomingRequestStatusHistory,
 )  # noqa: E402
-from auth.models import User, UserProjectAccess  # noqa: E402
+from auth.models import ERP_ROLE_LEVELS, User, UserProjectAccess  # noqa: E402
 from auth.security import hash_password  # noqa: E402
+from auth.service import has_role_or_higher, role_at_least  # noqa: E402
 init_db()
+# Test-fixture seed data only, not a live feature: excel_io.py's
+# import_data/parse_workbook have no route in server.py anymore (removed -
+# see excel_io.py's own module docstring). This bootstraps the shared test
+# database with workbook.xlsm's suppliers/items/purchases/etc. before any
+# test runs, since much of the suite asserts against exactly this seed data
+# (e.g. test_dashboard_kpis's total_purchases/supplier_count/item_count).
 WORKBOOK = BACKEND_DIR / "workbook.xlsm"
 asyncio.run(import_data(db, parse_workbook(WORKBOOK.read_bytes())))
 API = "/api"
@@ -427,6 +431,213 @@ def test_item_category_subcategory_and_name_filtering(s, admin_headers):
             s.delete(f"{API}/items/{item['id']}", headers=admin_headers)
 
 
+def test_items_limit_offset_pages_without_changing_the_filtered_total(s, admin_headers):
+    """limit/offset is additive: omitting it must return every filtered item
+    exactly as before (no test above passes it), and when given it pages the
+    already-filtered set while X-Total-Count keeps reporting the full count -
+    not the page size - so a caller can build a pager from it."""
+    created = []
+    try:
+        for index in range(3):
+            response = s.post(
+                f"{API}/items",
+                json={
+                    "product_name": f"TEST_PAGE_ITEM_{index}",
+                    "main_category": "TEST_PAGE_CATEGORY",
+                    "unit": "قطعة",
+                },
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created.append(response.json())
+
+        full = s.get(
+            f"{API}/items", params={"main_category": "TEST_PAGE_CATEGORY"}, headers=admin_headers,
+        )
+        full_names = [item["product_name"] for item in full.json()]
+        assert full_names == ["TEST_PAGE_ITEM_0", "TEST_PAGE_ITEM_1", "TEST_PAGE_ITEM_2"]
+        assert full.headers["X-Total-Count"] == "3"
+
+        page = s.get(
+            f"{API}/items",
+            params={"main_category": "TEST_PAGE_CATEGORY", "limit": 2, "offset": 1},
+            headers=admin_headers,
+        )
+        assert [item["product_name"] for item in page.json()] == [
+            "TEST_PAGE_ITEM_1", "TEST_PAGE_ITEM_2",
+        ]
+        assert page.headers["X-Total-Count"] == "3"
+
+        last_page = s.get(
+            f"{API}/items",
+            params={"main_category": "TEST_PAGE_CATEGORY", "limit": 2, "offset": 2},
+            headers=admin_headers,
+        )
+        page_item = last_page.json()[0]
+        assert page_item["product_name"] == "TEST_PAGE_ITEM_2"
+        # Enrichment (price-history summary + formal price) still applies
+        # to a paginated response, not just the unpaginated one.
+        assert page_item["purchase_count"] == 0
+        assert page_item["last_price"] is None
+        assert page_item["last_formal_price"] is None
+    finally:
+        for item in created:
+            s.delete(f"{API}/items/{item['id']}", headers=admin_headers)
+
+
+def test_suppliers_limit_offset_pages_the_sorted_register(s, admin_headers):
+    """/suppliers has no filter params, so unlike /items this test can't
+    scope a subset by category - instead it anchors on supplier_order's own
+    guarantee (numeric SUP- suffixes sort last-in, last-out) to target
+    exactly the suppliers this test creates, at whatever offset the
+    pre-existing register already sits at."""
+    created = []
+    try:
+        baseline = s.get(f"{API}/suppliers", headers=admin_headers)
+        baseline_count = len(baseline.json())
+        assert baseline.headers["X-Total-Count"] == str(baseline_count)
+
+        suffix = uuid.uuid4().hex[:8]
+        for index in range(3):
+            response = s.post(
+                f"{API}/suppliers",
+                json={"name": f"TEST_PAGE_SUPPLIER_{suffix}_{index}"},
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created.append(response.json())
+
+        full = s.get(f"{API}/suppliers", headers=admin_headers)
+        assert len(full.json()) == baseline_count + 3
+        assert full.headers["X-Total-Count"] == str(baseline_count + 3)
+        assert [s_["name"] for s_ in full.json()[baseline_count:]] == [
+            f"TEST_PAGE_SUPPLIER_{suffix}_0",
+            f"TEST_PAGE_SUPPLIER_{suffix}_1",
+            f"TEST_PAGE_SUPPLIER_{suffix}_2",
+        ]
+
+        page = s.get(
+            f"{API}/suppliers",
+            params={"limit": 2, "offset": baseline_count + 1},
+            headers=admin_headers,
+        )
+        assert [s_["name"] for s_ in page.json()] == [
+            f"TEST_PAGE_SUPPLIER_{suffix}_1", f"TEST_PAGE_SUPPLIER_{suffix}_2",
+        ]
+        assert page.headers["X-Total-Count"] == str(baseline_count + 3)
+
+        # include_procurement enrichment still applies to a paginated page.
+        enriched_page = s.get(
+            f"{API}/suppliers",
+            params={"include_procurement": True, "limit": 1, "offset": baseline_count},
+            headers=admin_headers,
+        )
+        enriched_supplier = enriched_page.json()[0]
+        assert enriched_supplier["name"] == f"TEST_PAGE_SUPPLIER_{suffix}_0"
+        assert enriched_supplier["direct_purchase_count"] == 0
+        assert enriched_supplier["formal_po_count"] == 0
+    finally:
+        for supplier in created:
+            s.delete(f"{API}/suppliers/{supplier['id']}", headers=admin_headers)
+
+
+def test_customers_limit_offset_pages_the_sorted_register(s, admin_headers):
+    """Same limit/offset/X-Total-Count contract as /items and /suppliers,
+    added here so Customers' CrudPage screen can page like Items/Suppliers
+    do without changing the unpaginated response any existing caller gets."""
+    created = []
+    try:
+        baseline = s.get(f"{API}/customers", headers=admin_headers)
+        baseline_count = len(baseline.json())
+        assert baseline.headers["X-Total-Count"] == str(baseline_count)
+
+        suffix = uuid.uuid4().hex[:8]
+        for index in range(3):
+            response = s.post(
+                f"{API}/customers",
+                json={"name": f"TEST_PAGE_CUSTOMER_{suffix}_{index}"},
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created.append(response.json())
+
+        full = s.get(f"{API}/customers", headers=admin_headers)
+        full_names = [c["name"] for c in full.json()]
+        assert len(full_names) == baseline_count + 3
+        assert full.headers["X-Total-Count"] == str(baseline_count + 3)
+
+        # entity_list sorts by "code" as a plain string, not numerically, so
+        # 3 sequentially-coded customers aren't guaranteed to land at the
+        # very end of the register - anchor on where they actually sorted.
+        first_index = full_names.index(f"TEST_PAGE_CUSTOMER_{suffix}_0")
+        page = s.get(
+            f"{API}/customers",
+            params={"limit": 2, "offset": first_index + 1},
+            headers=admin_headers,
+        )
+        assert [c["name"] for c in page.json()] == [
+            f"TEST_PAGE_CUSTOMER_{suffix}_1", f"TEST_PAGE_CUSTOMER_{suffix}_2",
+        ]
+        assert page.headers["X-Total-Count"] == str(baseline_count + 3)
+    finally:
+        for customer in created:
+            s.delete(f"{API}/customers/{customer['id']}", headers=admin_headers)
+
+
+def test_projects_limit_offset_pages_and_keeps_include_procurement_enrichment(s, admin_headers):
+    """Same contract again for /projects - and since Projects' CrudPage screen
+    always requests include_procurement=True, that enrichment must still
+    apply per-project on a paginated page, not just on the full list."""
+    created = []
+    try:
+        baseline = s.get(f"{API}/projects", headers=admin_headers)
+        baseline_count = len(baseline.json())
+        assert baseline.headers["X-Total-Count"] == str(baseline_count)
+
+        suffix = uuid.uuid4().hex[:8]
+        for index in range(3):
+            response = s.post(
+                f"{API}/projects",
+                json={"name": f"TEST_PAGE_PROJECT_{suffix}_{index}"},
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created.append(response.json())
+
+        full = s.get(f"{API}/projects", headers=admin_headers)
+        full_names = [p["name"] for p in full.json()]
+        assert len(full_names) == baseline_count + 3
+        assert full.headers["X-Total-Count"] == str(baseline_count + 3)
+
+        # entity_list sorts by "code" as a plain string, not numerically, so
+        # 3 sequentially-coded projects aren't guaranteed to land at the
+        # very end of the register - anchor on where they actually sorted.
+        first_index = full_names.index(f"TEST_PAGE_PROJECT_{suffix}_0")
+        page = s.get(
+            f"{API}/projects",
+            params={"limit": 2, "offset": first_index + 1},
+            headers=admin_headers,
+        )
+        assert [p["name"] for p in page.json()] == [
+            f"TEST_PAGE_PROJECT_{suffix}_1", f"TEST_PAGE_PROJECT_{suffix}_2",
+        ]
+        assert page.headers["X-Total-Count"] == str(baseline_count + 3)
+
+        enriched_page = s.get(
+            f"{API}/projects",
+            params={"include_procurement": True, "limit": 1, "offset": first_index},
+            headers=admin_headers,
+        )
+        enriched_project = enriched_page.json()[0]
+        assert enriched_project["name"] == f"TEST_PAGE_PROJECT_{suffix}_0"
+        assert enriched_project["active_request_count"] == 0
+        assert enriched_project["active_po_count"] == 0
+        assert enriched_project["formal_po_value"] == 0
+    finally:
+        for project in created:
+            s.delete(f"{API}/projects/{project['id']}", headers=admin_headers)
+
+
 # ---------- CRUD suppliers/customers/projects/items with autocode + dup ----------
 @pytest.mark.parametrize(
     "coll,prefix",
@@ -593,6 +804,44 @@ def test_supplier_sequence_uses_highest_suffix_across_mixed_historical_widths(
         business_codes.engine = original_engine
         business_codes.IS_SQLITE = original_is_sqlite
         isolated_engine.dispose()
+
+
+def test_supplier_register_orders_numeric_codes_without_renumbering(monkeypatch):
+    import server
+
+    codes = ["SUP-000020", "SUP-002", "SUP-001", "SUP-000010"]
+    rows = [{"id": str(index), "code": code} for index, code in enumerate(codes)]
+
+    async def fake_list(entity):
+        assert entity == "suppliers"
+        return [dict(row) for row in rows]
+
+    monkeypatch.setattr(server, "entity_list", fake_list)
+    # Calls the route function directly (bypassing FastAPI's own request
+    # handling), so response/current_user - which FastAPI would normally
+    # inject - are supplied explicitly by keyword instead of relying on
+    # positional order matching the function's current parameter list.
+    result = asyncio.run(
+        server.list_suppliers(Response(), include_procurement=False, current_user=None)
+    )
+    assert [row["code"] for row in result] == ["SUP-001", "SUP-002", "SUP-000010", "SUP-000020"]
+    assert {row["id"]: row["code"] for row in result} == {row["id"]: row["code"] for row in rows}
+
+
+def test_request_pipeline_excludes_internal_drafts_but_keeps_formal_links():
+    from procurement_workflow import request_pipeline_summary
+
+    requests = [
+        SimpleNamespace(id="legacy", status="converted_to_purchase", converted_document_id="draft-1"),
+        SimpleNamespace(id="formal", status="converted_to_purchase", converted_document_id="draft-2"),
+        SimpleNamespace(id="current", status="new", converted_document_id=""),
+    ]
+    orders = [SimpleNamespace(source_request_id="formal", status="in_delivery")]
+    counts = {row["key"]: row["count"] for row in request_pipeline_summary(requests, orders)}
+    assert counts["under_delivery"] == 1
+    assert counts["new"] == 1
+    assert sum(counts.values()) == 2
+    assert len(requests) == 3
 
 
 def test_purchase_order_sequence_respects_history_concurrency_and_restart():
@@ -1479,36 +1728,6 @@ def test_open_folder_rejects_unknown_target(s, admin_headers):
     assert s.post(f"{API}/system/open-folder/secrets", headers=admin_headers).status_code == 404
 
 
-# ---------- Excel export ----------
-def test_export_excel(s, admin_headers):
-    r = s.get(f"{API}/export/excel", timeout=60, headers=admin_headers)
-    assert r.status_code == 200
-    assert "spreadsheetml" in r.headers.get("content-type", "")
-    assert len(r.content) > 1000
-    workbook = load_workbook(io.BytesIO(r.content), read_only=False)
-    assert [cell.value for cell in workbook["Items"][1]][:10] == [
-        "كود الصنف",
-        "اسم الصنف السابق",
-        "اسم المنتج",
-        "العلامة التجارية",
-        "التصنيف الرئيسي",
-        "التصنيف الفرعي",
-        "الوحدة",
-        "المواصفات",
-        "المورد المفضل",
-        "ملاحظات",
-    ]
-    assert "اسم المنتج" in [cell.value for cell in workbook["Price History"][1]]
-    register = workbook["Purchase Register"]
-    assert register.freeze_panes == "A2"
-    assert register.auto_filter.ref == "A1:J1"
-    assert register.max_row - 1 == len(s.get(f"{API}/purchases", headers=admin_headers).json())
-    assert register["B2"].number_format == "yyyy-mm-dd"
-    assert "EGP" in register["G2"].number_format
-    assert register.column_dimensions["D"].width >= len("المورد")
-    assert workbook["Purchase Items"]["N2"].number_format.endswith('"EGP"')
-
-
 # ---------- Purchase creation, dup, validation, cascade + Payment flow ----------
 @pytest.fixture(scope="module")
 def ids(s, admin_headers):
@@ -1780,11 +1999,6 @@ def test_original_data_intact(s, admin_headers):
     history = s.get(f"{API}/price-history", headers=admin_headers).json()
     assert history and all(row["product_name"] for row in history)
     assert all("brand" in row and "specifications" in row for row in history)
-
-
-def test_workbook_import_is_idempotent():
-    counts = asyncio.run(import_data(db, parse_workbook(WORKBOOK.read_bytes())))
-    assert all(value == 0 for value in counts.values())
 
 
 def test_legacy_schema_migration_persists_after_reopen(tmp_path):
@@ -2408,12 +2622,13 @@ def test_hosted_full_surface_rejects_persistent_path_inside_app_directory(monkey
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
 def test_hosted_full_surface_allows_s3(monkeypatch, environment):
-    """production + full + s3 => allowed (S3 remains supported for the full
-    surface, not just public). boto3 is a production-only dependency and
-    isn't installed in this dev/test environment, so success here is
-    verified by confirming the surface/environment gate lets the call reach
-    S3 construction (rather than rejecting it outright), not by a live S3
-    round-trip."""
+    """Hosted full surfaces construct S3 storage without a network request."""
+    from unittest.mock import Mock
+    from attachment_storage import S3AttachmentStorage
+
+    client = Mock()
+    client_factory = Mock(return_value=client)
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=client_factory))
     monkeypatch.setenv("APP_ENV", environment)
     monkeypatch.setenv("APP_SURFACE", "full")
     monkeypatch.setenv("ATTACHMENT_STORAGE_BACKEND", "s3")
@@ -2421,8 +2636,15 @@ def test_hosted_full_surface_allows_s3(monkeypatch, environment):
     monkeypatch.setenv("R2_ACCESS_KEY_ID", "test-access-key")
     monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "test-secret-key")
     monkeypatch.setenv("R2_BUCKET_NAME", f"procurex-{environment}-attachments")
-    with pytest.raises(RuntimeError, match="boto3 is required"):
-        build_attachment_storage()
+    storage = build_attachment_storage()
+    assert isinstance(storage, S3AttachmentStorage)
+    assert storage.client is client
+    assert storage.bucket == f"procurex-{environment}-attachments"
+    client_factory.assert_called_once_with(
+        "s3", endpoint_url="https://account.r2.cloudflarestorage.com",
+        aws_access_key_id="test-access-key", aws_secret_access_key="test-secret-key",
+        region_name=os.getenv("R2_REGION", "auto"),
+    )
 
 
 def test_development_local_attachment_storage_is_unaffected(monkeypatch, tmp_path):
@@ -2785,143 +3007,8 @@ def test_document_capture_migration_is_additive_and_backed_up(tmp_path):
         assert "purchase_request_documents" in tables
 
 
-# ---------- Removed Construction Calculator regression coverage ----------
-CONSTRUCTION_API_PATHS = (
-    f"{API}/construction-calculator/categories",
-    f"{API}/construction-calculator/work-items",
-    f"{API}/construction-calculator/calculate",
-)
-
-
-@pytest.mark.parametrize("legacy_flag", [None, "true"])
-def test_construction_api_is_unavailable_even_with_legacy_flag(monkeypatch, legacy_flag):
-    if legacy_flag is None:
-        monkeypatch.delenv("CONSTRUCTION_API_ENABLED", raising=False)
-    else:
-        monkeypatch.setenv("CONSTRUCTION_API_ENABLED", legacy_flag)
-    disabled_app = create_app(initialize_database=False)
-    registered_paths = {route.path for route in disabled_app.routes}
-    assert not any(path.startswith(f"{API}/construction-calculator") for path in registered_paths)
-    with TestClient(disabled_app) as client:
-        for path in CONSTRUCTION_API_PATHS:
-            assert client.get(path, headers={"X-Internal-Token": "test-internal-token"}).status_code == 404
-        assert client.post(CONSTRUCTION_API_PATHS[-1], json={}).status_code == 404
-
-
-def test_runtime_has_no_construction_router_or_seed_imports():
-    server_source = (BACKEND_DIR / "server.py").read_text(encoding="utf-8")
-    database_source = (BACKEND_DIR / "database.py").read_text(encoding="utf-8")
-    installer_source = (
-        BACKEND_DIR.parent / "installer" / "Build-Installer.ps1"
-    ).read_text(encoding="utf-8")
-    assert "construction_calculator.router" not in server_source
-    assert "construction_calculator_router" not in server_source
-    assert "construction_calculator.seed" not in database_source
-    assert "migrate_construction_calculator" not in database_source
-    assert 'CONSTRUCTION_AUTO_INSTALL", "true"' not in database_source
-    assert "--collect-submodules construction_calculator" not in installer_source
-    assert "construction_calculator/data" not in installer_source
-
-
-def test_normal_startup_preserves_historical_construction_data_without_seeding(monkeypatch):
-    sentinel_id = "historical-compatibility-category"
-    try:
-        with engine.begin() as connection:
-            existing_tables = {
-                row[0]
-                for row in connection.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name LIKE 'construction_%'"
-                )
-            }
-            assert existing_tables == set()
-            connection.exec_driver_sql(
-                "CREATE TABLE construction_categories ("
-                "id TEXT PRIMARY KEY, code TEXT NOT NULL, source_text TEXT NOT NULL, "
-                "technical_notes TEXT NOT NULL)"
-            )
-            connection.exec_driver_sql(
-                "INSERT INTO construction_categories "
-                "(id, code, source_text, technical_notes) VALUES (?, ?, ?, ?)",
-                (
-                    sentinel_id,
-                    "HIST-COMPAT",
-                    "preserved historical row",
-                    "must remain unchanged",
-                ),
-            )
-            before_schema = connection.exec_driver_sql(
-                "SELECT sql FROM sqlite_master WHERE type='table' "
-                "AND name='construction_categories'"
-            ).scalar_one()
-            before_row = connection.exec_driver_sql(
-                "SELECT code, source_text, technical_notes "
-                "FROM construction_categories WHERE id = ?",
-                (sentinel_id,),
-            ).one()
-
-        # A legacy environment variable must not reactivate removed seeding.
-        monkeypatch.setenv("CONSTRUCTION_AUTO_INSTALL", "true")
-        init_db()
-
-        with engine.begin() as connection:
-            after_tables = {
-                row[0]
-                for row in connection.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name LIKE 'construction_%'"
-                )
-            }
-            after_schema = connection.exec_driver_sql(
-                "SELECT sql FROM sqlite_master WHERE type='table' "
-                "AND name='construction_categories'"
-            ).scalar_one()
-            after_row = connection.exec_driver_sql(
-                "SELECT code, source_text, technical_notes "
-                "FROM construction_categories WHERE id = ?",
-                (sentinel_id,),
-            ).one()
-        assert after_tables == {"construction_categories"}
-        assert after_schema == before_schema
-        assert after_row == before_row
-    finally:
-        with engine.begin() as connection:
-            connection.exec_driver_sql("DROP TABLE IF EXISTS construction_categories")
-
-
-def test_construction_migration_is_additive_backed_up_and_idempotent(tmp_path):
-    path = tmp_path / "legacy-construction.db"
-    migration_engine = create_engine(f"sqlite:///{path.as_posix()}")
-    with migration_engine.begin() as connection:
-        connection.exec_driver_sql(
-            "CREATE TABLE legacy_data (id INTEGER PRIMARY KEY, value TEXT)"
-        )
-        connection.exec_driver_sql(
-            "INSERT INTO legacy_data(value) VALUES ('preserved')"
-        )
-        connection.exec_driver_sql("PRAGMA user_version = 7")
-    backup = migrate_construction_calculator(migration_engine)
-    assert backup and backup.is_file()
-    assert migrate_construction_calculator(migration_engine) is None
-    with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert (
-            connection.execute("PRAGMA user_version").fetchone()[0]
-            == CONSTRUCTION_CALCULATOR_SCHEMA_VERSION
-        )
-        assert (
-            connection.execute("SELECT value FROM legacy_data").fetchone()[0]
-            == "preserved"
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='construction_work_items'"
-            ).fetchone()[0]
-            == 1
-        )
-
-
+# ---------- Construction Calculator schema migration (API removed; tables and
+# their Alembic migration are kept for historical data - see models.py) ----------
 def test_construction_alembic_upgrade_and_downgrade_cycle(tmp_path):
     path = tmp_path / "construction-alembic-cycle.db"
     migration_engine = create_engine(f"sqlite:///{path.as_posix()}")
@@ -3142,6 +3229,153 @@ def test_guided_project_approval_payment_revision_and_cash_workflow(s, admin_hea
     assert hub.json()["kpis"]["comparison_count"] >= 3
 
 
+def test_role_at_least_implements_the_erp_hierarchy():
+    """Unit-level check of the centralized hierarchy helper (auth/service.py)
+    independent of any HTTP endpoint: admin > commercial_manager >
+    procurement_responsible > procurement_engineer, admin is an absolute
+    override, and unknown roles fail closed on both sides."""
+    assert ERP_ROLE_LEVELS == {
+        "procurement_engineer": 10,
+        "procurement_responsible": 20,
+        "commercial_manager": 30,
+        "admin": 100,
+    }
+    ladder = ["procurement_engineer", "procurement_responsible", "commercial_manager", "admin"]
+    for i, actual in enumerate(ladder):
+        for j, required in enumerate(ladder):
+            assert role_at_least(actual, required) is (i >= j), (actual, required)
+
+    # admin is an absolute override, even for a required role the hierarchy
+    # doesn't recognize (e.g. a workflow-stage value like "procurement_officer").
+    assert role_at_least("admin", "procurement_officer") is True
+    assert role_at_least("admin", "nonsense") is True
+
+    # Fails closed: an unrecognized role on either side never grants access,
+    # including site_engineer (deliberately outside ERP_ROLE_LEVELS).
+    assert role_at_least("site_engineer", "procurement_engineer") is False
+    assert role_at_least("commercial_manager", "site_engineer") is False
+    assert role_at_least("procurement_responsible", "procurement_officer") is False
+    assert role_at_least("nonsense", "procurement_engineer") is False
+
+
+def test_has_role_or_higher_enforces_account_type_boundary():
+    """has_role_or_higher must refuse a site_portal account no matter what
+    role string it carries, since site_engineer participates in no ERP
+    inheritance (Site Portal stays fully outside the ERP role ladder)."""
+    class _FakeUser:
+        def __init__(self, account_type, role):
+            self.account_type = account_type
+            self.role = role
+
+    erp_admin = _FakeUser("erp", "admin")
+    erp_engineer = _FakeUser("erp", "procurement_engineer")
+    site_portal_user = _FakeUser("site_portal", "site_engineer")
+
+    assert has_role_or_higher(erp_admin, "commercial_manager") is True
+    assert has_role_or_higher(erp_engineer, "commercial_manager") is False
+    assert has_role_or_higher(erp_engineer, "procurement_engineer") is True
+    assert has_role_or_higher(site_portal_user, "procurement_engineer") is False
+    # Even if a site_portal row somehow carried role="admin" (blocked in
+    # practice by the DB CHECK constraint in auth/models.py), the
+    # account_type check still refuses it.
+    assert has_role_or_higher(_FakeUser("site_portal", "admin"), "procurement_engineer") is False
+
+
+def test_erp_rbac_matrix_across_representative_endpoints(s, admin_headers):
+    """Explicit RBAC matrix (spec section 15): for one representative,
+    already-gated endpoint per hierarchy level, every role at or above that
+    level gets 200/201 and every role below gets 403. Site Portal never
+    gets ERP access regardless of level."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"matrix-eng-{suffix}", role="procurement_engineer")
+        _make_user(session, username=f"matrix-resp-{suffix}", role="procurement_responsible")
+        _make_user(session, username=f"matrix-mgr-{suffix}", role="commercial_manager")
+        portal_username, _, _ = _portal_setup(session, f"matrix-portal-{suffix}")
+    headers_by_role = {
+        "procurement_engineer": _login_headers(s, f"matrix-eng-{suffix}"),
+        "procurement_responsible": _login_headers(s, f"matrix-resp-{suffix}"),
+        "commercial_manager": _login_headers(s, f"matrix-mgr-{suffix}"),
+        "admin": admin_headers,
+    }
+    portal_headers = _login_headers(s, portal_username)
+    ladder = ["procurement_engineer", "procurement_responsible", "commercial_manager", "admin"]
+
+    # Engineer-gated: /internal/incoming-purchase-requests/{id}/items/{id}/review
+    item_ids_by_role = {}
+    for role in ladder:
+        req_id, item_id, _ = _make_manual_line(s, f"{suffix}-eng-{role}")
+        item_ids_by_role[role] = (req_id, item_id)
+    for role in ladder:
+        req_id, item_id = item_ids_by_role[role]
+        response = s.patch(
+            f"{API}/internal/incoming-purchase-requests/{req_id}/items/{item_id}/review",
+            headers={**INTERNAL_HEADERS, **headers_by_role[role]}, json={"status": "approved", "reason": ""},
+        )
+        expected = 200 if ERP_ROLE_LEVELS[role] >= ERP_ROLE_LEVELS["procurement_engineer"] else 403
+        assert response.status_code == expected, (role, response.text)
+    portal_req_id_review, portal_item_id_review, _ = _make_manual_line(s, f"{suffix}-eng-portal")
+    assert s.patch(
+        f"{API}/internal/incoming-purchase-requests/{portal_req_id_review}/items/{portal_item_id_review}/review",
+        headers={**INTERNAL_HEADERS, **portal_headers}, json={"status": "approved", "reason": ""},
+    ).status_code == 403
+
+    # Responsible-gated: RFQ creation. A role denied here leaves its request
+    # sitting in status="pricing" with no RFQ - a real "sourcing_required"
+    # row on the dashboard's shared attention-items list - so those specific
+    # denied-role requests are force-closed afterward (the allowed-role ones
+    # already leave "pricing" naturally once their RFQ exists, since the
+    # dashboard's sourcing_required bucket excludes any request with an RFQ;
+    # see server.py's requests_ready_for_sourcing).
+    denied_rfq_request_ids = []
+    for role in ladder:
+        req_id, *_rest = _make_pricing_request(s, f"{suffix}-rfq-{role}")
+        response = s.post(
+            RFQ_API, headers={**INTERNAL_HEADERS, **headers_by_role[role]},
+            json={"source_request_id": req_id},
+        )
+        expected = 200 if ERP_ROLE_LEVELS[role] >= ERP_ROLE_LEVELS["procurement_responsible"] else 403
+        assert response.status_code == expected, (role, response.text)
+        if expected == 403:
+            denied_rfq_request_ids.append(req_id)
+    portal_req_id, *_rest = _make_pricing_request(s, f"{suffix}-rfq-portal")
+    denied_rfq_request_ids.append(portal_req_id)
+    assert s.post(
+        RFQ_API, headers={**INTERNAL_HEADERS, **portal_headers}, json={"source_request_id": portal_req_id},
+    ).status_code == 403
+    with SessionLocal.begin() as session:
+        for req_id in denied_rfq_request_ids:
+            row = session.get(IncomingPurchaseRequest, req_id)
+            if row is not None:
+                row.status = "cancelled"
+
+    # Commercial-gated: confirm funds release (uses a random approval id -
+    # the RBAC gate always runs before the 404 lookup, so a role failure
+    # still surfaces as 403 here).
+    for role in ladder:
+        response = s.post(
+            f"{API}/workflow/approvals/{uuid.uuid4()}/funds-release",
+            headers={**INTERNAL_HEADERS, **headers_by_role[role]}, json={"actor": "x"},
+        )
+        expected_denied = ERP_ROLE_LEVELS[role] < ERP_ROLE_LEVELS["commercial_manager"]
+        if expected_denied:
+            assert response.status_code == 403, (role, response.text)
+        else:
+            assert response.status_code == 404, (role, response.text)  # authorized, just no such approval
+    assert s.post(
+        f"{API}/workflow/approvals/{uuid.uuid4()}/funds-release",
+        headers={**INTERNAL_HEADERS, **portal_headers}, json={"actor": "x"},
+    ).status_code == 403
+
+    # Admin-only: user administration - no role below admin is ever allowed,
+    # including commercial_manager (admin-management stays admin-only).
+    for role in ladder:
+        response = s.get(f"{API}/admin/users", headers=headers_by_role[role])
+        expected = 200 if role == "admin" else 403
+        assert response.status_code == expected, (role, response.text)
+    assert s.get(f"{API}/admin/users", headers=portal_headers).status_code == 403
+
+
 def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
@@ -3197,12 +3431,16 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers
         }],
     }
     assert s.post(f"{API}/price-comparisons", json=comparison_body, headers=responsible_headers).status_code == 409
-    denied_review = s.post(
+    # commercial_manager inherits procurement_engineer's technical-review
+    # permission (role hierarchy), so this passes the RBAC gate same as the
+    # engineer case below - it's still 409 because the request isn't linked
+    # to a project yet, not because the role was denied.
+    manager_review_before_link = s.post(
         f"{API}/workflow/incoming-purchase-requests/{request_id}/technical-decision",
         headers={**INTERNAL_HEADERS, **manager_headers},
         json={"decision": "approved_for_pricing"},
     )
-    assert denied_review.status_code == 403
+    assert manager_review_before_link.status_code == 409
     historical = s.get(
         f"{API}/internal/incoming-purchase-requests/{request_id}",
         headers={**INTERNAL_HEADERS, **admin_headers},
@@ -3312,11 +3550,10 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers
 
     po_body = {"comparison_id": comparison.json()["id"], "po_date": "2026-08-16", "orders": []}
     assert s.post(f"{API}/purchase-orders/from-comparison", json=po_body, headers=responsible_headers).status_code == 409
-    denied = s.post(
-        f"{API}/workflow/approvals/{approval['id']}/decision", headers={**INTERNAL_HEADERS, **manager_headers},
-        json={"decision": "approved", "actor": "officer"},
-    )
-    assert denied.status_code == 403
+    # commercial_manager acting on the engineer-owned technical stage is now
+    # covered by test_review_workspace_decision_role_gating_reuses_existing_endpoint
+    # (role hierarchy inheritance) - this happy-path flow keeps the
+    # technical decision with its actual owning role, procurement_engineer.
     technical_approval = s.post(
         f"{API}/workflow/approvals/{approval['id']}/decision", headers={**INTERNAL_HEADERS, **engineer_headers},
         json={"decision": "approved", "actor": "engineer"},
@@ -3395,11 +3632,10 @@ def test_internal_procurement_roles_gate_comparison_fund_and_po(s, admin_headers
         )
         assert transition.status_code == 200, transition.text
         assert transition.json()["status"] == status
-    assert s.post(
-        f"{API}/purchase-orders/{first_po['id']}/finalize",
-        json={"actor": "manager"},
-        headers=manager_headers,
-    ).status_code == 403
+    # commercial_manager inherits procurement_responsible's finalize
+    # permission under the role hierarchy (covered by the dedicated RBAC
+    # matrix tests) - this happy-path flow keeps PO finalize with its
+    # actual owning role, procurement_responsible.
     finalized = s.post(
         f"{API}/purchase-orders/{first_po['id']}/finalize",
         json={"actor": "officer"},
@@ -4515,25 +4751,198 @@ def test_partial_item_review_progresses_only_approved_subset_and_creates_linked_
     assert returned.status_code == 200, returned.text
     assert {row["status"] for row in returned.json()} == {"rejected", "need_clarification"}
     returned_item = next(row for row in returned.json() if row["status"] == "need_clarification")
-    corrected = s.post(
-        f"{PORTAL_API}/returned-items/{returned_item['id']}/correct",
-        headers=portal_headers,
-        data={"payload": json.dumps({
-            "product_name": returned_item["product_name"], "unit": returned_item["unit"],
-            "quantity": 2, "note": "مواصفة مكتملة", "required_delivery_date": "2099-01-01",
-        })},
-    )
+
+    draft = _save_correction_draft(s, portal_headers, returned_item["id"], quantity=2)
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["ready"] is True
+
+    # Saving a draft must never create a REQ by itself.
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count()).select_from(IncomingPurchaseRequest)
+            .where(IncomingPurchaseRequest.source_request_id == request_id)
+        ) == 0
+
+    corrected = _resubmit_corrections(s, portal_headers, request_id, [returned_item["id"]])
     assert corrected.status_code == 200, corrected.text
     child = corrected.json()
     assert child["source_request_id"] == request_id
-    assert child["source_item_id"] == returned_item["id"]
     with SessionLocal() as session:
         original_item = session.get(IncomingPurchaseRequestItem, returned_item["id"])
         child_request = session.get(IncomingPurchaseRequest, child["request_id"])
+        child_items = session.scalars(
+            select(IncomingPurchaseRequestItem).where(
+                IncomingPurchaseRequestItem.request_id == child["request_id"]
+            )
+        ).all()
         assert original_item is not None
         assert original_item.review_status == "need_clarification"
         assert child_request.source_request_id == request_id
-        assert child_request.source_item_id == original_item.id
+        assert len(child_items) == 1
+        assert child_items[0].source_item_id == original_item.id
+
+    # The approved item's own downstream chain (already an active RFQ) is
+    # completely unaffected by the grouped correction of the other items.
+    rfq_after = s.get(f"{RFQ_API}/{rfq.json()['rfq']['id']}", headers={**INTERNAL_HEADERS, **responsible_headers})
+    assert rfq_after.status_code == 200, rfq_after.text
+    assert len(rfq_after.json()["items"]) == 1
+    assert rfq_after.json()["items"][0]["product_name"] == f"معتمد-{suffix}"
+
+
+def _save_correction_draft(client, headers, item_id, *, product_name="صنف مصحح", unit="قطعة", quantity=1, note="مواصفة مكتملة", required_delivery_date="2099-01-01"):
+    body = {
+        "product_name": product_name, "unit": unit,
+        "quantity": quantity, "note": note, "required_delivery_date": required_delivery_date,
+    }
+    return client.post(f"{PORTAL_API}/returned-items/{item_id}/correct", headers=headers, json=body)
+
+
+def _resubmit_corrections(client, headers, original_request_id, item_ids):
+    return client.post(
+        f"{PORTAL_API}/purchase-requests/{original_request_id}/resubmit-corrections",
+        headers=headers, json={"item_ids": item_ids},
+    )
+
+
+def _review_item(client, headers, request_id, item_id, status, reason=""):
+    response = client.patch(
+        f"{API}/internal/incoming-purchase-requests/{request_id}/items/{item_id}/review",
+        headers={**INTERNAL_HEADERS, **headers},
+        json={"status": status, "reason": reason},
+    )
+    assert response.status_code == 200, response.text
+    return response
+
+
+def _setup_returned_items_scenario(s, admin_headers, suffix, item_count=4):
+    """One original REQ with `item_count` manual items, all reviewed as
+    need_clarification (so every one becomes an eligible returned item)."""
+    with SessionLocal() as session:
+        project_id = _make_project_for_portal(session, suffix)
+        portal_username, _ = _make_portal_user(session, suffix, project_ids=[project_id])
+        _make_user(session, username=f"grp-eng-{suffix}", role="procurement_engineer")
+    portal_headers = _login_headers(s, portal_username)
+    engineer_headers = _login_headers(s, f"grp-eng-{suffix}")
+    created = _submit_portal_request(s, portal_headers, _portal_payload(items=[
+        _manual_item(f"صنف-{suffix}-{i}") for i in range(item_count)
+    ])).json()
+    request_id = created["request_id"]
+    detail = s.get(
+        f"{API}/internal/incoming-purchase-requests/{request_id}",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+    ).json()
+    item_ids = [item["id"] for item in detail["items"]]
+    for item_id in item_ids:
+        _review_item(s, engineer_headers, request_id, item_id, "need_clarification", "أكمل المواصفة")
+    return request_id, item_ids, portal_headers
+
+
+def test_four_returned_items_from_one_request_group_into_one_corrected_req(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_id, item_ids, portal_headers = _setup_returned_items_scenario(s, admin_headers, suffix, item_count=4)
+    for item_id in item_ids:
+        assert _save_correction_draft(s, portal_headers, item_id).status_code == 200
+
+    result = _resubmit_corrections(s, portal_headers, request_id, item_ids)
+    assert result.status_code == 200, result.text
+    body = result.json()
+    assert body["item_count"] == 4
+
+    with SessionLocal() as session:
+        child_items = session.scalars(
+            select(IncomingPurchaseRequestItem).where(
+                IncomingPurchaseRequestItem.request_id == body["request_id"]
+            )
+        ).all()
+        assert len(child_items) == 4
+        assert {item.source_item_id for item in child_items} == set(item_ids)
+        child_request = session.get(IncomingPurchaseRequest, body["request_id"])
+        assert child_request.source_request_id == request_id
+
+
+def test_three_corrected_items_group_while_one_stays_pending(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_id, item_ids, portal_headers = _setup_returned_items_scenario(s, admin_headers, suffix, item_count=4)
+    ready_ids, pending_id = item_ids[:3], item_ids[3]
+    for item_id in ready_ids:
+        assert _save_correction_draft(s, portal_headers, item_id).status_code == 200
+
+    result = _resubmit_corrections(s, portal_headers, request_id, ready_ids)
+    assert result.status_code == 200, result.text
+    assert result.json()["item_count"] == 3
+
+    returned = s.get(f"{PORTAL_API}/returned-items", headers=portal_headers).json()
+    pending_row = next(row for row in returned if row["id"] == pending_id)
+    assert pending_row["ready"] is False
+    assert pending_row["corrected_request"] is None
+    resubmitted_rows = [row for row in returned if row["id"] in ready_ids]
+    assert all(row["corrected_request"] is not None for row in resubmitted_rows)
+
+    # The pending item can still be corrected and resubmitted later, on its
+    # own, as a second corrected REQ linked to the same original request.
+    assert _save_correction_draft(s, portal_headers, pending_id).status_code == 200
+    second = _resubmit_corrections(s, portal_headers, request_id, [pending_id])
+    assert second.status_code == 200, second.text
+    assert second.json()["request_id"] != result.json()["request_id"]
+    assert second.json()["source_request_id"] == request_id
+
+
+def test_items_from_two_different_original_requests_cannot_be_grouped(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_a, items_a, portal_headers = _setup_returned_items_scenario(s, admin_headers, f"{suffix}-a", item_count=1)
+    request_b, items_b, _ = _setup_returned_items_scenario(s, admin_headers, f"{suffix}-b", item_count=1)
+    assert _save_correction_draft(s, portal_headers, items_a[0]).status_code == 200
+
+    # request_b's item does not belong to request_a's owner/project scope,
+    # and even if it did, mixing items across two original REQs must fail.
+    result = _resubmit_corrections(s, portal_headers, request_a, [items_a[0], items_b[0]])
+    assert result.status_code == 422, result.text
+
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(func.count()).select_from(IncomingPurchaseRequest)
+            .where(IncomingPurchaseRequest.source_request_id == request_a)
+        ) == 0
+
+
+def test_double_submit_resubmission_does_not_duplicate_the_child_req(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_id, item_ids, portal_headers = _setup_returned_items_scenario(s, admin_headers, suffix, item_count=2)
+    for item_id in item_ids:
+        assert _save_correction_draft(s, portal_headers, item_id).status_code == 200
+
+    first = _resubmit_corrections(s, portal_headers, request_id, item_ids)
+    assert first.status_code == 200, first.text
+    second = _resubmit_corrections(s, portal_headers, request_id, item_ids)
+    assert second.status_code == 200, second.text
+    assert second.json()["already_exists"] is True
+    assert second.json()["request_id"] == first.json()["request_id"]
+
+    with SessionLocal() as session:
+        children = session.scalars(
+            select(IncomingPurchaseRequest).where(
+                IncomingPurchaseRequest.source_request_id == request_id
+            )
+        ).all()
+        assert len(children) == 1
+        child_items = session.scalars(
+            select(IncomingPurchaseRequestItem).where(
+                IncomingPurchaseRequestItem.request_id == children[0].id
+            )
+        ).all()
+        assert len(child_items) == 2
+
+
+def test_already_resubmitted_item_cannot_be_corrected_or_resubmitted_again(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    request_id, item_ids, portal_headers = _setup_returned_items_scenario(s, admin_headers, suffix, item_count=1)
+    item_id = item_ids[0]
+    assert _save_correction_draft(s, portal_headers, item_id).status_code == 200
+    resubmitted = _resubmit_corrections(s, portal_headers, request_id, [item_id])
+    assert resubmitted.status_code == 200, resubmitted.text
+
+    again = _save_correction_draft(s, portal_headers, item_id)
+    assert again.status_code == 409, again.text
 
 
 PDF_BYTES = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< >>\nendobj\n%%EOF"
@@ -4592,17 +5001,15 @@ def test_portal_site_user_can_create_request(s):
         assert items[0].quantity == 3
 
 
-def test_req_clarification_requires_engineer_and_reason(s):
+def test_req_clarification_requires_reason(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         project_id = _make_project_for_portal(session, suffix)
         portal_username, _ = _make_portal_user(session, suffix, project_ids=[project_id])
         item_id = _make_portal_item(session, suffix)
         _make_user(session, username=f"clarify-engineer-{suffix}", role="procurement_engineer")
-        _make_user(session, username=f"clarify-responsible-{suffix}", role="procurement_responsible")
     portal_headers = _login_headers(s, portal_username)
     engineer_headers = _login_headers(s, f"clarify-engineer-{suffix}")
-    responsible_headers = _login_headers(s, f"clarify-responsible-{suffix}")
     created = _submit_portal_request(s, portal_headers, _portal_payload(
         items=[{"item_id": item_id, "quantity": 1, "note": ""}],
     )).json()
@@ -4612,12 +5019,32 @@ def test_req_clarification_requires_engineer_and_reason(s):
         "decision": "revision_required", "note": "",
     })
     assert missing_reason.status_code == 422
-    forbidden = s.post(endpoint, headers={**INTERNAL_HEADERS, **responsible_headers}, json={
-        "decision": "revision_required", "note": "وضح المقاس",
-    })
-    assert forbidden.status_code == 403
     allowed = s.post(endpoint, headers={**INTERNAL_HEADERS, **engineer_headers}, json={
         "decision": "revision_required", "note": "وضح المقاس المطلوب",
+    })
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["status"] == "need_clarification"
+
+
+def test_req_clarification_inherited_by_procurement_responsible(s):
+    """procurement_responsible sits above procurement_engineer in the ERP
+    role hierarchy, so it inherits the engineer-owned technical-decision
+    action (this is not an escalation - it is the intended inheritance)."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        project_id = _make_project_for_portal(session, suffix)
+        portal_username, _ = _make_portal_user(session, suffix, project_ids=[project_id])
+        item_id = _make_portal_item(session, suffix)
+        _make_user(session, username=f"clarify-responsible-{suffix}", role="procurement_responsible")
+    portal_headers = _login_headers(s, portal_username)
+    responsible_headers = _login_headers(s, f"clarify-responsible-{suffix}")
+    created = _submit_portal_request(s, portal_headers, _portal_payload(
+        items=[{"item_id": item_id, "quantity": 1, "note": ""}],
+    )).json()
+    endpoint = f"{API}/workflow/incoming-purchase-requests/{created['request_id']}/technical-decision"
+
+    allowed = s.post(endpoint, headers={**INTERNAL_HEADERS, **responsible_headers}, json={
+        "decision": "revision_required", "note": "وضح المقاس",
     })
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()["status"] == "need_clarification"
@@ -5384,7 +5811,7 @@ def test_convert_manual_item_allowed_for_procurement_responsible(s):
     assert response.json()["created"] is True
 
 
-def test_convert_manual_item_forbidden_for_procurement_engineer_and_commercial_manager(s):
+def test_convert_manual_item_forbidden_for_procurement_engineer_allowed_for_commercial_manager(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"sprint23-eng-convert-{suffix}", role="procurement_engineer")
@@ -5393,8 +5820,16 @@ def test_convert_manual_item_forbidden_for_procurement_engineer_and_commercial_m
     manager_headers = _login_headers(s, f"sprint23-mgr-convert-{suffix}")
 
     request_id, line_id, _ = _make_manual_line(s, suffix)
+    # procurement_engineer sits below procurement_responsible in the ERP
+    # hierarchy and does not inherit it - still forbidden.
     assert s.post(CONVERT_URL(request_id, line_id), headers=engineer_headers, json=_convert_body()).status_code == 403
-    assert s.post(CONVERT_URL(request_id, line_id), headers=manager_headers, json=_convert_body()).status_code == 403
+    # commercial_manager sits above procurement_responsible and inherits its
+    # permissions, so this is now allowed.
+    suffix2 = uuid.uuid4().hex[:8]
+    request_id2, line_id2, _ = _make_manual_line(s, suffix2)
+    allowed = s.post(CONVERT_URL(request_id2, line_id2), headers=manager_headers, json=_convert_body(name=f"صنف مدير تجاري {suffix}"))
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["created"] is True
 
 
 def test_anonymous_request_to_workflow_mutation_is_rejected(s):
@@ -5429,7 +5864,9 @@ def test_deactivated_erp_user_loses_workflow_access_immediately(s):
     assert revoked.status_code == 401
 
 
-def test_commercial_manager_cannot_prepare_price_comparisons(s, admin_headers):
+def test_commercial_manager_inherits_price_comparison_preparation(s, admin_headers):
+    """commercial_manager sits above procurement_responsible in the ERP role
+    hierarchy, so it inherits the price-comparison-preparation permission."""
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"sprint23-mgr-cmp-{suffix}", role="commercial_manager")
@@ -5446,7 +5883,7 @@ def test_commercial_manager_cannot_prepare_price_comparisons(s, admin_headers):
             "availability": "available", "price_valid_until": "2099-12-31",
         }],
     })
-    assert response.status_code == 403
+    assert response.status_code == 200, response.text
 
 
 def test_procurement_responsible_cannot_confirm_funds_release(s):
@@ -5488,15 +5925,18 @@ def test_client_supplied_actor_role_cannot_escalate_privileges(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"sprint23-spoof-eng-{suffix}", role="procurement_engineer")
+        _make_user(session, username=f"sprint23-spoof-resp-{suffix}", role="procurement_responsible")
         _make_user(session, username=f"sprint23-spoof-mgr-{suffix}", role="commercial_manager")
         portal_username, _, _ = _portal_setup(session, f"sprint23-spoof-portal-{suffix}")
     engineer_headers = _login_headers(s, f"sprint23-spoof-eng-{suffix}")
+    responsible_headers = _login_headers(s, f"sprint23-spoof-resp-{suffix}")
     manager_headers = _login_headers(s, f"sprint23-spoof-mgr-{suffix}")
     portal_headers = _login_headers(s, portal_username)
 
     # Authenticated procurement_engineer claiming to be commercial_manager
     # via the (now-ignored) payload field must still be refused a
-    # commercial-only action.
+    # commercial-only action. procurement_engineer is the floor of the ERP
+    # role hierarchy, so it inherits nothing above it.
     spoofed_funds_release = s.post(
         f"{API}/workflow/approvals/{uuid.uuid4()}/funds-release",
         headers={**INTERNAL_HEADERS, **engineer_headers},
@@ -5504,14 +5944,30 @@ def test_client_supplied_actor_role_cannot_escalate_privileges(s):
     )
     assert spoofed_funds_release.status_code == 403
 
-    # Authenticated commercial_manager claiming to be procurement_responsible
-    # must still be refused an engineer-only action (technical review).
+    # Authenticated procurement_responsible claiming to be commercial_manager
+    # must still be refused a commercial-only action - under role
+    # inheritance, procurement_responsible sits below commercial_manager and
+    # does not gain its financial-authorization powers (no upward
+    # inheritance, and the payload's actor_role is ignored either way).
+    spoofed_funds_release_by_responsible = s.post(
+        f"{API}/workflow/approvals/{uuid.uuid4()}/funds-release",
+        headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"actor": "x", "actor_role": "commercial_manager"},
+    )
+    assert spoofed_funds_release_by_responsible.status_code == 403
+
+    # commercial_manager legitimately inherits procurement_engineer's
+    # technical-review permission under the ERP role hierarchy (this is not
+    # an escalation - it's the intended inheritance), so the RBAC gate
+    # passes; the payload's actor_role is still ignored and the approval id
+    # is a random uuid, so the request 404s rather than ever getting to
+    # apply that spoofed role anywhere.
     spoofed_technical_decision = s.post(
         f"{API}/workflow/incoming-purchase-requests/{uuid.uuid4()}/technical-decision",
         headers={**INTERNAL_HEADERS, **manager_headers},
         json={"decision": "approved_for_pricing", "actor_role": "procurement_responsible"},
     )
-    assert spoofed_technical_decision.status_code == 403
+    assert spoofed_technical_decision.status_code == 404
 
     # Authenticated site-portal account claiming to be admin must still be
     # refused every internal ERP workflow action.
@@ -5624,7 +6080,9 @@ def test_procurement_engineer_cannot_create_rfq(s):
     assert response.status_code == 403
 
 
-def test_commercial_manager_cannot_create_rfq(s):
+def test_commercial_manager_inherits_rfq_creation(s):
+    """commercial_manager sits above procurement_responsible in the ERP role
+    hierarchy, so it inherits RFQ-creation permission."""
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"rfq-mgr-{suffix}", role="commercial_manager")
@@ -5634,7 +6092,7 @@ def test_commercial_manager_cannot_create_rfq(s):
         RFQ_API, headers={**INTERNAL_HEADERS, **manager_headers},
         json={"source_request_id": request_id},
     )
-    assert response.status_code == 403
+    assert response.status_code == 200, response.text
 
 
 def test_site_portal_cannot_create_rfq(s):
@@ -5894,6 +6352,275 @@ def test_quotation_lines_remain_linked_to_source_ids(s):
     assert history_line["comparison_number"] == ""
 
 
+def test_comparison_rows_batches_lines_and_items_across_multiple_quotations(s):
+    """Direct regression guard for rfq_comparison_rows()'s batched
+    SupplierQuotationLine/RFQItem lookups (rfq.py): the test above only
+    covers a single quotation with a single line, where a broken
+    quotation_id/rfq_item_id grouping could still coincidentally return the
+    right row. Two suppliers, two lines each referencing two different
+    RFQItems, four distinct prices - proves rows aren't mixed across
+    quotations and each supplier_quotations summary counts only its own
+    lines, not the whole batch."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-multi-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"rfq-multi-resp-{suffix}")
+
+    request_id, *_rest = _make_pricing_request(s, suffix)
+    with SessionLocal.begin() as session:
+        session.add(IncomingPurchaseRequestItem(
+            id=str(uuid.uuid4()), request_id=request_id, position=2, item_id="",
+            product_name=f"صنف RFQ ثانٍ {suffix}", quantity=7, unit="قطعة",
+            review_status="approved", reviewed_by="engineer",
+            reviewed_at=datetime.now(timezone.utc).isoformat(),
+        ))
+
+    rfq = s.post(
+        RFQ_API, headers={**INTERNAL_HEADERS, **responsible_headers},
+        json={"source_request_id": request_id},
+    ).json()["rfq"]
+    assert len(rfq["items"]) == 2
+    item1, item2 = rfq["items"][0], rfq["items"][1]
+
+    suppliers = s.get(f"{API}/suppliers", headers=responsible_headers).json()
+    supplier_a, supplier_b = suppliers[0], suppliers[1]
+    for supplier in (supplier_a, supplier_b):
+        added = s.post(
+            f"{RFQ_API}/{rfq['id']}/suppliers", headers={**INTERNAL_HEADERS, **responsible_headers},
+            json={"supplier_id": supplier["id"]},
+        )
+        assert added.status_code == 200, added.text
+
+    def _quote(supplier, price_item1, price_item2):
+        quotation = s.post(
+            f"{RFQ_API}/{rfq['id']}/quotations", headers={**INTERNAL_HEADERS, **responsible_headers},
+            json={"supplier_id": supplier["id"]},
+        ).json()["quotation"]
+        updated = s.put(
+            f"{RFQ_API}/{rfq['id']}/quotations/{quotation['id']}",
+            headers={**INTERNAL_HEADERS, **responsible_headers},
+            json={
+                "quotation_ref": f"QT-{supplier['id'][:4]}", "status": "received",
+                "lines": [
+                    {"rfq_item_id": item1["id"], "quantity": 3, "unit": "قطعة",
+                     "unit_price": price_item1, "availability": "available"},
+                    {"rfq_item_id": item2["id"], "quantity": 7, "unit": "قطعة",
+                     "unit_price": price_item2, "availability": "available"},
+                ],
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        return quotation["id"]
+
+    quotation_a = _quote(supplier_a, price_item1=10, price_item2=20)
+    quotation_b = _quote(supplier_b, price_item1=15, price_item2=25)
+
+    response = s.get(
+        f"{RFQ_API}/{rfq['id']}/comparison-rows",
+        headers={**INTERNAL_HEADERS, **responsible_headers},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    rows = body["rows"]
+    assert len(rows) == 4
+
+    def _prices_for(supplier_name):
+        return sorted(
+            row["unit_price"] for row in rows if row["supplier_name"] == supplier_name
+        )
+
+    # Each supplier's two rows carry exactly its own two prices - proves
+    # lines were grouped by the correct quotation_id, not merged or
+    # cross-attributed between the two quotations sharing this RFQ.
+    assert _prices_for(supplier_a["name"]) == [10, 20]
+    assert _prices_for(supplier_b["name"]) == [15, 25]
+    assert {row["quotation_id"] for row in rows} == {quotation_a, quotation_b}
+
+    summaries = {row["id"]: row for row in body["supplier_quotations"]}
+    assert summaries[quotation_a]["line_count"] == 2
+    assert summaries[quotation_b]["line_count"] == 2
+
+
+def _mark_quotation_received(client, rfq_id, quotation_id, headers, unit_price=100):
+    updated = client.put(
+        f"{RFQ_API}/{rfq_id}/quotations/{quotation_id}", headers=headers,
+        json={
+            "status": "received",
+            "lines": [],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    return updated.json()
+
+
+def _rfq_row(rows, rfq_id):
+    return next(row for row in rows if row["id"] == rfq_id)
+
+
+def test_rfq_register_lists_supplier_and_quotation_counts_without_n_plus_one(s):
+    """Two independent RFQs with different supplier/quotation counts must
+    each report their OWN counts correctly - proves the bulk group-by
+    queries are keyed per rfq_id, not accidentally shared/aggregated."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-reg-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"rfq-reg-resp-{suffix}")
+    internal_responsible = {**INTERNAL_HEADERS, **responsible_headers}
+
+    # RFQ A: 2 suppliers, 1 received quotation.
+    request_a, *_rest = _make_pricing_request(s, f"{suffix}-a")
+    rfq_a = s.post(RFQ_API, headers=internal_responsible, json={"source_request_id": request_a}).json()["rfq"]
+    suppliers = s.get(f"{API}/suppliers", headers=responsible_headers).json()
+    supplier_1, supplier_2 = suppliers[0], suppliers[1]
+    s.post(f"{RFQ_API}/{rfq_a['id']}/suppliers", headers=internal_responsible, json={"supplier_id": supplier_1["id"]})
+    s.post(f"{RFQ_API}/{rfq_a['id']}/suppliers", headers=internal_responsible, json={"supplier_id": supplier_2["id"]})
+    quotation_a1 = s.post(
+        f"{RFQ_API}/{rfq_a['id']}/quotations", headers=internal_responsible, json={"supplier_id": supplier_1["id"]},
+    ).json()["quotation"]
+    s.post(f"{RFQ_API}/{rfq_a['id']}/quotations", headers=internal_responsible, json={"supplier_id": supplier_2["id"]})
+    _mark_quotation_received(s, rfq_a["id"], quotation_a1["id"], internal_responsible)
+
+    # RFQ B: 1 supplier, 0 received quotations.
+    rfq_id_b, supplier_b, _rfq_b = _rfq_with_supplier(s, f"{suffix}-b", responsible_headers)
+
+    response = s.get(RFQ_API, headers=internal_responsible)
+    assert response.status_code == 200, response.text
+    rows = response.json()
+
+    row_a = _rfq_row(rows, rfq_a["id"])
+    assert row_a["item_count"] == 1
+    assert row_a["supplier_count"] == 2
+    assert sorted(row_a["supplier_names"]) == sorted([supplier_1["name"], supplier_2["name"]])
+    assert row_a["received_quotation_count"] == 1
+    assert row_a["status"] == "partial_response"
+    assert row_a["ready_for_comparison"] is True
+
+    row_b = _rfq_row(rows, rfq_id_b)
+    assert row_b["supplier_count"] == 1
+    assert row_b["received_quotation_count"] == 0
+    assert row_b["status"] == "zero_response"
+    assert row_b["ready_for_comparison"] is False
+
+
+def test_rfq_register_marks_past_deadline_when_incomplete_and_expired(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-overdue-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"rfq-overdue-resp-{suffix}")
+    internal_responsible = {**INTERNAL_HEADERS, **responsible_headers}
+    request_id, *_rest = _make_pricing_request(s, suffix)
+    rfq = s.post(
+        RFQ_API, headers=internal_responsible,
+        json={"source_request_id": request_id, "deadline": "2020-01-01"},
+    ).json()["rfq"]
+    supplier = s.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
+    s.post(f"{RFQ_API}/{rfq['id']}/suppliers", headers=internal_responsible, json={"supplier_id": supplier["id"]})
+
+    rows = s.get(RFQ_API, headers=internal_responsible).json()
+    row = _rfq_row(rows, rfq["id"])
+    assert row["is_past_deadline"] is True
+    assert row["status"] == "past_deadline"
+
+
+def _rfq_ready_for_comparison(client, suffix, responsible_headers):
+    """A real RFQ (not a bypassed direct-CMP fixture) carried all the way to
+    one received quotation - the actual precondition /comparison-rows and
+    the register's ready_for_comparison flag both require. Returns
+    (rfq, request_id, request_number, project_id, item_id, supplier)."""
+    internal_responsible = {**INTERNAL_HEADERS, **responsible_headers}
+    request_id, request_number, project_id, _line_id, _resp = _make_pricing_request(client, suffix)
+    rfq = client.post(
+        RFQ_API, headers=internal_responsible, json={"source_request_id": request_id},
+    ).json()["rfq"]
+    # rfq["items"][0]["item_id"] is the resolved Item Master id (the 4th
+    # _make_pricing_request return value is the REQUEST LINE id, not this).
+    item_id = rfq["items"][0]["item_id"]
+    supplier = client.get(f"{API}/suppliers", headers=responsible_headers).json()[0]
+    client.post(
+        f"{RFQ_API}/{rfq['id']}/suppliers", headers=internal_responsible,
+        json={"supplier_id": supplier["id"]},
+    )
+    quotation = client.post(
+        f"{RFQ_API}/{rfq['id']}/quotations", headers=internal_responsible,
+        json={"supplier_id": supplier["id"]},
+    ).json()["quotation"]
+    rfq_item_id = rfq["items"][0]["id"]
+    updated = client.put(
+        f"{RFQ_API}/{rfq['id']}/quotations/{quotation['id']}", headers=internal_responsible,
+        json={
+            "status": "received",
+            "lines": [{
+                "rfq_item_id": rfq_item_id, "quantity": 3, "unit": "قطعة",
+                "unit_price": 100, "availability": "available",
+            }],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    return rfq, request_id, request_number, project_id, item_id, supplier
+
+
+def test_rfq_register_exposes_comparison_link_when_one_exists(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    rfq, request_id, request_number, project_id, item_id, supplier = _rfq_ready_for_comparison(
+        s, suffix, admin_headers,
+    )
+    project = next(p for p in s.get(f"{API}/projects", headers=admin_headers).json() if p["id"] == project_id)
+    comparison = s.post(f"{API}/price-comparisons", json={
+        "project_id": project_id, "project_name": project["name"],
+        "source_request_id": request_id, "source_request_number": request_number,
+        "comparison_date": "2026-08-20", "rows": [{
+            "item_id": item_id, "product_name": "صنف RFQ من الدليل",
+            "supplier_id": supplier["id"], "quantity": 3, "unit": "قطعة",
+            "unit_price": 100, "availability": "available", "price_valid_until": "2099-12-31",
+        }],
+    }, headers=admin_headers)
+    assert comparison.status_code == 200, comparison.text
+    comparison = comparison.json()
+
+    rows = s.get(RFQ_API, headers={**INTERNAL_HEADERS, **admin_headers}).json()
+    matching = _rfq_row(rows, rfq["id"])
+    assert matching["comparison_id"] == comparison["id"]
+    assert matching["comparison_number"] == comparison["comparison_number"]
+    # The REQ hasn't been sent for approval yet - still "pricing", so an
+    # unrelated saved comparison draft doesn't close the RFQ prematurely.
+    assert matching["is_open"] is True
+    assert matching["status"] == "all_received"
+
+
+def test_rfq_register_marks_closed_once_request_moves_past_pricing(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    rfq, request_id, request_number, project_id, item_id, supplier = _rfq_ready_for_comparison(
+        s, suffix, admin_headers,
+    )
+    project = next(p for p in s.get(f"{API}/projects", headers=admin_headers).json() if p["id"] == project_id)
+    comparison = s.post(f"{API}/price-comparisons", json={
+        "project_id": project_id, "project_name": project["name"],
+        "source_request_id": request_id, "source_request_number": request_number,
+        "comparison_date": "2026-08-20", "rows": [{
+            "item_id": item_id, "product_name": "صنف RFQ من الدليل",
+            "supplier_id": supplier["id"], "quantity": 3, "unit": "قطعة",
+            "unit_price": 100, "availability": "available", "price_valid_until": "2099-12-31",
+            "selected_for_purchase": 1,
+        }],
+    }, headers=admin_headers).json()
+    approval = s.post(
+        f"{API}/workflow/approvals/from-comparison", headers={**INTERNAL_HEADERS, **admin_headers},
+        json={"comparison_id": comparison["id"], "created_by": "tester", "approval_type": "comparison_workflow"},
+    )
+    assert approval.status_code == 201, approval.text
+    # Creating the approval advances the source REQ past "pricing"
+    # (advance_request_milestone) - the register must reflect that live.
+    rows = s.get(RFQ_API, headers={**INTERNAL_HEADERS, **admin_headers}).json()
+    matching = _rfq_row(rows, rfq["id"])
+    assert matching["is_open"] is False
+    assert matching["status"] == "closed"
+
+
+def test_rfq_register_requires_authentication(s):
+    response = s.get(RFQ_API, headers=INTERNAL_HEADERS)
+    assert response.status_code == 401
+
+
 def _received_quotation_for_item(
     client, suffix, responsible_headers, unit_price, quotation_date="", item_id=None,
 ):
@@ -5982,6 +6709,50 @@ def test_item_last_formal_price_ignores_legacy_price_history(s):
     assert item_row["last_formal_supplier"] == ""
 
 
+def test_item_price_history_summary_aggregates_multiple_purchases_correctly(s):
+    """Direct regression guard for _price_history_summary_by_code()'s window
+    functions: with a single price_history row (the other tests above) a
+    broken GROUP BY/PARTITION could still coincidentally return the right
+    numbers - purchase_count, total_qty and total_value only prove
+    themselves correct across more than one row per item_code."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        admin_username = _make_admin(session, suffix)
+        item_id = _make_portal_item(session, suffix)
+        item = session.get(Item, item_id)
+        base_record_no = 20_000_000 + int(suffix, 16) % 1_000_000
+        session.add_all([
+            PriceHistory(
+                id=str(uuid.uuid4()), record_no=base_record_no,
+                date="2026-01-01", item_code=item.code, supplier="مورد أ",
+                quantity=2, unit_price=100, final_price=200,
+            ),
+            PriceHistory(
+                id=str(uuid.uuid4()), record_no=base_record_no + 1,
+                date="2026-01-10", item_code=item.code, supplier="مورد ب",
+                quantity=3, unit_price=150, final_price=450,
+            ),
+            PriceHistory(
+                id=str(uuid.uuid4()), record_no=base_record_no + 2,
+                date="2026-01-05", item_code=item.code, supplier="مورد ج",
+                quantity=1, unit_price=120, final_price=120,
+            ),
+        ])
+        session.commit()
+    admin_headers = _login_headers(s, admin_username)
+
+    items = s.get(f"{API}/items", headers=admin_headers).json()
+    item_row = next(row for row in items if row["id"] == item_id)
+    assert item_row["purchase_count"] == 3
+    assert item_row["total_qty"] == 6  # 2 + 3 + 1
+    assert item_row["total_value"] == 770  # 200 + 450 + 120
+    # "Last" is the most recent date (2026-01-10), not insertion order or
+    # highest price - the middle-inserted row is the correct answer here.
+    assert item_row["last_price"] == 150
+    assert item_row["last_date"] == "2026-01-10"
+    assert item_row["last_supplier"] == "مورد ب"
+
+
 def test_item_without_any_quotation_has_empty_formal_price(s):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
@@ -6045,6 +6816,177 @@ def test_last_formal_price_uses_the_most_recent_received_quotation(s):
     price = response.json()["prices"][f"{new_item_id}|{new_supplier['id']}"]
     assert price["unit_price"] == 1400
     assert price["date"] == "2026-08-10"
+
+
+def test_last_formal_prices_excludes_the_current_quotation_from_history(s):
+    """The comparison screen must never show a quotation as its own
+    "previous" price. Passing the current quotation id as the pairs token's
+    third segment excludes it, surfacing the genuinely older one instead."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-exclude-{suffix}", role="procurement_responsible")
+        own_item_id = _make_portal_item(session, suffix)
+    responsible_headers = _login_headers(s, f"rfq-exclude-{suffix}")
+    item_id, supplier, _rfq1, _previous_quotation = _received_quotation_for_item(
+        s, f"{suffix}-previous", responsible_headers, unit_price=100, quotation_date="2026-01-01",
+        item_id=own_item_id,
+    )
+    current_item_id, current_supplier, _rfq2, current_quotation = _received_quotation_for_item(
+        s, f"{suffix}-current", responsible_headers, unit_price=120, quotation_date="2026-08-10",
+        item_id=own_item_id,
+    )
+    assert current_item_id == item_id
+    assert current_supplier["id"] == supplier["id"]
+
+    # Without exclusion, the current (just-received) quotation would win as
+    # "latest" since it has the newer date.
+    unexcluded = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}"},
+    ).json()["prices"][f"{item_id}|{supplier['id']}"]
+    assert unexcluded["unit_price"] == 120
+
+    excluded = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}:{current_quotation['id']}"},
+    ).json()["prices"]
+    price = excluded[f"{item_id}|{supplier['id']}"]
+    assert price["unit_price"] == 100
+    assert price["quotation_id"] != current_quotation["id"]
+
+
+def test_last_formal_prices_ignores_other_supplier_and_other_item(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-cross-{suffix}", role="procurement_responsible")
+        item_a = _make_portal_item(session, f"{suffix}-a")
+        item_b = _make_portal_item(session, f"{suffix}-b")
+    responsible_headers = _login_headers(s, f"rfq-cross-{suffix}")
+    item_id_a, supplier_a, _rfq_a, _q_a = _received_quotation_for_item(
+        s, f"{suffix}-a", responsible_headers, unit_price=500, quotation_date="2026-05-01",
+        item_id=item_a,
+    )
+    item_id_b, supplier_b, _rfq_b, _q_b = _received_quotation_for_item(
+        s, f"{suffix}-b", responsible_headers, unit_price=700, quotation_date="2026-05-01",
+        item_id=item_b,
+    )
+    assert item_id_a != item_id_b
+    assert supplier_a["id"] == supplier_b["id"]  # helper always uses suppliers[0]
+
+    # item A + a DIFFERENT (real) supplier must not see item A's price.
+    other_supplier = s.get(f"{API}/suppliers", headers=responsible_headers).json()[1]
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id_a}:{other_supplier['id']},{item_id_b}:{supplier_a['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    prices = response.json()["prices"]
+    # Neither cross-item nor cross-supplier combination has ever been quoted.
+    assert f"{item_id_a}|{other_supplier['id']}" not in prices
+    # item B was quoted to supplier_a (== supplier_b) at 700, not item A's 500.
+    assert prices[f"{item_id_b}|{supplier_a['id']}"]["unit_price"] == 700
+
+
+def test_last_formal_prices_ignores_legacy_direct_purchase_price(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        admin_username = _make_admin(session, suffix)
+        item_id = _make_portal_item(session, suffix)
+        item = session.get(Item, item_id)
+        session.add(PriceHistory(
+            id=str(uuid.uuid4()), record_no=20_000_000 + int(suffix, 16) % 1_000_000,
+            date="2026-01-01", item_code=item.code, supplier="مورد شراء مباشر قديم",
+            quantity=1, unit_price=9999, final_price=9999,
+        ))
+        session.commit()
+    admin_headers = _login_headers(s, admin_username)
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
+
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=admin_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    assert f"{item_id}|{supplier['id']}" not in response.json()["prices"]
+
+
+def test_last_formal_prices_returns_nothing_for_a_never_quoted_pair(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        admin_username = _make_admin(session, suffix)
+        item_id = _make_portal_item(session, suffix)
+    admin_headers = _login_headers(s, admin_username)
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
+
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=admin_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["prices"] == {}
+
+
+def test_last_formal_prices_most_recent_of_three_wins(s):
+    """80 -> 90 -> current 120 must resolve to 90, the most recent
+    *previous* one - not 80 (older) and not 120 (the excluded current)."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-chain-{suffix}", role="procurement_responsible")
+        own_item_id = _make_portal_item(session, suffix)
+    responsible_headers = _login_headers(s, f"rfq-chain-{suffix}")
+    item_id, supplier, _rfq1, _q1 = _received_quotation_for_item(
+        s, f"{suffix}-1", responsible_headers, unit_price=80, quotation_date="2026-01-01",
+        item_id=own_item_id,
+    )
+    item_id2, supplier2, _rfq2, _q2 = _received_quotation_for_item(
+        s, f"{suffix}-2", responsible_headers, unit_price=90, quotation_date="2026-05-01",
+        item_id=own_item_id,
+    )
+    item_id3, supplier3, _rfq3, q3 = _received_quotation_for_item(
+        s, f"{suffix}-3", responsible_headers, unit_price=120, quotation_date="2026-08-10",
+        item_id=own_item_id,
+    )
+    assert item_id == item_id2 == item_id3
+    assert supplier["id"] == supplier2["id"] == supplier3["id"]
+
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": f"{item_id}:{supplier['id']}:{q3['id']}"},
+    )
+    assert response.status_code == 200, response.text
+    price = response.json()["prices"][f"{item_id}|{supplier['id']}"]
+    assert price["unit_price"] == 90
+
+
+def test_last_formal_prices_bulk_lookup_has_no_duplicate_or_cross_pair_results(s):
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal() as session:
+        _make_user(session, username=f"rfq-bulk-{suffix}", role="procurement_responsible")
+        item_a = _make_portal_item(session, f"{suffix}-a")
+        item_b = _make_portal_item(session, f"{suffix}-b")
+    responsible_headers = _login_headers(s, f"rfq-bulk-{suffix}")
+    item_id_a, supplier, _rfq_a, _q_a = _received_quotation_for_item(
+        s, f"{suffix}-a", responsible_headers, unit_price=200, quotation_date="2026-03-01",
+        item_id=item_a,
+    )
+    item_id_b, supplier_b, _rfq_b, _q_b = _received_quotation_for_item(
+        s, f"{suffix}-b", responsible_headers, unit_price=300, quotation_date="2026-03-01",
+        item_id=item_b,
+    )
+    assert supplier["id"] == supplier_b["id"]
+
+    # Same pair requested twice (as a real bulk caller might if two rows
+    # share an item+supplier) must not duplicate or alter the single result.
+    pairs = f"{item_id_a}:{supplier['id']},{item_id_a}:{supplier['id']},{item_id_b}:{supplier['id']}"
+    response = s.get(
+        f"{API}/price-comparisons/last-formal-prices", headers=responsible_headers,
+        params={"pairs": pairs},
+    )
+    assert response.status_code == 200, response.text
+    prices = response.json()["prices"]
+    assert len(prices) == 2
+    assert prices[f"{item_id_a}|{supplier['id']}"]["unit_price"] == 200
+    assert prices[f"{item_id_b}|{supplier['id']}"]["unit_price"] == 300
 
 
 def test_pdf_attachment_accepted_for_quotation(s):
@@ -6305,6 +7247,252 @@ def _make_approval_with_comparison(client, suffix, admin_headers, manual_item=Fa
     return response.json()["approval"], request_id, item_id, supplier
 
 
+def _make_two_supplier_comparison(
+    client, suffix, admin_headers, *, cheap_price=100, expensive_price=120,
+    select_expensive=True, cheap_availability="available", expensive_availability="available",
+    cheap_valid_until="2099-12-31", expensive_valid_until="2099-12-31",
+):
+    """A saved (not yet approved) comparison with ONE item quoted by TWO
+    different real suppliers at different prices, letting tests select
+    either the cheap or the expensive one. Returns (comparison_id, item_id,
+    supplier_cheap, supplier_expensive, request_id, project_id,
+    request_number)."""
+    request_id, request_number, project_id, item_id, _resp_headers = _make_pricing_request(client, suffix)
+    item = client.get(f"{API}/items", headers=admin_headers).json()[0]
+    suppliers = client.get(f"{API}/suppliers", headers=admin_headers).json()
+    supplier_cheap, supplier_expensive = suppliers[0], suppliers[1]
+    project = next(p for p in client.get(f"{API}/projects", headers=admin_headers).json() if p["id"] == project_id)
+    comparison = client.post(f"{API}/price-comparisons", json={
+        "project_id": project_id, "project_name": project["name"],
+        "source_request_id": request_id, "source_request_number": request_number,
+        "comparison_date": "2026-08-20", "rows": [
+            {
+                "item_id": item["id"], "product_name": "صنف RFQ من الدليل",
+                "supplier_id": supplier_cheap["id"], "quantity": 3, "unit": "قطعة",
+                "unit_price": cheap_price, "availability": cheap_availability,
+                "price_valid_until": cheap_valid_until,
+                "selected_for_purchase": 0 if select_expensive else 1,
+            },
+            {
+                "item_id": item["id"], "product_name": "صنف RFQ من الدليل",
+                "supplier_id": supplier_expensive["id"], "quantity": 3, "unit": "قطعة",
+                "unit_price": expensive_price, "availability": expensive_availability,
+                "price_valid_until": expensive_valid_until,
+                "selected_for_purchase": 1 if select_expensive else 0,
+            },
+        ],
+    }, headers=admin_headers)
+    assert comparison.status_code == 200, comparison.text
+    return (
+        comparison.json()["id"], item["id"], supplier_cheap, supplier_expensive,
+        request_id, project_id, request_number,
+    )
+
+
+def _send_for_approval(client, admin_headers, comparison_id, decision_reasons=None):
+    return client.post(
+        f"{API}/workflow/approvals/from-comparison",
+        headers={**INTERNAL_HEADERS, **admin_headers},
+        json={
+            "comparison_id": comparison_id, "engineer_name": "مراجع",
+            "created_by": "tester", "approval_type": "comparison_workflow",
+            "decision_reasons": decision_reasons or [],
+        },
+    )
+
+
+def test_cheapest_supplier_selection_needs_no_reason(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=False,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id)
+    assert response.status_code == 201, response.text
+    assert response.json()["approval"]["final_total"] == 300  # 3 x 100, no VAT/shipping
+
+
+def test_non_cheapest_supplier_selection_is_rejected_without_a_reason(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id)
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    flagged = detail["non_cheapest_items"]
+    assert len(flagged) == 1
+    assert flagged[0]["item_id"] == item_id
+    assert flagged[0]["selected_total"] == 360  # 3 x 120
+    assert flagged[0]["cheapest_total"] == 300  # 3 x 100
+    assert flagged[0]["difference"] == 60
+
+
+def test_non_cheapest_supplier_with_valid_predefined_reason_is_accepted(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "better_delivery", "reason_text": ""},
+    ])
+    assert response.status_code == 201, response.text
+
+
+def test_other_reason_without_text_is_rejected(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "other", "reason_text": ""},
+    ])
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["non_cheapest_items"][0]["item_id"] == item_id
+
+
+def test_other_reason_with_text_is_accepted(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "other", "reason_text": "طلب خاص من العميل"},
+    ])
+    assert response.status_code == 201, response.text
+
+
+def test_exact_tie_needs_no_reason(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, cheap_price=100, expensive_price=100, select_expensive=True,
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id)
+    assert response.status_code == 201, response.text
+
+
+def test_incomplete_cheaper_supplier_does_not_trigger_a_warning(s, admin_headers):
+    """A cheaper row that is unavailable/expired is never "cheapest valid" -
+    selecting the only complete/available supplier must not require a reason
+    even though its raw number is higher."""
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, cheap_price=50, expensive_price=120,
+        select_expensive=True, cheap_availability="unavailable",
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id)
+    assert response.status_code == 201, response.text
+
+
+def test_price_change_after_flagging_reevaluates_cheapest_from_live_data(s, admin_headers):
+    """Item-level "cheapest" is the authoritative row-level final_total
+    (quantity x unit_price) - the same logic "Choose cheapest complete
+    offer" and is_lowest_final_total already use. Supplier-offer-level
+    commercial adjustments (discount/tax/shipping/other) are aggregated
+    across the WHOLE supplier offer, never allocated per item, so they
+    never change which single item is cheapest - only a real per-item
+    price/selection change does. This proves the backend re-evaluates from
+    live PriceComparisonRow data every time, not a stale/cached verdict:
+    selecting the expensive supplier is flagged first, then a genuine
+    unit-price drop for that same supplier makes it the reasonless cheapest."""
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, supplier_cheap, supplier_expensive, req, project_id, request_number = (
+        _make_two_supplier_comparison(
+            s, suffix, admin_headers, cheap_price=100, expensive_price=110, select_expensive=True,
+        )
+    )
+    first_attempt = _send_for_approval(s, admin_headers, comparison_id)
+    assert first_attempt.status_code == 422, first_attempt.text
+    flagged = first_attempt.json()["detail"]["non_cheapest_items"][0]
+    assert flagged["selected_supplier_id"] == supplier_expensive["id"]
+    assert flagged["cheapest_supplier_id"] == supplier_cheap["id"]
+    assert flagged["selected_total"] == 330
+    assert flagged["cheapest_total"] == 300
+
+    # supplier_expensive drops its real unit price below supplier_cheap's -
+    # it is now genuinely the cheapest, live in the comparison data.
+    updated = s.put(f"{API}/price-comparisons/{comparison_id}", headers=admin_headers, json={
+        "project_id": project_id, "project_name": "", "source_request_id": req,
+        "source_request_number": request_number, "comparison_date": "2026-08-20",
+        "rows": [
+            {"item_id": item_id, "product_name": "صنف RFQ من الدليل", "supplier_id": supplier_cheap["id"],
+             "quantity": 3, "unit": "قطعة", "unit_price": 100, "availability": "available",
+             "price_valid_until": "2099-12-31", "selected_for_purchase": 0},
+            {"item_id": item_id, "product_name": "صنف RFQ من الدليل", "supplier_id": supplier_expensive["id"],
+             "quantity": 3, "unit": "قطعة", "unit_price": 80, "availability": "available",
+             "price_valid_until": "2099-12-31", "selected_for_purchase": 1},
+        ],
+    })
+    assert updated.status_code == 200, updated.text
+    second_attempt = _send_for_approval(s, admin_headers, comparison_id)
+    assert second_attempt.status_code == 201, second_attempt.text
+
+
+def test_client_supplied_fake_cheapest_total_is_ignored(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, *_rest = _make_two_supplier_comparison(
+        s, suffix, admin_headers, select_expensive=True,
+    )
+    # A client trying to spoof the comparison as if it were already cheapest
+    # by claiming a reason with fabricated totals must not bypass anything -
+    # the server only reads reason_code/reason_text, never trusts client totals.
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "better_delivery", "reason_text": "",
+         "cheapest_total": 999999, "selected_total": 1},
+    ])
+    assert response.status_code == 201, response.text
+    approval = response.json()["approval"]
+    assert approval["final_total"] == 360  # still the REAL selected total, not spoofed
+
+
+def test_non_cheapest_decision_snapshot_persists_correct_totals_and_reason(s, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    comparison_id, item_id, supplier_cheap, supplier_expensive, req, project_id, request_number = (
+        _make_two_supplier_comparison(
+            s, suffix, admin_headers, select_expensive=True,
+        )
+    )
+    response = _send_for_approval(s, admin_headers, comparison_id, decision_reasons=[
+        {"item_id": item_id, "reason_code": "better_delivery", "reason_text": "تسليم أسرع بيومين"},
+    ])
+    assert response.status_code == 201, response.text
+    approval_id = response.json()["approval"]["id"]
+
+    timeline = s.get(
+        f"{API}/workflow/approvals/{approval_id}", headers={**INTERNAL_HEADERS, **admin_headers},
+    ).json()["timeline"]
+    event = next(row for row in timeline if row["event_type"] == "non_cheapest_supplier_selected")
+    decision = event["metadata_json"]["decisions"][0]
+    assert decision["item_id"] == item_id
+    assert decision["selected_supplier_id"] == supplier_expensive["id"]
+    assert decision["cheapest_supplier_id"] == supplier_cheap["id"]
+    assert decision["selected_total"] == 360
+    assert decision["cheapest_total"] == 300
+    assert decision["difference"] == 60
+    assert decision["reason_code"] == "better_delivery"
+    assert decision["reason_text"] == "تسليم أسرع بيومين"
+
+    # The price history changing afterward must never rewrite what was true
+    # at decision time.
+    mutate = s.put(f"{API}/price-comparisons/{comparison_id}", headers=admin_headers, json={
+        "project_id": project_id, "project_name": "", "source_request_id": req,
+        "source_request_number": request_number, "comparison_date": "2026-08-20",
+        "rows": [
+            {"item_id": item_id, "product_name": "صنف RFQ من الدليل", "supplier_id": supplier_cheap["id"],
+             "quantity": 3, "unit": "قطعة", "unit_price": 9999, "availability": "available",
+             "price_valid_until": "2099-12-31", "selected_for_purchase": 0},
+            {"item_id": item_id, "product_name": "صنف RFQ من الدليل", "supplier_id": supplier_expensive["id"],
+             "quantity": 3, "unit": "قطعة", "unit_price": 120, "availability": "available",
+             "price_valid_until": "2099-12-31", "selected_for_purchase": 1},
+        ],
+    })
+    assert mutate.status_code == 200, mutate.text
+    unchanged_timeline = s.get(
+        f"{API}/workflow/approvals/{approval_id}", headers={**INTERNAL_HEADERS, **admin_headers},
+    ).json()["timeline"]
+    unchanged_event = next(row for row in unchanged_timeline if row["event_type"] == "non_cheapest_supplier_selected")
+    assert unchanged_event["metadata_json"]["decisions"][0]["cheapest_total"] == 300
+
+
 def test_comparison_delete_is_blocked_after_approval_traceability_exists(s, admin_headers):
     approval, _request_id, _item_id, _supplier = _make_approval_with_comparison(
         s, uuid.uuid4().hex[:8], admin_headers,
@@ -6507,21 +7695,33 @@ def test_review_workspace_decision_role_gating_reuses_existing_endpoint(s, admin
     manager_headers = _login_headers(s, f"rw-dec-mgr-{suffix}")
     responsible_headers = _login_headers(s, f"rw-dec-resp-{suffix}")
 
+    # Under the ERP role hierarchy, commercial_manager and
+    # procurement_responsible both sit above procurement_engineer, so they
+    # inherit its technical-stage decision permission - each gets its own
+    # fresh approval so acting on it doesn't disturb the others' fixtures.
+    approval_for_manager, *_rest = _make_approval_with_comparison(s, f"{suffix}-mgr", admin_headers)
+    manager_decision = s.post(
+        f"{API}/workflow/approvals/{approval_for_manager['id']}/decision",
+        headers={**INTERNAL_HEADERS, **manager_headers}, json={"decision": "approved"},
+    )
+    assert manager_decision.status_code == 200, manager_decision.text
+    assert manager_decision.json()["approval"]["approval_stage"] == APPROVAL_STAGE_EXPENDITURE_APPROVAL
+
+    approval_for_responsible, *_rest = _make_approval_with_comparison(s, f"{suffix}-resp", admin_headers)
+    # procurement_responsible may view the full file and, since it also
+    # inherits the engineer stage, decide it too.
+    assert s.get(
+        WORKSPACE_URL(approval_for_responsible["id"]), headers={**INTERNAL_HEADERS, **responsible_headers},
+    ).status_code == 200
+    responsible_decision = s.post(
+        f"{API}/workflow/approvals/{approval_for_responsible['id']}/decision",
+        headers={**INTERNAL_HEADERS, **responsible_headers}, json={"decision": "approved"},
+    )
+    assert responsible_decision.status_code == 200, responsible_decision.text
+    assert responsible_decision.json()["approval"]["approval_stage"] == APPROVAL_STAGE_EXPENDITURE_APPROVAL
+
     approval, *_rest = _make_approval_with_comparison(s, suffix, admin_headers)
     decision_url = f"{API}/workflow/approvals/{approval['id']}/decision"
-
-    # commercial_manager cannot act at the technical (engineer) stage.
-    denied = s.post(decision_url, headers={**INTERNAL_HEADERS, **manager_headers}, json={"decision": "approved"})
-    assert denied.status_code == 403
-
-    # procurement_responsible may view the full file but not decide it.
-    assert s.get(
-        WORKSPACE_URL(approval["id"]), headers={**INTERNAL_HEADERS, **responsible_headers},
-    ).status_code == 200
-    denied_responsible = s.post(
-        decision_url, headers={**INTERNAL_HEADERS, **responsible_headers}, json={"decision": "approved"},
-    )
-    assert denied_responsible.status_code == 403
 
     # procurement_engineer executes the technical-stage decision.
     approved = s.post(
@@ -6530,6 +7730,13 @@ def test_review_workspace_decision_role_gating_reuses_existing_endpoint(s, admin
     )
     assert approved.status_code == 200, approved.text
     assert approved.json()["approval"]["approval_stage"] == APPROVAL_STAGE_EXPENDITURE_APPROVAL
+
+    # procurement_responsible does not inherit commercial_manager's
+    # financial-authorization stage (no upward inheritance).
+    denied_responsible_commercial = s.post(
+        decision_url, headers={**INTERNAL_HEADERS, **responsible_headers}, json={"decision": "approved"},
+    )
+    assert denied_responsible_commercial.status_code == 403
 
     # commercial_manager now executes the commercial stage.
     commercial = s.post(
@@ -6618,7 +7825,7 @@ def test_po_read_authorization_matrix(s, admin_headers):
     assert s.get(PO_API()).status_code == 401
 
 
-def test_po_engineer_and_manager_cannot_finalize(s, admin_headers):
+def test_po_engineer_cannot_finalize_manager_inherits_finalize(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal() as session:
         _make_user(session, username=f"po-fin-eng-{suffix}", role="procurement_engineer")
@@ -6627,8 +7834,13 @@ def test_po_engineer_and_manager_cannot_finalize(s, admin_headers):
     manager_headers = _login_headers(s, f"po-fin-mgr-{suffix}")
     po, *_rest = _make_draft_purchase_order(s, suffix, admin_headers)
 
+    # procurement_engineer sits below procurement_responsible in the ERP
+    # hierarchy and does not inherit it - still forbidden.
     assert s.post(f"{API}/purchase-orders/{po['id']}/finalize", headers=engineer_headers, json={}).status_code == 403
-    assert s.post(f"{API}/purchase-orders/{po['id']}/finalize", headers=manager_headers, json={}).status_code == 403
+    # commercial_manager sits above procurement_responsible and inherits its
+    # finalize permission.
+    finalized = s.post(f"{API}/purchase-orders/{po['id']}/finalize", headers=manager_headers, json={})
+    assert finalized.status_code == 200, finalized.text
 
 
 def test_po_client_role_spoofing_cannot_grant_finalize(s, admin_headers):
@@ -6716,8 +7928,14 @@ def test_po_delete_authorization_matrix(s, admin_headers):
     po_resp, *_ = _make_draft_purchase_order(s, f"{suffix}-resp", admin_headers)
     po_admin, *_ = _make_draft_purchase_order(s, f"{suffix}-admin", admin_headers)
 
+    # procurement_engineer sits below procurement_responsible and does not
+    # inherit it - still forbidden.
     assert s.delete(f"{API}/purchase-orders/{po_eng['id']}", headers=engineer_headers).status_code == 403
-    assert s.delete(f"{API}/purchase-orders/{po_mgr['id']}", headers=manager_headers).status_code == 403
+    # commercial_manager sits above procurement_responsible and inherits its
+    # delete permission.
+    deleted_by_manager = s.delete(f"{API}/purchase-orders/{po_mgr['id']}", headers=manager_headers)
+    assert deleted_by_manager.status_code == 200, deleted_by_manager.text
+    assert s.get(f"{API}/purchase-orders/{po_mgr['id']}", headers=admin_headers).status_code == 404
     assert s.delete(f"{API}/purchase-orders/{po_portal['id']}", headers=portal_headers).status_code == 403
     assert s.delete(f"{API}/purchase-orders/{po_anon['id']}").status_code == 401
 
@@ -7263,8 +8481,9 @@ def test_po_receipt_authorization_matrix(s, admin_headers):
     def body(key):
         return {"receipt_type": "full", "idempotency_key": key}
 
+    # procurement_engineer sits below procurement_responsible and does not
+    # inherit it - still forbidden.
     assert s.post(url, headers=engineer_headers, json=body(f"eng-{suffix}")).status_code == 403
-    assert s.post(url, headers=manager_headers, json=body(f"mgr-{suffix}")).status_code == 403
     assert s.post(url, headers=portal_headers, json=body(f"portal-{suffix}")).status_code == 403
     assert s.post(url, json=body(f"anon-{suffix}")).status_code == 401
 
@@ -7277,6 +8496,16 @@ def test_po_receipt_authorization_matrix(s, admin_headers):
     completed = s.post(url, headers=responsible_headers, json=body(f"resp-{suffix}"))
     assert completed.status_code == 200, completed.text
     assert completed.json()["purchase_order"]["status"] == "completed"
+
+    # commercial_manager sits above procurement_responsible and inherits its
+    # receiving permission (checked on a separate PO since the one above is
+    # already fully received).
+    po_for_manager, *_rest = _make_in_delivery_purchase_order(s, f"{suffix}-mgr", admin_headers)
+    completed_by_manager = s.post(
+        RECEIPTS_API(po_for_manager["id"]), headers=manager_headers, json=body(f"mgr-{suffix}"),
+    )
+    assert completed_by_manager.status_code == 200, completed_by_manager.text
+    assert completed_by_manager.json()["purchase_order"]["status"] == "completed"
 
 
 def test_po_receipt_quantity_and_item_safety(s, admin_headers):
@@ -7739,6 +8968,154 @@ def test_dashboard_attention_items_are_filtered_by_role_ownership(s, admin_heade
     assert has_pending_approval(_dashboard(s, engineer_headers)) is False
 
 
+def test_dashboard_attention_items_expose_deep_link_ids(s, admin_headers):
+    """Every "Needs my attention" item must carry the exact-record ids the
+    frontend deep-link helper (getFollowUpTarget, frontend/src/lib/
+    followUpNavigation.js) needs to route straight to the record and stage
+    where it is actually stuck, instead of a bare list page. This is the
+    audited action-type -> id-field table:
+        delivery_problem              -> purchase_order_id (+ stage=receiving)
+        overdue_payment                -> purchase_order_id (+ stage=payments)
+        partial_received               -> purchase_order_id (+ stage=receiving)
+        awaiting_supplier_confirmation -> purchase_order_id
+        rfq_past_deadline               -> rfq_id
+        quotation_missing               -> rfq_id
+        sourcing_required               -> request_id (+ stage=sourcing)
+        needs_clarification             -> request_id (+ stage=clarification)
+        request_review                  -> request_id (+ stage=technical-review)
+        pending_approval                -> approval_id (+ stage=<approval_stage>)
+    needs_clarification is verified indirectly, by proving request_review's
+    identical construction is correct - see the comment at that assertion.
+    """
+    suffix = uuid.uuid4().hex[:8]
+
+    def item_for(dash, item_type, reference):
+        return next(
+            row for row in dash["attention_items"]
+            if row["type"] == item_type and row["reference"] == reference
+        )
+
+    def item_or_ambient(dash, item_type, reference):
+        """Prefer the exact row this test just created; some categories sit
+        late/uncapped-per-type in the attention_items builder (server.py) and
+        can be pushed out of the shared top-20 window by this session's
+        accumulated data by the time this test runs. Falling back to any
+        ambient row of the same type still proves the enrichment is correct,
+        since every row of a given type is built by the same code path."""
+        exact = next(
+            (row for row in dash["attention_items"] if row["type"] == item_type and row["reference"] == reference),
+            None,
+        )
+        if exact is not None:
+            return exact, True
+        ambient = next((row for row in dash["attention_items"] if row["type"] == item_type), None)
+        assert ambient is not None, f"expected at least one {item_type} item"
+        return ambient, False
+
+    # sourcing_required - previously exposed only request_number, no id.
+    request_id, request_number, *_rest = _make_pricing_request(s, f"{suffix}-src")
+    dash = _dashboard(s, admin_headers)
+    sourcing_item = item_for(dash, "sourcing_required", request_number)
+    assert sourcing_item["request_id"] == request_id
+    assert sourcing_item["entity_type"] == "incoming_request"
+    assert sourcing_item["entity_id"] == request_id
+    assert sourcing_item["action_type"] == "sourcing_required"
+    assert sourcing_item["stage"] == "sourcing"
+
+    # needs_clarification / request_review - same gap, plain status flips.
+    # Both are built by the *same* if/elif block in server.py from a single,
+    # unsorted, uncapped-per-category scan of every incoming request, then
+    # the combined attention_items list is truncated to the top 20 (per role,
+    # after this shared test session has accumulated a long tail of "new"/
+    # "under_review" fixture requests from unrelated tests). A row inserted
+    # here - necessarily the newest by insertion order - is therefore not
+    # guaranteed a seat in that capped view, so instead of asserting on our
+    # own freshly-created row (flaky at full-suite scale), we assert the
+    # id-field shape on whichever ambient request_review item the role's
+    # capped list already surfaces - it is built by the exact same code path
+    # (see server.py's attention_items request_row status loop), so this
+    # equally proves the needs_clarification branch, which sets the same
+    # entity_type/entity_id/request_id/stage keys one line above it.
+    with SessionLocal() as session:
+        _make_user(session, username=f"dash-deep-link-eng-{suffix}", role="procurement_engineer")
+    engineer_headers = _login_headers(s, f"dash-deep-link-eng-{suffix}")
+    dash_for_engineer = _dashboard(s, engineer_headers)
+    ambient_review_item = next(
+        (row for row in dash_for_engineer["attention_items"] if row["type"] == "request_review"), None,
+    )
+    assert ambient_review_item is not None, "expected at least one request_review item for procurement_engineer"
+    assert ambient_review_item["entity_type"] == "incoming_request"
+    assert ambient_review_item["request_id"] == ambient_review_item["entity_id"]
+    assert ambient_review_item["stage"] == "technical-review"
+
+    # pending_approval - previously exposed only approval_number, no id.
+    # Same shared-session cap concern as above - backdate it (as the existing
+    # role-ownership test above already does) and read with the owning
+    # engineer role so it isn't crowded out of the top-20/top-8 windows.
+    approval, *_rest = _make_approval_with_comparison(s, f"{suffix}-appr", admin_headers)
+    with SessionLocal() as session:
+        session.get(EngineerApproval, approval["id"]).created_at = "2000-01-01T00:00:00Z"
+        session.commit()
+    dash_after_approval = _dashboard(s, engineer_headers)
+    approval_item = item_for(dash_after_approval, "pending_approval", approval["approval_number"])
+    assert approval_item["approval_id"] == approval["id"]
+    assert approval_item["entity_type"] == "approval"
+    assert approval_item["entity_id"] == approval["id"]
+    assert approval_item["stage"]
+
+    # rfq_past_deadline - already had the id embedded only in `path`; must
+    # now also be an explicit field.
+    supplier = s.get(f"{API}/suppliers", headers=admin_headers).json()[0]
+    late_request_id, *_rest = _make_pricing_request(s, f"{suffix}-late")
+    late_rfq = s.post(RFQ_API, headers={**INTERNAL_HEADERS, **admin_headers}, json={
+        "source_request_id": late_request_id, "deadline": "2020-01-01", "actor": "t",
+    }).json()["rfq"]
+    s.post(
+        f"{RFQ_API}/{late_rfq['id']}/suppliers", headers={**INTERNAL_HEADERS, **admin_headers},
+        json={"supplier_id": supplier["id"], "actor": "t"},
+    )
+    dash_after_rfq = _dashboard(s, admin_headers)
+    rfq_item = item_for(dash_after_rfq, "rfq_past_deadline", late_rfq["rfq_number"])
+    assert rfq_item["rfq_id"] == late_rfq["id"]
+    assert rfq_item["entity_type"] == "rfq"
+
+    # PO-linked types - delivery_problem / awaiting_supplier_confirmation.
+    problem_po, *_rest = _make_in_delivery_purchase_order(s, f"{suffix}-problem", admin_headers)
+    problem = s.post(RECEIPTS_API(problem_po["id"]), headers=admin_headers, json={
+        "receipt_type": "problem", "idempotency_key": f"deep-link-problem-{suffix}", "problem_reason": "تالف",
+    })
+    assert problem.status_code == 200, problem.text
+    sent_po, *_rest = _make_draft_purchase_order(s, f"{suffix}-sent", admin_headers)
+    for status in ("approved", "sent"):
+        advanced = s.patch(
+            f"{API}/purchase-orders/{sent_po['id']}/status", headers=admin_headers, json={"status": status},
+        )
+        assert advanced.status_code == 200, advanced.text
+        sent_po = advanced.json()
+    dash_after_po = _dashboard(s, admin_headers)
+    delivery_item = item_for(dash_after_po, "delivery_problem", problem_po["po_number"])
+    assert delivery_item["purchase_order_id"] == problem_po["id"]
+    assert delivery_item["entity_type"] == "purchase_order"
+    assert delivery_item["stage"] == "receiving"
+    # awaiting_supplier_confirmation sits later in the category order (after
+    # delivery/payment/rfq/sourcing/pending_approval), so on the unscoped
+    # admin view it can be squeezed out entirely by this shared session's
+    # accumulated data. Its owner is procurement_responsible - see
+    # ATTENTION_TYPE_ROLE_OWNERS in server.py - and role filtering happens
+    # before the top-20 cap, so read it from that role's own view instead.
+    with SessionLocal() as session:
+        _make_user(session, username=f"dash-deep-link-resp-{suffix}", role="procurement_responsible")
+    responsible_headers = _login_headers(s, f"dash-deep-link-resp-{suffix}")
+    dash_for_responsible = _dashboard(s, responsible_headers)
+    confirmation_item, confirmation_is_exact = item_or_ambient(
+        dash_for_responsible, "awaiting_supplier_confirmation", sent_po["po_number"],
+    )
+    assert confirmation_item["entity_type"] == "purchase_order"
+    assert confirmation_item["purchase_order_id"] == confirmation_item["entity_id"]
+    if confirmation_is_exact:
+        assert confirmation_item["purchase_order_id"] == sent_po["id"]
+
+
 def test_dashboard_project_summary_uses_formal_po_totals_only(s, admin_headers, ids):
     """Also stands in for the multi-PO/project safety guarantee, whose core
     invariant (a REQ only completes once ALL its formal POs are completed)
@@ -7888,8 +9265,8 @@ def test_daily_report_includes_requests_received_for_the_selected_date_only(s, a
 def test_daily_report_includes_purchase_orders_issued_for_the_selected_date_only(s, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     with SessionLocal.begin() as session:
-        in_order = _seed_dpr_po(session, DPR_DATE, po_number=f"T-DPR-PO-IN-{suffix}", final_total=1500)
-        out_order = _seed_dpr_po(session, DPR_OTHER_DATE, po_number=f"T-DPR-PO-OUT-{suffix}", final_total=1500)
+        _seed_dpr_po(session, DPR_DATE, po_number=f"T-DPR-PO-IN-{suffix}", final_total=1500)
+        _seed_dpr_po(session, DPR_OTHER_DATE, po_number=f"T-DPR-PO-OUT-{suffix}", final_total=1500)
 
     body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
     po_numbers = [row["po_number"] for row in body["sections"]["purchase_orders_issued"]]
@@ -7899,6 +9276,45 @@ def test_daily_report_includes_purchase_orders_issued_for_the_selected_date_only
     assert row["final_total"] == 1500
     assert row["item_count"] == 1
     assert row["payment_status"] == "unpaid"
+
+
+def _seed_dpr_comparison(session, report_date, *, supplier_name="مورد مقارنة التقرير اليومي", selected=True):
+    comparison_id = str(uuid.uuid4())
+    timestamp = f"{report_date}T09:00:00+00:00"
+    session.add(PriceComparison(
+        id=comparison_id, comparison_number=f"T-DPR-CMP-{uuid.uuid4().hex[:8]}",
+        project_name="مشروع التقرير اليومي", customer_name="عميل التقرير اليومي",
+        comparison_date=report_date, created_at=timestamp, updated_at=timestamp,
+    ))
+    session.add(PriceComparisonRow(
+        id=str(uuid.uuid4()), comparison_id=comparison_id, position=1,
+        item_code=f"T-DPR-ITM-{uuid.uuid4().hex[:8]}", product_name="صنف مقارنة",
+        unit="قطعة", supplier_code="", supplier_name=supplier_name,
+        quantity=2, unit_price=100, availability="available",
+        price_valid_until="2099-01-01", selected_for_purchase=1 if selected else 0,
+    ))
+    return comparison_id
+
+
+def test_daily_report_sourcing_activity_includes_a_price_comparison_supplier_row(s, admin_headers):
+    """Regression guard for the batched _comparison_activity_by_id() helper:
+    confirms it produces the same per-supplier rows/selection/total the old
+    per-comparison _detail() call did, since no existing test covered this
+    section's "comparison" kind rows before this fix."""
+    suffix = uuid.uuid4().hex[:8]
+    with SessionLocal.begin() as session:
+        _seed_dpr_comparison(session, DPR_DATE, supplier_name=f"مورد-{suffix}")
+        _seed_dpr_comparison(session, DPR_OTHER_DATE, supplier_name=f"مورد-اخرى-{suffix}")
+
+    body = s.get(DAILY_REPORT_API, params={"date": DPR_DATE}, headers=admin_headers).json()
+    comparison_rows = [
+        row for row in body["sections"]["sourcing_activity"] if row["kind"] == "comparison"
+    ]
+    row = next(row for row in comparison_rows if row["supplier_name"] == f"مورد-{suffix}")
+    assert not any(row["supplier_name"] == f"مورد-اخرى-{suffix}" for row in comparison_rows)
+    assert row["is_complete"] is True
+    assert row["offer_total"] == 200
+    assert row["selected"] is True
 
 
 def test_daily_report_payment_totals_ignore_legacy_direct_payments(s, admin_headers):
@@ -8034,8 +9450,12 @@ def test_daily_report_role_access_matrix(s, admin_headers):
 
     date = "2018-06-12"
     notes_body = {"general_notes": "x", "key_risks": "", "follow_up_notes": ""}
+    # procurement_engineer sits below procurement_responsible and does not
+    # inherit it (no upward inheritance) - still forbidden.
     assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=engineer_headers, json=notes_body).status_code == 403
-    assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=commercial_headers, json=notes_body).status_code == 403
+    # commercial_manager sits above procurement_responsible and inherits its
+    # notes-management permission.
+    assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=commercial_headers, json=notes_body).status_code == 200
     assert s.put(f"{DAILY_REPORT_API}/{date}/notes", headers=responsible_headers, json=notes_body).status_code == 200
     assert s.post(f"{DAILY_REPORT_API}/{date}/close", headers=engineer_headers).status_code == 403
 
@@ -8078,3 +9498,47 @@ def test_daily_report_close_then_reopen_and_no_duplicate_report_per_date(s, admi
     with SessionLocal() as session:
         count = session.query(DailyReport).filter(DailyReport.report_date == date).count()
     assert count == 1
+
+
+def test_daily_report_caches_sections_only_once_closed_and_invalidates_on_reopen(s, admin_headers):
+    date = "2018-06-20"
+    with SessionLocal.begin() as session:
+        _seed_dpr_po(session, date, po_number=f"T-DPR-CACHE-1-{uuid.uuid4().hex[:8]}", final_total=100)
+
+    # Open/live: never cached - a second PO landing on the same date before
+    # any close must show up on the very next read.
+    first_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert first_read["summary"]["purchase_orders_issued_value"] == 100
+    with SessionLocal.begin() as session:
+        _seed_dpr_po(session, date, po_number=f"T-DPR-CACHE-2-{uuid.uuid4().hex[:8]}", final_total=50)
+    second_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert second_read["summary"]["purchase_orders_issued_value"] == 150
+
+    close = s.post(f"{DAILY_REPORT_API}/{date}/close", headers=admin_headers)
+    assert close.status_code == 200, close.text
+    closed_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert closed_read["summary"]["purchase_orders_issued_value"] == 150
+    assert len(closed_read["sections"]["purchase_orders_issued"]) == 2
+
+    # Closed: a third PO backdated onto this date must NOT appear on a
+    # repeat read - proves the cached body is actually being served, not
+    # recomputed.
+    with SessionLocal.begin() as session:
+        _seed_dpr_po(session, date, po_number=f"T-DPR-CACHE-3-{uuid.uuid4().hex[:8]}", final_total=999)
+    still_cached = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert still_cached["sections"]["purchase_orders_issued"] == closed_read["sections"]["purchase_orders_issued"]
+    assert len(still_cached["sections"]["purchase_orders_issued"]) == 2
+
+    # Reopen invalidates: the third PO must now be visible immediately.
+    reopened = s.post(f"{DAILY_REPORT_API}/{date}/reopen", headers=admin_headers)
+    assert reopened.status_code == 200, reopened.text
+    reopened_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert len(reopened_read["sections"]["purchase_orders_issued"]) == 3
+    assert reopened_read["summary"]["purchase_orders_issued_value"] == 1149
+
+    # Re-closing snapshots the new state, not the first close's stale cache.
+    reclose = s.post(f"{DAILY_REPORT_API}/{date}/close", headers=admin_headers)
+    assert reclose.status_code == 200, reclose.text
+    reclosed_read = s.get(DAILY_REPORT_API, params={"date": date}, headers=admin_headers).json()
+    assert len(reclosed_read["sections"]["purchase_orders_issued"]) == 3
+    assert reclosed_read["summary"]["purchase_orders_issued_value"] == 1149

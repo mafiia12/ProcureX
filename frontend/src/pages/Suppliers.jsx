@@ -120,6 +120,7 @@ export default function Suppliers() {
       emptyTitle={tr("لا يوجد موردون", "No suppliers")}
       emptyDescription={tr("ابدأ بإضافة أول مورد.", "Start by adding your first supplier.")}
       compactManagement
+      paginated
       endpoint="suppliers"
       listParams={{ include_procurement: true }}
       testPrefix="suppliers"

@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 try:
+    from . import diagnostics
+except ImportError:
+    import diagnostics
+
+try:
     from .db_migrations import (
         migrate_authentication, migrate_site_portal_requests, migrate_site_portal_attachments,
         migrate_business_code_sequences, migrate_incoming_requests,
@@ -36,6 +42,7 @@ try:
         migrate_daily_reports,
         migrate_whatsapp_intake,
         migrate_whatsapp_settings_and_source,
+        migrate_returned_item_corrections,
     )
 except ImportError:
     from db_migrations import (
@@ -51,6 +58,7 @@ except ImportError:
         migrate_daily_reports,
         migrate_whatsapp_intake,
         migrate_whatsapp_settings_and_source,
+        migrate_returned_item_corrections,
     )
 
 
@@ -429,6 +437,55 @@ MODELS = {
 }
 
 
+def postgres_engine_options() -> Dict[str, Any]:
+    """Pool and server-side timeout settings for the PostgreSQL engine,
+    read from the environment (see .env.example / deploy docs)."""
+    options: Dict[str, Any] = {}
+    # SQLAlchemy's pool_size=5/max_overflow=10 defaults were never chosen
+    # against ProcureX's actual deployment: two separate app instances
+    # (procurex-public-api, procurex-erp-api - see render.yaml) each open
+    # their own pool against the same Postgres database, so the real ceiling
+    # is instances x (pool_size + max_overflow), which must be verified
+    # against that Postgres plan's actual max_connections before either
+    # instance count or pool size changes (see performance audit, section
+    # "POSTGRESQL-SPECIFIC AUDIT" in docs/performance-reliability-audit.md -
+    # not measured here since this audit had no Postgres instance to test
+    # against). These env vars make the values tunable without a code change.
+    # pool_recycle was previously -1 (never recycle) - a real gap against a
+    # hosted Postgres that may silently drop idle connections server-side.
+    #
+    # Defaults below were then measured against a disposable Postgres (see
+    # docs/production-capacity-plan.md): no request ever held more than 4
+    # active connections per worker up to 75 concurrent users, and even
+    # pool_size=1 served 20 users without a single pool wait. max_overflow
+    # 0/5/10 gave the same throughput and p95 and only opened more
+    # connections, so overflow is a small burst margin, not capacity.
+    # pool_timeout is short on purpose: most routes are `async def` running
+    # synchronous SQLAlchemy on the event loop, so a pool wait there freezes
+    # the whole worker - fail fast (503) instead.
+    options["pool_size"] = int(os.getenv("DB_POOL_SIZE", "5"))
+    options["max_overflow"] = int(os.getenv("DB_POOL_MAX_OVERFLOW", "2"))
+    options["pool_timeout"] = int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "5"))
+    options["pool_recycle"] = int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800"))
+    # Server-side bounds on every app statement. Measured: a single lock wait
+    # inside an async route froze every request on that worker for the full
+    # lock duration (15s in the test) because nothing bounded it. The slowest
+    # legitimate statement seen under load was under 200ms. 0 disables either
+    # bound. Alembic and migrate_sqlite_to_postgres.py build their own engines
+    # and are unaffected.
+    server_options = [
+        f"-c {name}={value}"
+        for name, value in (
+            ("statement_timeout", int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "10000"))),
+            ("lock_timeout", int(os.getenv("DB_LOCK_TIMEOUT_MS", "3000"))),
+        )
+        if value > 0
+    ]
+    if server_options:
+        options["connect_args"] = {"options": " ".join(server_options)}
+    return options
+
+
 DATABASE_URL = _database_url()
 IS_SQLITE = DATABASE_URL.startswith("sqlite:")
 engine_options = {
@@ -437,6 +494,8 @@ engine_options = {
 }
 if IS_SQLITE:
     engine_options["connect_args"] = {"check_same_thread": False}
+else:
+    engine_options.update(postgres_engine_options())
 engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -448,7 +507,20 @@ def _sqlite_pragmas(dbapi_connection, _connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
+
+
+@event.listens_for(engine, "before_cursor_execute")
+def _time_query_start(conn, cursor, statement, parameters, context, executemany):
+    context._procurex_query_start = time.perf_counter()
+
+
+@event.listens_for(engine, "after_cursor_execute")
+def _time_query_end(conn, cursor, statement, parameters, context, executemany):
+    start = getattr(context, "_procurex_query_start", None)
+    if start is not None:
+        diagnostics.record_query((time.perf_counter() - start) * 1000)
 
 
 def init_db() -> Optional[Path]:
@@ -493,9 +565,10 @@ def init_db() -> Optional[Path]:
     daily_report_backup = migrate_daily_reports(engine)
     whatsapp_intake_backup = migrate_whatsapp_intake(engine)
     whatsapp_settings_backup = migrate_whatsapp_settings_and_source(engine)
+    returned_item_corrections_backup = migrate_returned_item_corrections(engine)
     Base.metadata.create_all(engine)
     return (
-        whatsapp_settings_backup or whatsapp_intake_backup or daily_report_backup or supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
+        returned_item_corrections_backup or whatsapp_settings_backup or whatsapp_intake_backup or daily_report_backup or supplier_offer_backup or po_payment_backup or rfq_backup or portal_attachments_backup or portal_requests_backup or auth_backup or receiving_backup or workflow_backup or item_review_backup or document_capture_backup or price_comparison_backup or code_sequence_backup or incoming_backup or identity_backup
         or classification_backup
     )
 
@@ -733,6 +806,11 @@ class LocalDatabase:
             return
         with SessionLocal.begin() as session:
             yield LocalDatabase(session)
+
+    @property
+    def session(self):
+        """The bound session inside transaction(); None on the global db."""
+        return self._session
 
     def __getattr__(self, name: str):
         try:

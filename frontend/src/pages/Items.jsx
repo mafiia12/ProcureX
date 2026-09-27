@@ -65,6 +65,7 @@ export default function Items() {
       emptyTitle={tr("لا توجد أصناف", "No items")}
       emptyDescription={tr("ابدأ بإضافة أول صنف.", "Start by adding your first item.")}
       compactManagement
+      paginated
       endpoint="items"
       testPrefix="items"
       primaryField="product_name"
