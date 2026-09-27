@@ -17,6 +17,7 @@ from fastapi import (
     APIRouter, Depends, File, Form, Header, HTTPException, Request, Response,
     UploadFile,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import (
@@ -701,8 +702,11 @@ async def submit_public_request(
             for index, attachment in prepared.items():
                 stored_name = f"{uuid.uuid4().hex}{attachment['extension']}"
                 attachment["stored_filename"] = f"{request_id}/{stored_name}"
-                storage.put(
-                    attachment["stored_filename"], attachment["content"],
+                # Blocking network/disk call, offloaded off the event loop
+                # thread - see docs/performance-reliability-audit.md,
+                # "S3/R2 Attachment Storage".
+                await run_in_threadpool(
+                    storage.put, attachment["stored_filename"], attachment["content"],
                     attachment["media_type"], attachment["sha256"],
                 )
                 written_keys.append(attachment["stored_filename"])
@@ -772,7 +776,7 @@ async def submit_public_request(
             session.commit()
     except Exception:
         for key in written_keys:
-            storage.delete(key)
+            await run_in_threadpool(storage.delete, key)
         raise
     return {"ok": True, "duplicate": False, "request_number": request_number}
 
@@ -1229,22 +1233,28 @@ async def get_request_attachment(
         item = session.get(IncomingPurchaseRequestItem, attachment.request_item_id)
         if not item or item.request_id != request_id:
             raise HTTPException(404, "المرفق غير موجود")
-        try:
-            stored = get_attachment_storage().get(attachment.stored_filename)
-        except (FileNotFoundError, KeyError):
-            raise HTTPException(404, "ملف المرفق غير موجود")
-        return StreamingResponse(
-            stored.body,
-            media_type=attachment.media_type,
-            headers={
-                "Cache-Control": "private, no-store",
-                "Content-Length": str(stored.content_length),
-                "Content-Disposition": (
-                    "attachment; filename=attachment; filename*=UTF-8''"
-                    f"{quote(attachment.original_filename)}"
-                ),
-            },
-        )
+        stored_filename = attachment.stored_filename
+        media_type = attachment.media_type
+        original_filename = attachment.original_filename
+
+    # Fetched after the DB session closes and off the event loop thread -
+    # see docs/performance-reliability-audit.md, "S3/R2 Attachment Storage".
+    try:
+        stored = await run_in_threadpool(get_attachment_storage().get, stored_filename)
+    except (FileNotFoundError, KeyError):
+        raise HTTPException(404, "ملف المرفق غير موجود")
+    return StreamingResponse(
+        stored.body,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Length": str(stored.content_length),
+            "Content-Disposition": (
+                "attachment; filename=attachment; filename*=UTF-8''"
+                f"{quote(original_filename)}"
+            ),
+        },
+    )
 
 
 @internal_router.get(
@@ -1258,22 +1268,26 @@ async def get_request_general_attachment(
         attachment = session.get(IncomingRequestGeneralAttachment, attachment_id)
         if not attachment or attachment.request_id != request_id:
             raise HTTPException(404, "المرفق غير موجود")
-        try:
-            stored = get_attachment_storage().get(attachment.stored_filename)
-        except (FileNotFoundError, KeyError):
-            raise HTTPException(404, "ملف المرفق غير موجود")
-        return StreamingResponse(
-            stored.body,
-            media_type=attachment.media_type,
-            headers={
-                "Cache-Control": "private, no-store",
-                "Content-Length": str(stored.content_length),
-                "Content-Disposition": (
-                    "attachment; filename=attachment; filename*=UTF-8''"
-                    f"{quote(attachment.original_filename)}"
-                ),
-            },
-        )
+        stored_filename = attachment.stored_filename
+        media_type = attachment.media_type
+        original_filename = attachment.original_filename
+
+    try:
+        stored = await run_in_threadpool(get_attachment_storage().get, stored_filename)
+    except (FileNotFoundError, KeyError):
+        raise HTTPException(404, "ملف المرفق غير موجود")
+    return StreamingResponse(
+        stored.body,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Length": str(stored.content_length),
+            "Content-Disposition": (
+                "attachment; filename=attachment; filename*=UTF-8''"
+                f"{quote(original_filename)}"
+            ),
+        },
+    )
 
 
 @internal_router.post("/{request_id}/convert-customer", dependencies=[Depends(require_internal_access)])

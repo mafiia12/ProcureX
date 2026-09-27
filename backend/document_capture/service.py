@@ -7,6 +7,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, select
 
 try:
@@ -57,7 +58,7 @@ def audit(
     )
 
 
-def create_document(
+async def create_document(
     session,
     request_id: str,
     document_type: str,
@@ -93,7 +94,11 @@ def create_document(
             }[file.media_type]
             key = f"document-captures/{request_id}/{document_id}/{uuid.uuid4().hex}{extension}"
             digest = hashlib.sha256(file.content).hexdigest()
-            storage.put(key, file.content, file.media_type, digest)
+            # Blocking network/disk call, offloaded off the event loop
+            # thread - see docs/performance-reliability-audit.md, "S3/R2
+            # Attachment Storage". Safe here: only storage/key/content
+            # cross into the worker thread, never the SQLAlchemy session.
+            await run_in_threadpool(storage.put, key, file.content, file.media_type, digest)
             stored_keys.append(key)
             session.add(
                 DocumentFile(
@@ -141,7 +146,7 @@ def create_document(
         session.flush()
     except Exception:
         for key in stored_keys:
-            storage.delete(key)
+            await run_in_threadpool(storage.delete, key)
         raise
     return row
 
