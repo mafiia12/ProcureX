@@ -507,11 +507,13 @@ It runs inside `BEGIN TRANSACTION READ ONLY … ROLLBACK` with a 15 s statement 
 
 ## 18. Final release candidate (branch `fix/pre-golive-closure`)
 
+**Code baseline: `ed60204`.** Any later commit on this branch changes documentation only. The tables below were recorded before `ed60204`; section 18.1 lists what `ed60204` changed and the test results on it.
+
 Contents: capacity review, pre-go-live closure (sections 13–15), attachment storage offload (section 16) and the legacy approval boundary (section 17). Migration head: **0024** (no schema change after it).
 
 **S3/R2 provenance.** Section 16 was implemented and reviewed in this branch directly from the closure tip. The separate, uncommitted S3/R2 diff in the other desktop worktree (the ~981-line diff mentioned in section 13) was **not** available to this session and was **not** applied. Do not apply it on top of this branch: both change the same call sites. Compare it against commit `f700865` and discard it, or keep the parts this branch lacks as a separate, reviewed change.
 
-Local regression, run on the final code:
+Local regression, run on the release-candidate code before `ed60204`:
 
 | Gate | Result |
 |---|---|
@@ -548,3 +550,27 @@ The RC regression covered:
 - **Approval list:** `GET /api/workflow/approvals` with 256 approvals = **4 queries**.
 
 Pytest security subsets: RBAC 16, JWT/auth 31, Site Portal 40, admin 16, rate limit 5, proxy/client IP 11, attachments/storage 38, diagnostics incl. production refusal 5: all passed.
+
+### 18.1 Code baseline `ed60204`: Settings production gates and connect timeout
+
+Commit `ed60204` ("fix(settings): make the Settings page production-safe for Render"). No migration; the head stays **0024**.
+
+- **Production API docs off.** `/docs`, `/redoc` and `/openapi.json` are disabled when `APP_ENV=production`. Before this, the production ERP service (`APP_SURFACE=full`) published its full API schema. Staging keeps them; the public surface never had them.
+- **Settings production gates.** With `APP_ENV=production`, `POST /api/system/open-folder/{kind}` and `POST /api/system/backup` return 403 before touching the filesystem, and the UI hides those buttons and explains that backups are the scheduled `pg_dump` → R2 job. Diagnostics report the real mode (it used to show "development" on Render), drop filesystem paths in production, and go through a redaction step (secret-like keys, credentials inside URLs, values of secret-named environment variables). WhatsApp settings no longer return the request-derived local URL in production.
+- **PostgreSQL health probe.** The Settings database status runs `SELECT 1` instead of reporting a hardcoded "connected", and the UI shows an unreachable database in red. Render's liveness check (`/api/public/purchase-requests/health`) is unchanged and still does not touch the database.
+- **`DB_CONNECT_TIMEOUT_SECONDS` (default 5; `0` = no limit).** Sets libpq `connect_timeout` on PostgreSQL connections only; SQLite is unaffected. Measured against a stopped disposable PostgreSQL 16: the health probe failed after about 2 min 12 s without it and about 7 s with it (including interpreter and app start-up).
+- `backend/.env.production.example` lists every production variable by name only.
+
+| Gate | Result on `ed60204` |
+|---|---|
+| `pytest tests/` (SQLite) | **417 passed** (400 + 12 Settings + 5 connect-timeout) |
+| Frontend `craco test --watchAll=false` | **318 passed, 41 suites** |
+| Disposable PostgreSQL 16 (`alembic upgrade head`, bootstrap admin) | diagnostics `healthy`; production hides paths, open-folder and backup → 403 |
+| `scripts/postgres_smoke_test.py` | passed |
+| Public surface, `APP_ENV=production` | `/docs`, `/redoc`, `/openapi.json` → 404; health → 200 |
+
+#### Deploy steps: migration 0024
+
+1. **Mandatory backup before migration 0024.** Its downgrade is disabled, so a verified `pg_dump` is the only way back. Apply it only through `verified_production_migration.py` (`deploy/migrate/Dockerfile`), which runs `pg_dump --format=custom`, checks it with `pg_restore --list`, uploads it to R2, downloads it again and compares checksums, and only then runs `alembic upgrade`. Never run `alembic upgrade head` directly against production.
+2. Do not continue until the runner prints `Verified pre-migration backup: s3://…` followed by `Production Alembic upgrade completed after verified backup`. Record the backup's object key.
+3. Then deploy `ed60204` (or a later docs-only commit). `preDeployCommand` (`assert_schema_current.py`) refuses to start if the schema is not at 0024.
