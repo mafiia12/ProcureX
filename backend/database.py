@@ -496,22 +496,37 @@ def postgres_engine_options() -> Dict[str, Any]:
         )
         if value > 0
     ]
+    connect_args: Dict[str, Any] = {}
+    # Measured: with the database unreachable, a connect attempt with no
+    # timeout hung ~2 minutes (the OS TCP SYN-retry limit) before failing,
+    # holding the request the whole time. libpq's connect_timeout bounds it.
+    # 0 disables the bound (libpq waits indefinitely).
+    connect_timeout = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "5"))
+    if connect_timeout > 0:
+        connect_args["connect_timeout"] = connect_timeout
     if server_options:
-        options["connect_args"] = {"options": " ".join(server_options)}
+        connect_args["options"] = " ".join(server_options)
+    if connect_args:
+        options["connect_args"] = connect_args
+    return options
+
+
+def engine_options_for(database_url: str) -> Dict[str, Any]:
+    options: Dict[str, Any] = {
+        "future": True,
+        "pool_pre_ping": True,
+    }
+    if database_url.startswith("sqlite:"):
+        # The PostgreSQL pool/timeout settings never apply to SQLite.
+        options["connect_args"] = {"check_same_thread": False}
+    else:
+        options.update(postgres_engine_options())
     return options
 
 
 DATABASE_URL = _database_url()
 IS_SQLITE = DATABASE_URL.startswith("sqlite:")
-engine_options = {
-    "future": True,
-    "pool_pre_ping": True,
-}
-if IS_SQLITE:
-    engine_options["connect_args"] = {"check_same_thread": False}
-else:
-    engine_options.update(postgres_engine_options())
-engine = create_engine(DATABASE_URL, **engine_options)
+engine = create_engine(DATABASE_URL, **engine_options_for(DATABASE_URL))
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 

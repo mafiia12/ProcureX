@@ -36,7 +36,7 @@ if _STANDALONE:
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.exc import IntegrityError, OperationalError, TimeoutError as PoolTimeoutError  # noqa: E402
 
-from database import engine, postgres_engine_options  # noqa: E402
+from database import engine, engine_options_for, postgres_engine_options  # noqa: E402
 from server import create_app  # noqa: E402
 
 if _STANDALONE:
@@ -49,6 +49,7 @@ if _STANDALONE:
 _POOL_ENV = (
     "DB_POOL_SIZE", "DB_POOL_MAX_OVERFLOW", "DB_POOL_TIMEOUT_SECONDS",
     "DB_POOL_RECYCLE_SECONDS", "DB_STATEMENT_TIMEOUT_MS", "DB_LOCK_TIMEOUT_MS",
+    "DB_CONNECT_TIMEOUT_SECONDS",
 )
 
 
@@ -67,6 +68,7 @@ def test_postgres_defaults_are_the_measured_launch_values(clean_pool_env):
     assert options["pool_timeout"] == 5
     assert options["pool_recycle"] == 1800
     assert options["connect_args"] == {
+        "connect_timeout": 5,
         "options": "-c statement_timeout=10000 -c lock_timeout=3000",
     }
 
@@ -81,14 +83,52 @@ def test_postgres_options_follow_environment(clean_pool_env):
     options = postgres_engine_options()
 
     assert (options["pool_size"], options["max_overflow"], options["pool_timeout"]) == (3, 0, 2)
-    assert options["connect_args"] == {"options": "-c statement_timeout=7000"}
+    assert options["connect_args"] == {"connect_timeout": 5, "options": "-c statement_timeout=7000"}
 
 
 def test_postgres_server_timeouts_can_both_be_disabled(clean_pool_env):
     clean_pool_env.setenv("DB_STATEMENT_TIMEOUT_MS", "0")
     clean_pool_env.setenv("DB_LOCK_TIMEOUT_MS", "0")
 
+    assert postgres_engine_options()["connect_args"] == {"connect_timeout": 5}
+
+
+def test_postgres_connect_timeout_follows_environment(clean_pool_env):
+    clean_pool_env.setenv("DB_CONNECT_TIMEOUT_SECONDS", "3")
+    assert postgres_engine_options()["connect_args"]["connect_timeout"] == 3
+
+
+def test_every_postgres_bound_can_be_disabled(clean_pool_env):
+    clean_pool_env.setenv("DB_CONNECT_TIMEOUT_SECONDS", "0")
+    clean_pool_env.setenv("DB_STATEMENT_TIMEOUT_MS", "0")
+    clean_pool_env.setenv("DB_LOCK_TIMEOUT_MS", "0")
+
     assert "connect_args" not in postgres_engine_options()
+
+
+@pytest.mark.parametrize("url", [
+    "postgresql://user:password@db.example/procurex",
+    "postgresql+psycopg://user:password@db.example/procurex",
+])
+def test_postgres_engines_get_a_connect_timeout(clean_pool_env, url):
+    options = engine_options_for(url)
+    assert options["connect_args"]["connect_timeout"] == 5
+    assert options["pool_timeout"] == 5
+
+
+def test_sqlite_engine_is_unaffected_by_postgres_settings(clean_pool_env):
+    # Even an explicit value must never reach sqlite3.connect(), which
+    # rejects an unknown connect_timeout keyword argument.
+    clean_pool_env.setenv("DB_CONNECT_TIMEOUT_SECONDS", "3")
+    clean_pool_env.setenv("DB_POOL_SIZE", "9")
+
+    options = engine_options_for("sqlite:///./procurement.db")
+
+    assert options == {
+        "future": True,
+        "pool_pre_ping": True,
+        "connect_args": {"check_same_thread": False},
+    }
 
 
 class _DriverError(Exception):

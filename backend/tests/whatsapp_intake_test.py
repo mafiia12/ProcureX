@@ -778,6 +778,21 @@ def test_webhook_url_uses_public_base_url_when_configured(client, monkeypatch):
     assert data["webhook_url_configured"] is True
 
 
+@pytest.mark.parametrize("public_base_url", ["", "https://procurement.example.com"])
+def test_production_never_returns_the_request_derived_local_url(client, monkeypatch, public_base_url):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("PUBLIC_BASE_URL", public_base_url)
+    suffix = uuid.uuid4().hex[:8]
+    admin_headers = _make_admin_headers(client, suffix)
+    response = client.get(f"{API}/admin/whatsapp/settings", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["local_backend_url"] == ""
+    assert data["webhook_url_configured"] is bool(public_base_url)
+    if public_base_url:
+        assert data["webhook_url"] == f"{public_base_url}/api/integrations/whatsapp/webhook"
+
+
 def test_test_connection_success_caches_business_number(client, monkeypatch):
     suffix = uuid.uuid4().hex[:8]
     admin_headers = _make_admin_headers(client, suffix)

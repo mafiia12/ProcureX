@@ -22,7 +22,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError, TimeoutError as PoolTimeoutError
 
 try:
@@ -181,6 +181,56 @@ def _runtime_paths() -> dict[str, Path]:
     }
 
 
+def _app_environment() -> str:
+    return os.getenv("APP_ENV", "development").strip().lower()
+
+
+def _is_production() -> bool:
+    return _app_environment() == "production"
+
+
+# Diagnostics are copied to the clipboard and pasted into chats/tickets, so
+# the payload is scrubbed even though no current field carries a secret:
+# this guards against a future field (or an exception text) leaking one.
+_SECRET_KEY_PATTERN = re.compile(
+    r"token|secret|password|passwd|credential|api_?key|access_?key|private_?key|salt|dsn|database_url",
+    re.IGNORECASE,
+)
+_SECRET_ENV_PATTERN = re.compile(r"TOKEN|SECRET|PASSWORD|KEY|SALT|DATABASE_URL")
+_URL_CREDENTIALS = re.compile(r"([a-z][a-z0-9+.\-]*://)[^\s/@:]+(?::[^\s/@]*)?@", re.IGNORECASE)
+
+
+def _redact_diagnostics(value, _secrets: Optional[list[str]] = None):
+    if _secrets is None:
+        _secrets = [
+            secret for name, secret in os.environ.items()
+            if _SECRET_ENV_PATTERN.search(name) and len(secret.strip()) >= 8
+        ]
+    if isinstance(value, dict):
+        return {
+            key: "***" if _SECRET_KEY_PATTERN.search(str(key)) else _redact_diagnostics(item, _secrets)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_diagnostics(item, _secrets) for item in value]
+    if isinstance(value, str):
+        value = _URL_CREDENTIALS.sub(r"\1***@", value)
+        for secret in _secrets:
+            value = value.replace(secret, "***")
+    return value
+
+
+def _postgres_health() -> dict[str, object]:
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+    except Exception:
+        # The driver error can name the host/user; keep it in the server log only.
+        logger.exception("Database health probe failed")
+        return {"status": "unavailable"}
+    return {"status": "healthy"}
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -190,8 +240,10 @@ def _file_sha256(path: Path) -> str:
 
 
 def _database_health(path: Path, *, include_counts: bool = False) -> dict[str, object]:
-    if not IS_SQLITE or not path.is_file():
-        return {"status": "unavailable" if IS_SQLITE else "connected"}
+    if not IS_SQLITE:
+        return _postgres_health()
+    if not path.is_file():
+        return {"status": "unavailable"}
     with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as connection:
         integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
         foreign_key_violations = len(
@@ -2494,11 +2546,15 @@ async def update_settings(key: str, body: SettingsUpdate, current_user: User = D
 
 
 @api.get("/system/diagnostics")
-async def system_diagnostics(current_user: User = Depends(require_erp_role("admin"))):
+def system_diagnostics(current_user: User = Depends(require_erp_role("admin"))):
+    # Plain def: the database probe is blocking, so FastAPI runs it in its threadpool.
+    environment = _app_environment()
+    production = environment == "production"
     paths = _runtime_paths()
     last_backup = None
     last_backup_file = paths["backups"] / "last-successful-backup.json"
-    if last_backup_file.is_file():
+    # Production backups are the scheduled pg_dump -> R2 job, never a local file.
+    if not production and last_backup_file.is_file():
         try:
             stored = json.loads(last_backup_file.read_text(encoding="utf-8-sig"))
             last_backup = {
@@ -2507,17 +2563,29 @@ async def system_diagnostics(current_user: User = Depends(require_erp_role("admi
             }
         except (OSError, ValueError, TypeError):
             last_backup = {"status": "unreadable"}
-    return {
+    if environment in {"staging", "production"}:
+        mode = environment
+    else:
+        mode = "installed" if os.getenv("PROCUREX_DATA_ROOT", "").strip() else "development"
+    payload = {
         "version": APP_VERSION,
-        "mode": "installed" if os.getenv("PROCUREX_DATA_ROOT", "").strip() else "development",
+        "mode": mode,
         "database": _database_health(paths["database"]),
-        "paths": {key: str(value) for key, value in paths.items()},
         "last_backup": last_backup,
+        "capabilities": {
+            "local_backup": IS_SQLITE and not production,
+            "open_folders": not production,
+        },
     }
+    if not production:
+        payload["paths"] = {key: str(value) for key, value in paths.items()}
+    return _redact_diagnostics(payload)
 
 
 @api.post("/system/backup")
 async def create_system_backup(current_user: User = Depends(require_erp_role("admin"))):
+    if _is_production():
+        raise HTTPException(403, "النسخ الاحتياطي في الإنتاج يتم تلقائياً عبر المهمة المجدولة")
     try:
         return _create_verified_runtime_backup()
     except HTTPException:
@@ -2531,6 +2599,8 @@ async def create_system_backup(current_user: User = Depends(require_erp_role("ad
 async def open_system_folder(
     kind: str, request: Request, current_user: User = Depends(require_erp_role("admin")),
 ):
+    if _is_production():
+        raise HTTPException(403, "فتح المجلدات غير متاح في بيئة الإنتاج")
     if request.client and request.client.host not in {"127.0.0.1", "::1", "testclient"}:
         raise HTTPException(403, "هذا الإجراء متاح محلياً فقط")
     paths = _runtime_paths()
@@ -3206,11 +3276,13 @@ def create_app(surface: Optional[str] = None, initialize_database: bool = True) 
         init_db()
 
     is_public = selected_surface == "public"
+    # The production ERP service is internet-facing too; never publish its schema there.
+    api_docs_enabled = not is_public and environment != "production"
     application = FastAPI(
         title="RE DECOR & MORE Purchase Request API" if is_public else "RE DECOR & MORE Procurement ERP",
-        docs_url=None if is_public else "/docs",
-        redoc_url=None if is_public else "/redoc",
-        openapi_url=None if is_public else "/openapi.json",
+        docs_url="/docs" if api_docs_enabled else None,
+        redoc_url="/redoc" if api_docs_enabled else None,
+        openapi_url="/openapi.json" if api_docs_enabled else None,
     )
     application.include_router(auth_router)
     if is_public:

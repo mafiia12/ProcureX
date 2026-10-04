@@ -239,22 +239,32 @@ export default function SettingsPage() {
         );
       })()}
 
-      {diagnostics?.database && (
+      {diagnostics?.database && (() => {
+        // Older backends omit capabilities; they only ever ran on the desktop, where both apply.
+        const capabilities = diagnostics.capabilities || { local_backup: true, open_folders: true };
+        const databaseHealthy = diagnostics.database.status === "healthy";
+        return (
         <section className="rounded-lg border bg-card p-4" data-testid="system-diagnostics">
           <SectionHeader title={tr("النظام والنسخ الاحتياطي", "System & Backup")} description={tr("معلومات تشخيصية للمدير؛ إعدادات الترقيم وسير العمل للقراءة فقط.", "Administrator diagnostics; numbering and workflow configuration remain read-only.")} />
           <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
             <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("الإصدار", "Version")}</span><strong>{diagnostics.version}</strong></div>
             <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("وضع التشغيل", "Mode")}</span><strong>{t(`settings.${diagnostics.mode}`)}</strong></div>
-            <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("قاعدة البيانات", "Database")}</span><strong className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300"><ShieldCheck className="h-4 w-4" />{diagnostics.database.status === "healthy" ? t("settings.healthy") : diagnostics.database.status}</strong></div>
+            <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("قاعدة البيانات", "Database")}</span><strong className={`inline-flex items-center gap-1 ${databaseHealthy ? "text-emerald-700 dark:text-emerald-300" : "text-destructive"}`} data-testid="system-database-status"><ShieldCheck className="h-4 w-4" />{databaseHealthy ? t("settings.healthy") : diagnostics.database.status}</strong></div>
             <div className="rounded-md bg-muted/60 p-3"><span className="block text-[11px] text-muted-foreground">{tr("آخر نسخة احتياطية", "Latest backup")}</span><strong className="text-xs">{diagnostics.last_backup?.created_utc ? new Date(diagnostics.last_backup.created_utc).toLocaleString(locale) : t("settings.noBackup")}</strong></div>
           </div>
+          {!capabilities.local_backup && (
+            <p className="mt-3 text-xs text-muted-foreground" data-testid="managed-backup-notice">
+              {tr("النسخ الاحتياطي لقاعدة البيانات يتم تلقائياً عبر مهمة مجدولة على الخادم، وليس من هذه الصفحة.", "Database backups run automatically as a scheduled server job, not from this page.")}
+            </p>
+          )}
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" onClick={createBackup} disabled={backingUp} data-testid="create-system-backup"><DatabaseBackup className="h-4 w-4" />{backingUp ? t("settings.creatingBackup") : t("settings.createBackup")}</Button>
+            {capabilities.local_backup && <Button size="sm" onClick={createBackup} disabled={backingUp} data-testid="create-system-backup"><DatabaseBackup className="h-4 w-4" />{backingUp ? t("settings.creatingBackup") : t("settings.createBackup")}</Button>}
             <Button size="sm" variant="outline" onClick={copyDiagnostics} data-testid="copy-system-diagnostics"><Copy className="h-4 w-4" />{t("settings.copyDiagnostics")}</Button>
-            {[["data", "openData"], ["backups", "openBackups"], ["logs", "openLogs"]].map(([kind, label]) => <Button key={kind} size="sm" variant="ghost" onClick={() => openFolder(kind)} data-testid={`open-${kind}-folder`}><FolderOpen className="h-4 w-4" />{t(`settings.${label}`)}</Button>)}
+            {capabilities.open_folders && [["data", "openData"], ["backups", "openBackups"], ["logs", "openLogs"]].map(([kind, label]) => <Button key={kind} size="sm" variant="ghost" onClick={() => openFolder(kind)} data-testid={`open-${kind}-folder`}><FolderOpen className="h-4 w-4" />{t(`settings.${label}`)}</Button>)}
           </div>
         </section>
-      )}
+        );
+      })()}
     </div>
   );
 }

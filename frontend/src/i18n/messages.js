@@ -38,6 +38,8 @@ export const messages = {
       healthy: "سليمة",
       development: "تطوير",
       installed: "مثبت",
+      staging: "تجريبي",
+      production: "إنتاج",
       lists: {
         currency: "العملة", delivery_status: "حالة التسليم",
         governorates: "المحافظات", payment_methods: "طرق الدفع",
@@ -217,6 +219,8 @@ export const messages = {
       healthy: "Healthy",
       development: "Development",
       installed: "Installed",
+      staging: "Staging",
+      production: "Production",
       lists: {
         currency: "Currency", delivery_status: "Delivery status",
         governorates: "Governorates", payment_methods: "Payment methods",

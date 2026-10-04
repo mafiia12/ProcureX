@@ -65,14 +65,23 @@ const WHATSAPP_CONNECTED_NO_PUBLIC_URL = {
   ],
 };
 
+const PRODUCTION_DIAGNOSTICS_RESPONSE = {
+  version: "0.3.0", mode: "production",
+  database: { status: "healthy" },
+  last_backup: null,
+  capabilities: { local_backup: false, open_folders: false },
+};
+
 let whatsappResponse = WHATSAPP_NOT_CONFIGURED;
+let diagnosticsResponse = DIAGNOSTICS_RESPONSE;
 
 beforeEach(() => {
   whatsappResponse = WHATSAPP_NOT_CONFIGURED;
+  diagnosticsResponse = DIAGNOSTICS_RESPONSE;
   mockGet.mockImplementation((url) => {
     if (url === "/settings") return Promise.resolve({ data: [] });
     if (url === "/admin/whatsapp/settings") return Promise.resolve({ data: whatsappResponse });
-    return Promise.resolve({ data: DIAGNOSTICS_RESPONSE });
+    return Promise.resolve({ data: diagnosticsResponse });
   });
   mockPost.mockClear();
   mockPut.mockClear();
@@ -104,6 +113,60 @@ test("renders safe diagnostics and starts a verified backup", async () => {
   const copied = navigator.clipboard.writeText.mock.calls[0][0];
   expect(copied).not.toContain("token");
   expect(copied).not.toContain("password");
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("desktop diagnostics show the backup and open-folder actions", async () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SettingsPage />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(container.querySelector('[data-testid="create-system-backup"]')).not.toBeNull();
+  for (const kind of ["data", "backups", "logs"]) {
+    expect(container.querySelector(`[data-testid="open-${kind}-folder"]`)).not.toBeNull();
+  }
+  expect(container.querySelector('[data-testid="managed-backup-notice"]')).toBeNull();
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("production hides local backup and open-folder actions", async () => {
+  diagnosticsResponse = PRODUCTION_DIAGNOSTICS_RESPONSE;
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SettingsPage />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(container.textContent).toContain("settings.production");
+  expect(container.querySelector('[data-testid="create-system-backup"]')).toBeNull();
+  for (const kind of ["data", "backups", "logs"]) {
+    expect(container.querySelector(`[data-testid="open-${kind}-folder"]`)).toBeNull();
+  }
+  expect(container.querySelector('[data-testid="managed-backup-notice"]')).not.toBeNull();
+  // diagnostics can still be copied
+  expect(container.querySelector('[data-testid="copy-system-diagnostics"]')).not.toBeNull();
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("an unreachable database is not shown as healthy", async () => {
+  diagnosticsResponse = { ...PRODUCTION_DIAGNOSTICS_RESPONSE, database: { status: "unavailable" } };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<SettingsPage />);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  const status = container.querySelector('[data-testid="system-database-status"]');
+  expect(status.textContent).toContain("unavailable");
+  expect(status.className).toContain("text-destructive");
   await act(async () => root.unmount());
   container.remove();
 });

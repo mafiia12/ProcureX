@@ -9,6 +9,7 @@ number Meta itself returns on a successful Test Connection.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
@@ -48,16 +49,20 @@ def _local_backend_url(request: Request) -> str:
 
 def _webhook_urls(request: Request) -> dict:
     base = config.public_base_url()
+    # In production the request host is the hosting provider's address, not a
+    # helpful local hint, so only "configured or not" is reported there.
+    production = os.getenv("APP_ENV", "development").strip().lower() == "production"
+    local_url = "" if production else _local_backend_url(request)
     if base:
         return {
             "webhook_url": f"{base}/api/integrations/whatsapp/webhook",
             "webhook_url_configured": True,
-            "local_backend_url": _local_backend_url(request),
+            "local_backend_url": local_url,
         }
     return {
         "webhook_url": "",
         "webhook_url_configured": False,
-        "local_backend_url": _local_backend_url(request),
+        "local_backend_url": local_url,
     }
 
 

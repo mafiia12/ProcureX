@@ -1728,6 +1728,68 @@ def test_open_folder_rejects_unknown_target(s, admin_headers):
     assert s.post(f"{API}/system/open-folder/secrets", headers=admin_headers).status_code == 404
 
 
+def test_system_diagnostics_reports_desktop_capabilities_outside_production(s, admin_headers):
+    payload = s.get(f"{API}/system/diagnostics", headers=admin_headers).json()
+    assert payload["capabilities"] == {"local_backup": True, "open_folders": True}
+    assert "paths" in payload
+
+
+def test_production_diagnostics_hide_paths_and_local_actions(s, admin_headers, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    response = s.get(f"{API}/system/diagnostics", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["mode"] == "production"
+    assert payload["capabilities"] == {"local_backup": False, "open_folders": False}
+    assert "paths" not in payload
+    assert payload["last_backup"] is None
+
+
+@pytest.mark.parametrize("kind", ["data", "backups", "logs", "secrets"])
+def test_production_rejects_open_folder_before_touching_the_filesystem(s, admin_headers, monkeypatch, kind):
+    monkeypatch.setenv("APP_ENV", "production")
+    folder = Path(TEST_DIR.name) / f"production-folder-probe-{kind}"
+    monkeypatch.setenv("PROCUREX_LOG_DIR", str(folder))
+    response = s.post(f"{API}/system/open-folder/{kind}", headers=admin_headers)
+    assert response.status_code == 403
+    assert not folder.exists()
+
+
+def test_production_rejects_local_file_backup(s, admin_headers, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    backup_directory = Path(TEST_DIR.name) / "production-backup-probe"
+    monkeypatch.setenv("PROCUREX_BACKUP_DIR", str(backup_directory))
+    response = s.post(f"{API}/system/backup", headers=admin_headers)
+    assert response.status_code == 403
+    assert not backup_directory.exists()
+
+
+def test_system_diagnostics_masks_secrets_from_environment(s, admin_headers, monkeypatch):
+    secret = "leaky-secret-value-0123456789"
+    monkeypatch.setenv("AUTH_SECRET_KEY", secret)
+    # A secret-shaped value that also happens to sit inside a reported path.
+    monkeypatch.setenv("PROCUREX_LOG_DIR", str(Path(TEST_DIR.name) / secret))
+    rendered = json.dumps(s.get(f"{API}/system/diagnostics", headers=admin_headers).json())
+    assert secret not in rendered
+    assert "***" in rendered
+
+
+def test_redact_diagnostics_masks_secret_keys_and_url_credentials():
+    from server import _redact_diagnostics
+
+    redacted = _redact_diagnostics(
+        {
+            "database": {"status": "healthy", "foreign_key_violations": 0},
+            "access_token": "abc",
+            "nested": [{"note": "postgresql://procurex:hunter2@db.internal:5432/procurex"}],
+        },
+        [],
+    )
+    assert redacted["database"] == {"status": "healthy", "foreign_key_violations": 0}
+    assert redacted["access_token"] == "***"
+    assert redacted["nested"][0]["note"] == "postgresql://***@db.internal:5432/procurex"
+
+
 # ---------- Purchase creation, dup, validation, cascade + Payment flow ----------
 @pytest.fixture(scope="module")
 def ids(s, admin_headers):
@@ -2494,7 +2556,20 @@ def test_hosted_full_surface_allowed_with_secure_configuration(monkeypatch, envi
     paths = {route.path for route in full_app.routes}
     assert "/api/purchases" in paths
     assert any(path.startswith("/api/internal/") for path in paths)
-    assert "/docs" in paths
+    # The production ERP is internet-facing, so its API schema is not published there.
+    api_docs = {"/docs", "/redoc", "/openapi.json"}
+    if environment == "production":
+        assert not api_docs & paths
+    else:
+        assert api_docs <= paths
+
+
+def test_production_full_surface_serves_no_api_schema(monkeypatch):
+    _set_valid_full_surface_env(monkeypatch, "production")
+    full_app = create_app(surface="full", initialize_database=False)
+    with TestClient(full_app, base_url="https://procurement.example.com") as client:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert client.get(path).status_code == 404, path
 
 
 def test_hosted_full_surface_rejects_wildcard_cors(monkeypatch):
