@@ -1,61 +1,66 @@
+import { router, useLocalSearchParams } from 'expo-router';
 import { StyleSheet, Text, View } from 'react-native';
 
-import DataList, { listStyles } from '../../components/DataList';
+import Card from '../../components/Card';
+import DataList, { ALL, listStyles } from '../../components/DataList';
 import Screen from '../../components/Screen';
-import { COLORS } from '../../constants/colors';
+import StatusBadge from '../../components/StatusBadge';
+import { COLORS, SPACING } from '../../constants/theme';
 import { requestsAPI } from '../../services/api';
 import { formatDateTime } from '../../utils/formatters';
 
-// Values from REQUEST_STATUSES / PRIORITIES in backend/incoming_requests.py.
-const STATUS_LABELS = {
-  new: 'جديد',
-  under_review: 'قيد المراجعة',
-  need_clarification: 'يحتاج توضيح',
-  pricing: 'قيد التسعير',
-  waiting_for_approval: 'بانتظار الاعتماد',
-  approved: 'معتمد',
-  rejected: 'مرفوض',
-  converted_to_purchase: 'تحول لشراء',
-  completed: 'مكتمل',
-  cancelled: 'ملغي',
-  hold: 'معلق',
-};
-const PRIORITY_COLORS = {
-  urgent: COLORS.danger,
-  high: COLORS.warning,
-  normal: COLORS.accent,
-  low: COLORS.muted,
-};
-
 const fetchRequests = () => requestsAPI.list();
+const searchFields = (item) => [
+  item.request_number,
+  item.requester_name,
+  item.company_name,
+  item.project_name,
+  item.phone_number,
+];
+
+const PRIORITY_EDGE = { urgent: COLORS.danger, high: COLORS.warning };
 
 function RequestRow({ item }) {
+  const showPriority = item.priority === 'urgent' || item.priority === 'high';
   return (
-    <View style={listStyles.card}>
+    <Card
+      onPress={() => router.push(`/requests/${item.id}`)}
+      tone={PRIORITY_EDGE[item.priority]}
+    >
       <View style={listStyles.row}>
         <Text style={listStyles.title}>{item.request_number}</Text>
-        <Text style={[styles.status, { borderColor: PRIORITY_COLORS[item.priority] || COLORS.border }]}>
-          {STATUS_LABELS[item.status] || item.status}
-        </Text>
+        <StatusBadge kind="request" value={item.status} />
       </View>
-      <Text style={listStyles.sub}>
-        {[item.requester_name, item.project_name].filter(Boolean).join(' · ')}
+      <Text style={listStyles.sub} numberOfLines={1}>
+        {[item.project_name, item.requester_name].filter(Boolean).join(' · ') || '—'}
       </Text>
-      <Text style={listStyles.meta}>
-        {item.item_count} بند · {formatDateTime(item.created_at)}
-      </Text>
-    </View>
+      <View style={[listStyles.row, styles.metaRow]}>
+        <Text style={listStyles.meta}>
+          {item.item_count} بند · {formatDateTime(item.created_at)}
+        </Text>
+        {showPriority ? <StatusBadge kind="priority" value={item.priority} small /> : null}
+      </View>
+    </Card>
   );
 }
 
 export default function RequestsScreen() {
+  // Optional ?status=... when opened from a dashboard KPI / chart bar.
+  const { status } = useLocalSearchParams();
+  const initialStatus = status ? String(status) : ALL;
+
   return (
     <Screen title="طلبات الشراء">
       <DataList
         fetcher={fetchRequests}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => <RequestRow item={item} />}
-        emptyText="لا توجد طلبات"
+        searchFields={searchFields}
+        searchPlaceholder="رقم الطلب، المشروع، مقدم الطلب..."
+        statusKind="request"
+        initialStatus={initialStatus}
+        emptyIcon="inbox-outline"
+        emptyTitle="لا توجد طلبات"
         errorText="خطأ في تحميل الطلبات"
       />
     </Screen>
@@ -63,12 +68,5 @@ export default function RequestsScreen() {
 }
 
 const styles = StyleSheet.create({
-  status: {
-    color: COLORS.text,
-    fontSize: 12,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
+  metaRow: { marginTop: SPACING.xxs },
 });

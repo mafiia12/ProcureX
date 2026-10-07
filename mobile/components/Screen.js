@@ -1,16 +1,14 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { COLORS } from '../constants/colors';
+import { COLORS } from '../constants/theme';
+import ScreenHeader from './ScreenHeader';
 
-// Shared page shell: safe area + title row.
-export default function Screen({ title, right, children }) {
+// Shared page shell: safe area + header.
+export default function Screen({ title, subtitle, back, right, children }) {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>{title}</Text>
-        {right}
-      </View>
+      <ScreenHeader title={title} subtitle={subtitle} back={back} right={right} />
       <View style={styles.body}>{children}</View>
     </SafeAreaView>
   );
@@ -18,14 +16,5 @@ export default function Screen({ title, right, children }) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
-  header: {
-    flexDirection: 'row-reverse',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  title: { fontSize: 24, fontWeight: '700', color: COLORS.text },
   body: { flex: 1 },
 });

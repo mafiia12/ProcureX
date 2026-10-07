@@ -46,10 +46,18 @@ export const reportAPI = {
 
 export const requestsAPI = {
   list: (params) => apiClient.get('/api/internal/incoming-purchase-requests', { params }),
+  get: (id) => apiClient.get(`/api/internal/incoming-purchase-requests/${encodeURIComponent(id)}`),
 };
 
 export const comparisonsAPI = {
   list: () => apiClient.get('/api/price-comparisons'),
+  get: (id) => apiClient.get(`/api/price-comparisons/${encodeURIComponent(id)}`),
+};
+
+export const purchaseOrdersAPI = {
+  list: () => apiClient.get('/api/purchase-orders'),
+  get: (id) => apiClient.get(`/api/purchase-orders/${encodeURIComponent(id)}`),
+  payments: (id) => apiClient.get(`/api/purchase-orders/${encodeURIComponent(id)}/payments`),
 };
 
 export const paymentsAPI = {

@@ -16,6 +16,11 @@ function RootNavigator() {
       </Stack.Protected>
       <Stack.Protected guard={isLoggedIn}>
         <Stack.Screen name="(tabs)" />
+        {/* Read-only detail screens pushed over the tabs. */}
+        <Stack.Screen name="requests/[id]" />
+        <Stack.Screen name="comparisons/[id]" />
+        <Stack.Screen name="purchase-orders/index" />
+        <Stack.Screen name="purchase-orders/[id]" />
       </Stack.Protected>
     </Stack>
   );

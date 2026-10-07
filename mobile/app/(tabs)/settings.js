@@ -1,20 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import Card from '../../components/Card';
+import InfoRow from '../../components/InfoRow';
 import Screen from '../../components/Screen';
-import { COLORS } from '../../constants/colors';
+import SectionTitle from '../../components/SectionTitle';
+import { COLORS, RADIUS, SPACING } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import { authAPI } from '../../services/api';
 import { API_URL } from '../../services/config';
-
-function InfoRow({ label, value }) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.label}>{label}</Text>
-      <Text style={styles.value} numberOfLines={1}>{value || '—'}</Text>
-    </View>
-  );
-}
+import { roleLabel } from '../../utils/formatters';
 
 export default function SettingsScreen() {
   const { user: storedUser, signOut } = useAuth();
@@ -34,14 +29,16 @@ export default function SettingsScreen() {
   return (
     <Screen title="الإعدادات">
       <View style={styles.content}>
-        <View style={styles.card}>
+        <SectionTitle title="الحساب" />
+        <Card>
           <InfoRow label="الاسم" value={user?.display_name} />
           <InfoRow label="اسم المستخدم" value={user?.username} />
-          <InfoRow label="الدور" value={user?.role} />
-        </View>
-        <View style={styles.card}>
-          <InfoRow label="الخادم" value={API_URL} />
-        </View>
+          <InfoRow label="الدور" value={roleLabel(user?.role)} last />
+        </Card>
+        <SectionTitle title="الاتصال" />
+        <Card>
+          <InfoRow label="الخادم" value={API_URL} last />
+        </Card>
         <Pressable
           style={[styles.logout, signingOut && styles.disabled]}
           onPress={handleSignOut}
@@ -55,25 +52,14 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { paddingHorizontal: 16 },
-  card: {
-    backgroundColor: COLORS.card,
-    borderColor: COLORS.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    marginBottom: 16,
+  content: { paddingHorizontal: SPACING.md },
+  logout: {
+    backgroundColor: COLORS.danger,
+    borderRadius: RADIUS.md,
+    paddingVertical: SPACING.sm + SPACING.xs,
+    alignItems: 'center',
+    marginTop: SPACING.md,
   },
-  row: {
-    flexDirection: 'row-reverse',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    borderBottomColor: COLORS.border,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  label: { color: COLORS.textSecondary },
-  value: { color: COLORS.text, fontWeight: '600', flexShrink: 1, marginRight: 12 },
-  logout: { backgroundColor: COLORS.danger, borderRadius: 8, paddingVertical: 12, alignItems: 'center' },
   disabled: { opacity: 0.6 },
   logoutText: { color: COLORS.text, fontWeight: '600' },
 });
