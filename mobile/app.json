@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "ProcureX",
+    "slug": "procurex-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.redecor.procurex"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1F2937",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "com.redecor.procurex"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-secure-store"
+    ],
+    "scheme": "procurex"
+  }
+}
