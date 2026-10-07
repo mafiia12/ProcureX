@@ -837,7 +837,7 @@ async def mark_notification_read(notification_id: str, current_user: User = Depe
         return {"ok": True}
 
 
-@internal_router.get("/{request_id}", dependencies=[Depends(require_internal_access)])
+@internal_router.get("/{request_id}")
 async def get_incoming_request(request_id: str, current_user: User = Depends(require_erp_role())):
     with SessionLocal() as session:
         return _detail(session, _get_request(session, request_id))
