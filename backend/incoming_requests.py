@@ -765,7 +765,7 @@ async def submit_public_request(
     return {"ok": True, "duplicate": False, "request_number": request_number}
 
 
-@internal_router.get("", dependencies=[Depends(require_internal_access)])
+@internal_router.get("")
 async def list_incoming_requests(
     search: str = "",
     status: str = "",
